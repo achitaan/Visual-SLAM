@@ -44,28 +44,60 @@ class VisualOdometry:
         # Get the image points from the good matches
         return np.float32(kp1[m.queryIdx].pt for m in goodMatch), np.float32(kp2[m.trainIdx].pt for m in goodMatch)
 
-    def calcPose(self, p1, p2):
-        E, mask = cv.findEssentialMat(p1, p2, self.K, threshold=1)
-
-        # Using the epipolar constraint solving for E
-        # A^\top vecE = 0
-        A = np.kron(p1,p2).tolist()
-        e=np.asarray(E).reshape(-1)    
+    def findPose(self, p1, p2):
+        E = self.findEssentialM(p1, p2, self.K, threshold=1)
 
         # Decompose the Rotation matrix and translation vector
-        R, t = self.decompEmatrix(E, p1, p2)
+        R, t = self.decompEssentialM(E, p1, p2)
 
         T = np.eye(4)
 
-        # Compute T = (R|t)
+        # Encode R and t into the transfomation matrix T, compute T = (R|t)
         T[:2, :2], T[3, :3] = R, t
 
         
-        # Encode R and t into the transfomation matrix T
+    def findEssentialM(self, p1, p2):
+        # Using the epipolar constraint solving for E
+        # A^\top vecE = 0
+        A = np.kron(p1,p2).tolist()
+        u,s,vT=np.linalg.svd(A)
+        e = vT[-1]
 
-    def decompEmatrix(self, E, p1, p2):
-   
-        R, t = None, None
+        # Reshape e to be a 3x3 matrix E1
+        E1 = np.reshape(e, (3, 3))
+        U,S,VT = np.linalg.svd(E1)
+
+        # Project E1 into the essential space 
+        # S = diag{sigma1, sigma2, 0}
+        
+        S = np.array([1 , 1, 0])
+        E = U@np.diag(S)@VT
+
+        return E
+
+
+    def decompEssentialM(self, E, p1, p2):
+        U,S,V=np.linalg.svd(E)
+        # Create four different solution pairs
+        R,t=[],[]
+
+        # Calculate which sol is in front of both cameras through triangulation 
+
         return R, t
+    
+    def triangulation(self):
+        # We want to minimize the error w where X = x + w, 
+        # Using least squares ||w||^2_2 = ||X - x||^2_2
+        # (R, T) min sum sum ||w^j_i||^2_2
+
+        for j in range(n): # point pairs
+            for i in range(2): # camera perspective
+                pass
+
+
+
+    def main(self):
+        # VO loop
+        pass
 
 

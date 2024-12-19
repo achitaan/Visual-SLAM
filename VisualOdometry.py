@@ -1,11 +1,13 @@
 import os
 import cv2 as cv
 import numpy as np
-
+import matplotlib.pyplot as plt 
 class VisualOdometry:
     def __init__(self, calibration_path):
         self.K, _ = self.calc_camera_matrix(calibration_path)  # Intrinsic camera matrix (example values)
-        self.poses = [np.eye(4)]  # Initial pose (identity matrix)
+        self.true_poses = self._load_poses(r"KITTI_sequence_2\poses.txt")
+        self.poses = [self.true_poses[0]]  # Initial pose (identity matrix)
+
         self.I = []  # Key frames (images)
         self.orb = cv.ORB_create(nfeatures=1500)
 
@@ -20,6 +22,17 @@ class VisualOdometry:
             P = np.reshape(params, (3, 4))
             K = P[0:3, 0:3]
         return K, P
+
+    @staticmethod
+    def _load_poses(filepath):
+        poses = []
+        with open(filepath, 'r') as f:
+            for line in f.readlines():
+                T = np.fromstring(line, dtype=np.float64, sep=' ')
+                T = T.reshape(3, 4)
+                T = np.vstack((T, [0, 0, 0, 1]))
+                poses.append(T)
+        return poses
 
 
     def load_img(self, folder_path):
@@ -59,11 +72,11 @@ class VisualOdometry:
         E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
         _, R, t, mask = cv.recoverPose(E, p1, p2, self.K)
 
-        T = np.eye(4)
+        T = np.eye(4, dtype=np.float64)
         T[:3, :3] = R
-        T[:3, 3] = t.flatten()
+        T[:3, 3] = np.squeeze(t)
 
-        self.poses.append(self.poses[-1] @ T)
+        self.poses.append(self.poses[-1] @ np.linalg.inv(T))
 
     def triangulation(self, p1, p2):
         P1 = self.K @ np.eye(3, 4)  # First camera projection matrix
@@ -79,6 +92,22 @@ class VisualOdometry:
                 np.savetxt(f, pose, fmt="%6f")
                 f.write("\n")
 
+    def plot_trajectory(self):
+        x, y, z = [], [], []
+        for pose in self.poses:
+            x.append(pose[0, 3])
+            y.append(pose[1, 3])
+            z.append(pose[2, 3])
+
+        plt.figure()
+        plt.plot(x, z, label="Camera Trajectory")  # Plot x vs z (top-down view)
+        plt.gca().set_aspect('equal', adjustable='box')  # Set aspect ratio to equal
+        plt.xlabel("X (meters)")
+        plt.ylabel("Z (meters)")
+        plt.title("Visual Odometry Trajectory (To Scale)")
+        plt.legend()
+        plt.grid()
+        plt.show()
 
     def main(self, folder_path):
         self.load_img(folder_path)
@@ -89,16 +118,20 @@ class VisualOdometry:
 
             self.find_pose(p1, p2)
             points_3d = self.triangulation(p1, p2)
+            #print(points_3d)
+            #print(f"self.points shape: {points_3d.shape}, dtype: {points_3d.dtype}")
 
+            print((self.poses[i][0, 3], self.poses[i][1, 3], self.poses[i][2, 3]))
             # Visualization (optional): Display trajectory or 3D points
-            print(f"Frame {i}: Estimated pose:\n{self.poses[-1]}")
+            #print(f"Frame {i}: Estimated pose:\n{self.poses[-1]}")
 
         print("Visual Odometry completed.")
         self.save_to_txt("poses.txt")
+        self.plot_trajectory()
 
 
 # Example usage
 if __name__ == "__main__":
-    vo = VisualOdometry(r"KITTI_sequence_1\calib.txt")
-    folder_path = r"KITTI_sequence_1\image_l" 
+    vo = VisualOdometry(r"KITTI_sequence_2\calib.txt")
+    folder_path = r"KITTI_sequence_2\image_l" 
     vo.main(folder_path)

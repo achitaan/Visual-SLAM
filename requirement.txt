@@ -3,5 +3,6 @@ numpy
 opencv-python
 pytest
 pyyaml
+picamera[array]
 scikit-learn
 # pytorch special case, see requirements-pytorch.txt

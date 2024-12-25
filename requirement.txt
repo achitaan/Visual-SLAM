@@ -1,0 +1,7 @@
+# Packages listed in alphabetical order
+numpy
+opencv-python
+pytest
+pyyaml
+scikit-learn
+# pytorch special case, see requirements-pytorch.txt

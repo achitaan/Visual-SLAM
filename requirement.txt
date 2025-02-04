@@ -1,8 +1,9 @@
 # Packages listed in alphabetical order
 numpy
-opencv-python
+opencv-contrib-python
 pytest
 pyyaml
-picamera[array]
 scikit-learn
+matplotlib
+bokeh
 # pytorch special case, see requirements-pytorch.txt

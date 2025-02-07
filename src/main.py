@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from bokeh.plotting import figure, show
 from bokeh.io import output_notebook, output_file
 
-from StereoVisualOdometry import StereoVisualOdometry
+from VisualOdometry import VisualOdometry
 
 def plot(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     def get_coords(poses):
@@ -63,10 +63,13 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     plt.show()
 
 def main() -> None:
-    folder_path = r"sequences\01\image_"  # Folder containing stereo images (subfolders for left/right)
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=False)
-    for i in range(1, len(vo.Images_left)):
-        T = vo.find_transf(i)
+    folder_path = r"sequences\01\image_0" 
+    vo = VisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=False)
+    for i in range(1, len(vo.Images)):
+
+        p1, p2 = vo.flann_match_features(i)
+        T = vo.find_transf(p1, p2)
+        
         vo.poses.append(vo.poses[-1] @ T)
     print("Visual Odometry completed.")
     vo.save_poses("poses.txt")

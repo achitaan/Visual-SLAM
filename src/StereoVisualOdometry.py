@@ -1,5 +1,3 @@
-# changes i gotta do: Add pnp since it is most likely better for monocular
-
 import os
 import cv2 as cv
 import numpy as np
@@ -8,9 +6,10 @@ from numpy.typing import NDArray
 from bokeh.plotting import figure, show
 from bokeh.io import output_notebook, output_file
 
-class VisualOdometry:
+class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
-        self.K, self.P = self.__calib(camera_id=1, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        self.K, self.P1 = self.__calib(camera_id=1, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        _, self.P2 = self.__calib(camera_id=2, filepath=calibration_path)  # Intrinsic camera matrix (example values)
 
         print(self.K)
 
@@ -19,7 +18,8 @@ class VisualOdometry:
         
         #self.true_poses = [np.eye(4)]
         self.poses = [self.true_poses[0]] 
-        self.Images = self.__load(folder_path)
+        self.Images_1 = self.__load(folder_path+"1")
+        self.Images_2 = self.__load(folder_path+"2") 
 
 
         print("asda")
@@ -120,7 +120,7 @@ class VisualOdometry:
     def __calib(self, camera_id: int, filepath: str) -> tuple[NDArray, NDArray]:
         with open(filepath, 'r') as f:
             for line in f:
-                if line.startswith(f"P1:"):  # Change this to the appropriate projection matrix
+                if line.startswith(f"P{camera_id}:"):  # Change this to the appropriate projection matrix
                     params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
                     P = np.reshape(params, (3, 4))
                     K = P[0:3, 0:3]
@@ -250,6 +250,6 @@ if __name__ == "__main__":
     folder_path = r"sequences\01\image_0" 
     #folder_path = r"KITTI_sequence_2\image_l"
 
-    vo = VisualOdometry(folder_path, r"sequences\01\calib.txt", False)
+    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", False)
     #vo = VisualOdometry(folder_path, r"KITTI_sequence_2\calib.txt", False)
     vo.main()

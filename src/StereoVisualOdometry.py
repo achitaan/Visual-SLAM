@@ -8,8 +8,7 @@ from bokeh.io import output_notebook, output_file
 
 class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
-        self.K, self.P1 = self.__calib(camera_id=1, filepath=calibration_path)  # Intrinsic camera matrix (example values)
-        _, self.P2 = self.__calib(camera_id=2, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        self.K1, self.P1, self.K2, self.P2 = self.__calib(camera_id=2, filepath=calibration_path)  # Intrinsic camera matrix (example values)
 
         print(self.K)
 
@@ -22,12 +21,8 @@ class StereoVisualOdometry:
         self.Images_2 = self.__load(folder_path+"2") 
 
 
-        print("asda")
-        if use_brute_force:
-            self.__init_orb()
-        else:
-            self.__init_sift()
-        print("asdas")
+        # Correct Initializations 
+        self.__init_orb() if use_brute_force else self.__init_sift()
 
     def __init_orb(self):
         self.orb = cv.ORB_create(nfeatures=3000)
@@ -120,11 +115,15 @@ class StereoVisualOdometry:
     def __calib(self, camera_id: int, filepath: str) -> tuple[NDArray, NDArray]:
         with open(filepath, 'r') as f:
             for line in f:
-                if line.startswith(f"P{camera_id}:"):  # Change this to the appropriate projection matrix
+                if line.startswith(f"P1:"):  # Change this to the appropriate projection matrix
                     params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
-                    P = np.reshape(params, (3, 4))
-                    K = P[0:3, 0:3]
-                    return K, P
+                    P_l = np.reshape(params, (3, 4))
+                    K_l = P_l[0:3, 0:3]
+                if line.startswith(f"P2:"):  # Change this to the appropriate projection matrix
+                    params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
+                    P_r = np.reshape(params, (3, 4))
+                    K_r = P_r[0:3, 0:3]
+        return K_l, P_l, K_r, P_r
 
     def __relative_scale(): pass
 
@@ -143,6 +142,7 @@ class StereoVisualOdometry:
         kp2, desc2 = self.orb.detectAndCompute(self.Images[i], None)
 
         matches = self.brute_force.match(desc1, desc2)
+        matches = sorted(matches, key=lambda x: x.distance)
 
         self.__draw_corresponding_points(i, kp1, kp2, matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in matches])
@@ -164,6 +164,7 @@ class StereoVisualOdometry:
         kp2, desc2 = self.sift.detectAndCompute(self.Images[i], None)
 
         matches = self.flann.knnMatch(desc1, desc2, k=2)
+        matches = sorted(matches, key=lambda x: x.distance)
 
         thresh, good_matches = 0.7, []
         for m, n in matches:

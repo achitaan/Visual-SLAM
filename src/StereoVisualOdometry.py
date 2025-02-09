@@ -48,29 +48,12 @@ class StereoVisualOdometry:
 
     @staticmethod
     def __transform(R: NDArray[np.float32], t: NDArray[np.float32]) -> NDArray[np.float32]:
-        """
-        Computes the transformation matrix T_k from R_k and t_k
-
-        Parameters:
-            R (ndarray): 2D numpy array of shape (3, 3)
-            t (ndarray): 1D numpy array of shape (1,)
-
-        Returns:
-            T (ndarray): 2D numpy array of shape (4, 4)
-        """
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = R; T[:3, 3] = np.squeeze(t)
         return T
 
     @staticmethod
     def __load(filepath: str) -> list[NDArray]:
-        """
-        Load images from the specified folder
-        
-        Parameters:
-            filepath (str): path to folder
-
-        """
         images = []
         for filename in sorted(os.listdir(filepath)):
             path = os.path.join(filepath, filename)

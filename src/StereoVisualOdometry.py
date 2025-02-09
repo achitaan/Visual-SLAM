@@ -8,17 +8,16 @@ from bokeh.io import output_notebook, output_file
 
 class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
-        self.K1, self.P1, self.K2, self.P2 = self.__calib(camera_id=2, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)  # Intrinsic camera matrix (example values)
 
         print(self.K)
+        print("Left Intrinsics:\n", self.K1)
+        print("Right Intrinsics:\n", self.K2)
 
         self.true_poses = self.__load_poses(r"poses\01.txt")
-        #self.true_poses = self.__load_poses(r"KITTI_sequence_2\poses.txt")
-        
-        #self.true_poses = [np.eye(4)]
         self.poses = [self.true_poses[0]] 
-        self.Images_1 = self.__load(folder_path+"1")
-        self.Images_2 = self.__load(folder_path+"2") 
+        self.Images_1 = self.__load(folder_path+"0")  # Left images
+        self.Images_2 = self.__load(folder_path+"1")  # Right images
 
 
         # Correct Initializations 
@@ -112,7 +111,7 @@ class StereoVisualOdometry:
             K = P[0:3, 0:3]
         return K, P
     
-    def __calib(self, camera_id: int, filepath: str) -> tuple[NDArray, NDArray]:
+    def __calib(self, filepath: str) -> tuple[NDArray, NDArray]:
         with open(filepath, 'r') as f:
             for line in f:
                 if line.startswith(f"P1:"):  # Change this to the appropriate projection matrix
@@ -175,6 +174,57 @@ class StereoVisualOdometry:
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
         return p1, p2
+    
+    def get_stereo_matches(self, i: int):
+        """
+        Detect and match features between left[i] and right[i].
+        Returns: (kp_left, kp_right, matches)
+        """
+        if i >= len(self.Images_1) or i >= len(self.Images_2):
+            print("Index out of range for stereo images.")
+            return None, None, None
+
+        # Detect keypoints & descriptors
+        if hasattr(self, 'orb'):
+            kp_left, desc_left   = self.orb.detectAndCompute(self.Images_1[i], None)
+            kp_right, desc_right = self.orb.detectAndCompute(self.Images_2[i], None)
+            matches = self.brute_force.match(desc_left, desc_right)
+            matches = sorted(matches, key=lambda x: x.distance)
+        else:
+            kp_left, desc_left   = self.sift.detectAndCompute(self.Images_1[i], None)
+            kp_right, desc_right = self.sift.detectAndCompute(self.Images_2[i], None)
+            knn_matches = self.flann.knnMatch(desc_left, desc_right, k=2)
+            
+            # Lowe's ratio test
+            matches = []
+            ratio_thresh = 0.7
+            for m, n in knn_matches:
+                if m.distance < ratio_thresh * n.distance:
+                    matches.append(m)
+
+        if len(matches) < 5:
+            print(f"Not enough stereo matches at index {i}")
+            return kp_left, kp_right, []
+
+        # Optionally, draw the matches for debugging
+        self.__draw_corresponding_points(i, kp_left, kp_right, matches)
+        return kp_left, kp_right, matches
+
+
+    def compute_depth(self, p1, p2, scale_factor: float = 1.0) -> NDArray:
+        kp_left, kp_right, matches = self.get_stereo_matches(i)
+        if not matches:
+            return np.array([])
+
+        # Triangulate points (shape: (4, N))
+        points_4d_hom = cv.triangulatePoints(self.P1, self.P2, p1.T, p2.T)
+        # Convert from homogeneous to 3D
+        points_3d = points_4d_hom[:3] / points_4d_hom[3]
+        
+        # Depth array (Z) from camera perspective
+        depth = points_3d[2] * scale_factor
+        
+        return depth
 
     def find_transf_fast(self, p1: NDArray, p2: NDArray) -> NDArray:
         E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -253,4 +303,3 @@ if __name__ == "__main__":
 
     vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", False)
     #vo = VisualOdometry(folder_path, r"KITTI_sequence_2\calib.txt", False)
-    vo.main()

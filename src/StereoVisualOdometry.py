@@ -70,9 +70,9 @@ class StereoVisualOdometry:
     
     def __draw_corresponding_points(self, i, kp1, kp2, good_matches):
         draw_params = dict(
-            matchColor=-1,  # Draw matches in green color
+            matchColor=-1, 
             singlePointColor=None,
-            matchesMask=None,  # Draw only inliers
+            matchesMask=None,
             flags=2
         )
         image = cv.drawMatches(self.Images[i], kp1, self.Images[i - 1], kp2, good_matches, None, **draw_params)

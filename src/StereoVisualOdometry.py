@@ -10,7 +10,6 @@ class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
         self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)  # Intrinsic camera matrix (example values)
 
-        print(self.K)
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
@@ -63,13 +62,6 @@ class StereoVisualOdometry:
         return images
 
     def __save(self, filepath: str) -> None:
-        """
-        Saves poses to a specified file
-        
-        Parameters:
-            filepath (str): path to file
-
-        """
         with open(filepath, 'w') as f:
             for i, pose in enumerate(self.poses):
                 f.write(f"Pose {i}: \n")
@@ -107,19 +99,7 @@ class StereoVisualOdometry:
                     K_r = P_r[0:3, 0:3]
         return K_l, P_l, K_r, P_r
 
-    def __relative_scale(): pass
-
     def bf_match_features(self, i: int) -> tuple[NDArray, NDArray]:
-        """
-        Finds and matches the coresponding consistent points between images I_k-1 and I_k using a brute force approach
-
-        Parameters:
-            i (int): image index
-
-        Returns:
-            p1 (ndarray): numpy array of points in the previous image
-            p2 (ndarray): numpy array of the coresponding subsequent points
-        """
         kp1, desc1 = self.orb.detectAndCompute(self.Images[i - 1], None)
         kp2, desc2 = self.orb.detectAndCompute(self.Images[i], None)
 
@@ -129,19 +109,9 @@ class StereoVisualOdometry:
         self.__draw_corresponding_points(i, kp1, kp2, matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in matches])
-        return p1, p2
+        return p1, p2, matches
 
     def flann_match_features(self, i: int) -> tuple[NDArray, NDArray]:
-        """
-        Finds and matches the coresponding consistent points between images I_k-1 and I_k
-
-        Parameters:
-            i (int): image index
-
-        Returns:
-            p1 (ndarray): numpy array of points in the previous image
-            p2 (ndarray): numpy array of the coresponding subsequent points
-        """
         kp1, desc1 = self.sift.detectAndCompute(self.Images[i - 1], None)
         kp2, desc2 = self.sift.detectAndCompute(self.Images[i], None)
 
@@ -156,46 +126,30 @@ class StereoVisualOdometry:
         self.__draw_corresponding_points(i, kp1, kp2, good_matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
-        return p1, p2
+        return p1, p2, matches
     
     def get_stereo_matches(self, i: int):
-        """
-        Detect and match features between left[i] and right[i].
-        Returns: (kp_left, kp_right, matches)
-        """
         if i >= len(self.Images_1) or i >= len(self.Images_2):
             print("Index out of range for stereo images.")
             return None, None, None
 
         # Detect keypoints & descriptors
         if hasattr(self, 'orb'):
-            kp_left, desc_left   = self.orb.detectAndCompute(self.Images_1[i], None)
-            kp_right, desc_right = self.orb.detectAndCompute(self.Images_2[i], None)
-            matches = self.brute_force.match(desc_left, desc_right)
-            matches = sorted(matches, key=lambda x: x.distance)
+            p1, p2, matches = self.bf_match_features(i)
         else:
-            kp_left, desc_left   = self.sift.detectAndCompute(self.Images_1[i], None)
-            kp_right, desc_right = self.sift.detectAndCompute(self.Images_2[i], None)
-            knn_matches = self.flann.knnMatch(desc_left, desc_right, k=2)
-            
-            # Lowe's ratio test
-            matches = []
-            ratio_thresh = 0.7
-            for m, n in knn_matches:
-                if m.distance < ratio_thresh * n.distance:
-                    matches.append(m)
+            p1, p2, matches = self.flann_match_features(i)
 
         if len(matches) < 5:
             print(f"Not enough stereo matches at index {i}")
-            return kp_left, kp_right, []
+            return p1, p2, []
 
         # Optionally, draw the matches for debugging
-        self.__draw_corresponding_points(i, kp_left, kp_right, matches)
-        return kp_left, kp_right, matches
+        self.__draw_corresponding_points(i, p1, p2, matches)
+        return p1, p2, matches
 
 
     def compute_depth(self, p1, p2, scale_factor: float = 1.0) -> NDArray:
-        kp_left, kp_right, matches = self.get_stereo_matches(i)
+        p1, p2, matches = self.get_stereo_matches(i)
         if not matches:
             return np.array([])
 
@@ -210,8 +164,8 @@ class StereoVisualOdometry:
         return depth
 
     def find_transf_fast(self, p1: NDArray, p2: NDArray) -> NDArray:
-        E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        _, R, t, mask = cv.recoverPose(E, p1, p2, self.K)
+        E, mask = cv.findEssentialMat(p1, p2, self.K1, method=cv.RANSAC, prob=0.999, threshold=1.0)
+        _, R, t, mask = cv.recoverPose(E, p1, p2, self.K1)
 
         # Normalize the translation vector
         t = t / np.linalg.norm(t)
@@ -220,17 +174,7 @@ class StereoVisualOdometry:
         return np.linalg.inv(T)
 
     def find_transf(self, p1: NDArray, p2: NDArray) -> NDArray:
-        """
-        Finds the most accurate transformation matrix from points p1 and p2
-
-        Parameters:
-            p1 (ndarray): numpy array of points in the previous image
-            p2 (ndarray): numpy array of the coresponding subsequent points
-
-        Returns:
-            T (ndarray): 2D numpy array of shape (4, 4)
-        """
-        E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
+        E, mask = cv.findEssentialMat(p1, p2, self.K1, method=cv.RANSAC, prob=0.999, threshold=1.0)
         R1, R2, t = cv.decomposeEssentialMat(E)
         t = np.squeeze(t)
 
@@ -241,7 +185,7 @@ class StereoVisualOdometry:
         relative_scale = 1.0  # Default scale factor
 
         for R, t in pairs:
-            P2 = np.concatenate((self.K, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
+            P2 = np.concatenate((self.K1, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
 
             points_4d_hom = cv.triangulatePoints(self.P, P2, p1.T, p2.T)
             p1_3d_hom = points_4d_hom[:3] / points_4d_hom[3]

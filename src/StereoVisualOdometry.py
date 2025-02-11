@@ -91,10 +91,6 @@ class StereoVisualOdometry:
         return K, P
     
     def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
-        """
-        Reads lines from 'calib.txt' with known labels P1: and P2: 
-        Then extracts the left camera (P_l, K_l) and right camera (P_r, K_r).
-        """
         with open(filepath, 'r') as f:
             for line in f:
                 if line.startswith(f"P1:"):
@@ -108,7 +104,6 @@ class StereoVisualOdometry:
         return K_l, P_l, K_r, P_r
 
     def bf_match_features(self, i: int):
-        """Matches features between frame (i-1) and frame (i) using ORB + BF Matcher."""
         kp1, desc1 = self.orb.detectAndCompute(self.Images_1[i - 1], None)
         kp2, desc2 = self.orb.detectAndCompute(self.Images_1[i], None)
 
@@ -123,7 +118,6 @@ class StereoVisualOdometry:
         return p1, p2, kp1, kp2, matches
 
     def flann_match_features(self, i: int):
-        """Matches features between frame (i-1) and frame (i) using SIFT + FLANN."""
         kp1, desc1 = self.sift.detectAndCompute(self.Images_1[i - 1], None)
         kp2, desc2 = self.sift.detectAndCompute(self.Images_1[i], None)
 
@@ -141,9 +135,6 @@ class StereoVisualOdometry:
         return p1, p2, kp1, kp2, good_matches
 
     def get_stereo_matches(self, i: int):
-        """
-        Matches features between the left and right images at index i for triangulation.
-        """
         if i >= len(self.Images_1) or i >= len(self.Images_2):
             print("Index out of range for stereo images.")
             return None, None, None, None, []

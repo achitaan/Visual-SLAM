@@ -8,19 +8,23 @@ from bokeh.io import output_notebook, output_file
 
 class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
-        self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)  # Intrinsic/Projection from file
 
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
         self.true_poses = self.__load_poses(r"poses\01.txt")
         self.poses = [self.true_poses[0]] 
-        self.Images_1 = self.__load(folder_path+"0")  # Left images
-        self.Images_2 = self.__load(folder_path+"1")  # Right images
 
+        # Load left images (Images_1) and right images (Images_2)
+        self.Images_1 = self.__load(folder_path + "0")  # Left images
+        self.Images_2 = self.__load(folder_path + "1")  # Right images
 
-        # Correct Initializations 
-        self.__init_orb() if use_brute_force else self.__init_sift()
+        # Feature detectors
+        if use_brute_force:
+            self.__init_orb()
+        else:
+            self.__init_sift()
 
     def __init_orb(self):
         self.orb = cv.ORB_create(nfeatures=3000)
@@ -28,7 +32,6 @@ class StereoVisualOdometry:
 
     def __init_sift(self):
         self.sift = cv.SIFT_create()
-
         FLANN_INDEX_KDTREE = 1
         index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
         search_params = dict(checks=50)
@@ -48,7 +51,8 @@ class StereoVisualOdometry:
     @staticmethod
     def __transform(R: NDArray[np.float32], t: NDArray[np.float32]) -> NDArray[np.float32]:
         T = np.eye(4, dtype=np.float64)
-        T[:3, :3] = R; T[:3, 3] = np.squeeze(t)
+        T[:3, :3] = R
+        T[:3, 3] = np.squeeze(t)
         return T
 
     @staticmethod
@@ -86,147 +90,194 @@ class StereoVisualOdometry:
             K = P[0:3, 0:3]
         return K, P
     
-    def __calib(self, filepath: str) -> tuple[NDArray, NDArray]:
+    def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        """
+        Reads lines from 'calib.txt' with known labels P1: and P2: 
+        Then extracts the left camera (P_l, K_l) and right camera (P_r, K_r).
+        """
         with open(filepath, 'r') as f:
             for line in f:
-                if line.startswith(f"P1:"):  # Change this to the appropriate projection matrix
+                if line.startswith(f"P1:"):
                     params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
                     P_l = np.reshape(params, (3, 4))
                     K_l = P_l[0:3, 0:3]
-                if line.startswith(f"P2:"):  # Change this to the appropriate projection matrix
+                if line.startswith(f"P2:"):
                     params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
                     P_r = np.reshape(params, (3, 4))
                     K_r = P_r[0:3, 0:3]
         return K_l, P_l, K_r, P_r
 
-    def bf_match_features(self, i: int) -> tuple[NDArray, NDArray]:
-        kp1, desc1 = self.orb.detectAndCompute(self.Images[i - 1], None)
-        kp2, desc2 = self.orb.detectAndCompute(self.Images[i], None)
+    def bf_match_features(self, i: int):
+        """Matches features between frame (i-1) and frame (i) using ORB + BF Matcher."""
+        kp1, desc1 = self.orb.detectAndCompute(self.Images_1[i - 1], None)
+        kp2, desc2 = self.orb.detectAndCompute(self.Images_1[i], None)
 
         matches = self.brute_force.match(desc1, desc2)
         matches = sorted(matches, key=lambda x: x.distance)
 
+        # Optional: draw matches
         self.__draw_corresponding_points(i, kp1, kp2, matches)
+
         p1 = np.float32([kp1[m.queryIdx].pt for m in matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in matches])
-        return p1, p2, matches
+        return p1, p2, kp1, kp2, matches
 
-    def flann_match_features(self, i: int) -> tuple[NDArray, NDArray]:
-        kp1, desc1 = self.sift.detectAndCompute(self.Images[i - 1], None)
-        kp2, desc2 = self.sift.detectAndCompute(self.Images[i], None)
+    def flann_match_features(self, i: int):
+        """Matches features between frame (i-1) and frame (i) using SIFT + FLANN."""
+        kp1, desc1 = self.sift.detectAndCompute(self.Images_1[i - 1], None)
+        kp2, desc2 = self.sift.detectAndCompute(self.Images_1[i], None)
 
         matches = self.flann.knnMatch(desc1, desc2, k=2)
-        matches = sorted(matches, key=lambda x: x.distance)
-
         thresh, good_matches = 0.7, []
         for m, n in matches:
             if m.distance < thresh * n.distance:
                 good_matches.append(m)
 
+        # Optional: draw matches
         self.__draw_corresponding_points(i, kp1, kp2, good_matches)
+
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
-        return p1, p2, matches
-    
+        return p1, p2, kp1, kp2, good_matches
+
     def get_stereo_matches(self, i: int):
+        """
+        Matches features between the left and right images at index i for triangulation.
+        """
         if i >= len(self.Images_1) or i >= len(self.Images_2):
             print("Index out of range for stereo images.")
-            return None, None, None
+            return None, None, None, None, []
 
-        # Detect keypoints & descriptors
-        if hasattr(self, 'orb'):
-            p1, p2, matches = self.bf_match_features(i)
-        else:
-            p1, p2, matches = self.flann_match_features(i)
+        # You can choose ORB or SIFT for left-right matching as well.
+        # Here, we do ORB on left vs. right images at time i.
+        kp1, desc1 = self.orb.detectAndCompute(self.Images_1[i], None)
+        kp2, desc2 = self.orb.detectAndCompute(self.Images_2[i], None)
+        matches = self.brute_force.match(desc1, desc2)
+        matches = sorted(matches, key=lambda x: x.distance)
 
         if len(matches) < 5:
             print(f"Not enough stereo matches at index {i}")
-            return p1, p2, []
+            return None, None, None, None, []
 
-        # Optionally, draw the matches for debugging
-        self.__draw_corresponding_points(i, p1, p2, matches)
-        return p1, p2, matches
+        # Points in left image and right image
+        p_left  = np.float32([kp1[m.queryIdx].pt for m in matches])
+        p_right = np.float32([kp2[m.trainIdx].pt for m in matches])
+        return p_left, p_right, kp1, kp2, matches
 
+    def triangulate_from_stereo(self, p_left: NDArray, p_right: NDArray) -> NDArray:
+        """
+        Given matched keypoints from left/right images (same frame),
+        triangulate to obtain 3D points in the LEFT camera coordinate system.
+        """
+        # Triangulate points => shape: (4, N)
+        points_4d_hom = cv.triangulatePoints(self.P1, self.P2, p_left.T, p_right.T)
+        # Convert homogeneous to 3D
+        points_3d = (points_4d_hom[:3] / points_4d_hom[3]).T  # shape: (N, 3)
+        return points_3d
 
-    def compute_depth(self, p1, p2, scale_factor: float = 1.0) -> NDArray:
-        p1, p2, matches = self.get_stereo_matches(i)
-        if not matches:
-            return np.array([])
+    def find_transf_pnp(self, i: int):
+        """
+        1) Obtain 3D points from the PREVIOUS frame's stereo images (i-1).
+        2) Match those same feature locations from (i-1) left image to the i-th left image => 2D points.
+        3) Use PnP to solve for R,t between frame i-1 and i.
+        """
+        # --- (1) Triangulate 3D from the previous stereo pair (left/right at i-1)
+        p_left, p_right, kpL, kpR, stereo_matches = self.get_stereo_matches(i - 1)
+        if len(stereo_matches) < 5:
+            print(f"Stereo matching insufficient at frame {i-1}")
+            return np.eye(4)
 
-        # Triangulate points (shape: (4, N))
-        points_4d_hom = cv.triangulatePoints(self.P1, self.P2, p1.T, p2.T)
-        # Convert from homogeneous to 3D
-        points_3d = points_4d_hom[:3] / points_4d_hom[3]
+        pts_3d_prev = self.triangulate_from_stereo(p_left, p_right)  # 3D in the old (i-1) left-cam frame
+
+        # --- (2) Now match features from the old left image (i-1) to the new left image (i).
+        # We want the *same* feature points that we used in stereo, so we track them from (i-1)->(i).
+        # For simplicity, let's just do a fresh match (not 1:1 the same indices). In a real pipeline,
+        # you would track the same feature IDs if you want a perfect 3D->2D pairing.
         
-        # Depth array (Z) from camera perspective
-        depth = points_3d[2] * scale_factor
+        if hasattr(self, 'orb'):
+            p1, p2, old_kp, new_kp, matches_2d = self.bf_match_features(i)
+        else:
+            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i)
+
+        if len(matches_2d) < 5:
+            print(f"2D matching insufficient between frames {i-1} and {i}")
+            return np.eye(4)
+
+        # --- (3) Build correspondences: 
+        # in a robust pipeline, you'd ensure p1 lines up with p_left from stereo.
+        # We'll do a naive approach: try to find nearest neighbor in old_kp for p_left 
+        # so we can align which 3D point corresponds to which 2D point in the new image.
+        # This can be improved with e.g. BFS or an ID-based approach, but here is a simple demonstration.
+
+        # We do a nearest search in (p1 = old_kp2D from frame i-1) for each stereo keypoint p_left.
+        # Then we pick the corresponding p2 for the new image location.
+        # Finally we call solvePnP.
         
-        return depth
+        # Convert p1 to a list for searching
+        p1_list = np.array(p1)  # shape (N, 2)
+        pts_3d_list = []
+        pts_2d_list = []
 
-    def find_transf_fast(self, p1: NDArray, p2: NDArray) -> NDArray:
-        E, mask = cv.findEssentialMat(p1, p2, self.K1, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        _, R, t, mask = cv.recoverPose(E, p1, p2, self.K1)
+        for idx_st, (lx, ly) in enumerate(p_left):
+            # 3D point from stereo
+            X3d = pts_3d_prev[idx_st]  # shape (3,)
 
-        # Normalize the translation vector
-        t = t / np.linalg.norm(t)
+            # Find the closest point in p1_list => same feature in old image
+            dists = np.sqrt((p1_list[:,0] - lx)**2 + (p1_list[:,1] - ly)**2)
+            min_idx = np.argmin(dists)
+            if dists[min_idx] < 2.0:  # threshold in pixels to accept
+                # If close enough, the corresponding new image 2D is p2[min_idx]
+                pts_3d_list.append(X3d)
+                pts_2d_list.append(p2[min_idx])
 
-        T = self.__transform(R, t)
-        return np.linalg.inv(T)
+        pts_3d_list = np.array(pts_3d_list, dtype=np.float32)
+        pts_2d_list = np.array(pts_2d_list, dtype=np.float32)
 
-    def find_transf(self, p1: NDArray, p2: NDArray) -> NDArray:
-        E, mask = cv.findEssentialMat(p1, p2, self.K1, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        R1, R2, t = cv.decomposeEssentialMat(E)
-        t = np.squeeze(t)
+        if len(pts_3d_list) < 4:
+            print(f"Not enough matched 3D->2D correspondences at frame {i}")
+            return np.eye(4)
 
-        pairs = [(R1, t), (R1, -t), (R2, t), (R2, -t)]
-        P1 = self.K @ np.eye(3, 4)
+        # --- (4) Run solvePnPRansac
+        success, rvec, tvec, inliers = cv.solvePnPRansac(
+            pts_3d_list, 
+            pts_2d_list, 
+            self.K1, 
+            distCoeffs=None,
+            iterationsCount=100,
+            reprojectionError=3.0,
+            confidence=0.99,
+            flags=cv.SOLVEPNP_ITERATIVE
+        )
+        if not success:
+            print(f"PnP failed for frame {i}")
+            return np.eye(4)
+
+        R, _ = cv.Rodrigues(rvec)  # convert rvec to rotation matrix
+        T = self.__transform(R, tvec)
+
+        # Return the 4x4 transformation from frame (i-1) to frame (i). 
+        # Often we store T^-1 if we want camera i in the world frame, etc. 
+        # This depends on your coordinate convention. 
+        return np.linalg.inv(T)  # so that post-multiplying by T transforms old->new
+
+    def run_vo(self):
+        """
+        Example main loop for running PnP-based VO across frames.
+        """
+        num_frames = len(self.Images_1)
+        for i in range(1, num_frames):
+            # (1) Find transformation from frame i-1 to i via PnP
+            T = self.find_transf_pnp(i)
+
+            # (2) Accumulate pose
+            current_pose = self.poses[-1] @ T
+            self.poses.append(current_pose)
         
-        max_z_count, best_pose = 0, 0
-        relative_scale = 1.0  # Default scale factor
-
-        for R, t in pairs:
-            P2 = np.concatenate((self.K1, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
-
-            points_4d_hom = cv.triangulatePoints(self.P, P2, p1.T, p2.T)
-            p1_3d_hom = points_4d_hom[:3] / points_4d_hom[3]
-            p2_3d_hom = R @ p1_3d_hom + t.reshape(-1, 1)
-            z1, z2 = p1_3d_hom[2], p2_3d_hom[2]
-
-            pos_z_count = np.sum((z1 > 0) & (z2 > 0))
-            
-            # Calculate relative scale using only points with positive depth
-            if pos_z_count > max_z_count:
-                max_z_count = pos_z_count
-                best_pose = (R, t)
-                
-                # Filter points with positive depth
-                valid_points = (z1 > 0) & (z2 > 0)
-                if np.sum(valid_points) > 1:  # Need at least 2 points to compute distances
-                    p1_valid = p1_3d_hom[:, valid_points]
-                    p2_valid = p2_3d_hom[:, valid_points]
-
-                    # Compute distances between corresponding points
-                    dist_p1 = np.linalg.norm(p1_valid, axis=0)  # Distances from origin in frame 1
-                    dist_p2 = np.linalg.norm(p2_valid, axis=0)  # Distances from origin in frame 2
-
-                    # Avoid division by zero or invalid distances
-                    valid_distances = (dist_p1 > 1e-6) & (dist_p2 > 1e-6)
-                    if np.sum(valid_distances) > 0:
-                        relative_scale = np.median(dist_p1[valid_distances] / dist_p2[valid_distances])
-                    else:
-                        relative_scale = 1.0  # Fallback to default scale
-                else:
-                    relative_scale = 1.0  # Fallback to default scale
-
-        R, t = best_pose
-        t = t * relative_scale  # Scale the translation vector
-        return np.linalg.inv(self.__transform(R, t))
-
+        print("Done running PnP-based visual odometry!")
 
 # Test
 if __name__ == "__main__":
-    folder_path = r"sequences\01\image_0" 
-    #folder_path = r"KITTI_sequence_2\image_l"
-
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", False)
-    #vo = VisualOdometry(folder_path, r"KITTI_sequence_2\calib.txt", False)
+    folder_path = r"sequences\01\image_" 
+    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=False)
+    vo.run_vo()
+    # This will run your new find_transf_pnp approach on the entire sequence.

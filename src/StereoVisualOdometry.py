@@ -79,7 +79,7 @@ class StereoVisualOdometry:
             matchesMask=None,
             flags=2
         )
-        image = cv.drawMatches(self.Images[i], kp1, self.Images[i - 1], kp2, good_matches, None, **draw_params)
+        image = cv.drawMatches(self.Images_1[i], kp1, self.Images_1[i - 1], kp2, good_matches, None, **draw_params)
         cv.imshow("Feature Matches", image)
         cv.waitKey(1)
 

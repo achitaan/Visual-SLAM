@@ -5,13 +5,13 @@ import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 
 class StereoVisualOdometry:
-    def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool, scale_factor: float = 1.0):
+    def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
         # Load calibration data (projection matrices and intrinsics)
         self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        self.true_poses = self.__load_poses(r"poses\00.txt")
+        self.true_poses = self.__load_poses(r"poses\01.txt")
         self.poses = [self.true_poses[0]] 
 
         # Load left and right images
@@ -23,18 +23,17 @@ class StereoVisualOdometry:
         f = self.K1[0, 0]
         cx = self.K1[0, 2]
         cy = self.K1[1, 2]
-        print((f, cx, cy))
-        # Baseline from P2 (assuming P2[0,3] = -f*B). Use absolute value for proper scaling.
+        print("f, cx, cy:", (f, cx, cy))
+        # Baseline from P2 (assuming P2[0,3] = -f*B). Use absolute value.
         baseline = np.abs(self.P2[0, 3]) / f  
+        self.baseline = baseline  # Save for later use in computing depth
+        self.f = f              # Save focal length for depth formula
         self.Q = np.array([
             [1, 0, 0, -cx],
             [0, 1, 0, -cy],
             [0, 0, 0, f],
             [0, 0, -1 / baseline, 0]
         ], dtype=np.float32)
-
-        # Save the scale factor (used to multiply the translation vector from PnP)
-        self.scale_factor = scale_factor
 
         # Initialize feature detector/matcher (ORB or SIFT)
         if use_brute_force:
@@ -161,14 +160,9 @@ class StereoVisualOdometry:
             speckleWindowSize=100,
             speckleRange=32
         )
-        # Compute disparity and scale it to float32 values in pixels
+        # Compute disparity and scale to float32 (in pixels)
         disparity = stereo.compute(left, right).astype(np.float32) / 16.0
         return disparity
-    
-    def _compiute_depth(self, disparity):
-        # Compute depth from disparity (not used in the current pipeline)
-        depth = self.K1[0, 0] * self.P2[0, 3] / disparity
-        return depth
 
     def find_transf_pnp(self, i: int):
         # (1) Compute disparity on frame i-1 using StereoSGBM
@@ -190,20 +184,32 @@ class StereoVisualOdometry:
         
         pts_3d_list = []
         pts_2d_list = []
-        # (4) For each matched feature in the previous left image, get its 3D coordinate
+        depths_reproj = []  # depths from reprojected 3D points
+        depths_formula = [] # depths computed from disparity using Z = f*B/disparity
+
         for m in matches_2d:
             pt = old_kp[m.queryIdx].pt  # coordinate in frame i-1
             u = int(round(pt[0]))
             v = int(round(pt[1]))
-            # Make sure the keypoint is within the image bounds
+            # Check bounds
             if u < 0 or u >= points_3d_dense.shape[1] or v < 0 or v >= points_3d_dense.shape[0]:
                 continue
             X = points_3d_dense[v, u]
-            # Check for valid depth (avoid points with zero, infinite, or NaN depth)
+            # Skip if depth is not valid
             if X[2] <= 0 or np.isinf(X[2]) or np.isnan(X[2]):
                 continue
+
+            # Append 3D point and its corresponding 2D location in the new frame
             pts_3d_list.append(X)
             pts_2d_list.append(new_kp[m.trainIdx].pt)
+            depths_reproj.append(X[2])
+            
+            # Use the disparity value at (v,u) to compute depth via the stereo formula
+            disp_val = disparity[v, u]
+            if disp_val <= 0:
+                continue
+            depth_formula = self.f * self.baseline / disp_val
+            depths_formula.append(depth_formula)
         
         pts_3d_list = np.array(pts_3d_list, dtype=np.float32)
         pts_2d_list = np.array(pts_2d_list, dtype=np.float32)
@@ -212,6 +218,18 @@ class StereoVisualOdometry:
             print(f"Not enough valid 3D-2D correspondences at frame {i}")
             return np.eye(4)
         
+        # (4) Compute a scale factor from the disparity:
+        # Compare the median depth from the reprojected 3D points to the median depth
+        # computed using the stereo formula. Their ratio will be used to correct the scale.
+        if len(depths_reproj) > 0 and len(depths_formula) > 0:
+            median_reproj = np.median(depths_reproj)
+            median_formula = np.median(depths_formula)
+            scale_factor = median_formula / median_reproj
+            print(f"Frame {i}: median_reproj = {median_reproj:.3f}, median_formula = {median_formula:.3f}, scale_factor = {scale_factor:.3f}")
+        else:
+            scale_factor = 1.0
+            print(f"Frame {i}: insufficient depth stats; using scale_factor = {scale_factor}")
+
         # (5) Run PnP with RANSAC using the 3D points from frame i-1 and their 2D correspondences in frame i
         success, rvec, tvec, inliers = cv.solvePnPRansac(
             pts_3d_list,
@@ -228,8 +246,8 @@ class StereoVisualOdometry:
             return np.eye(4)
         
         R, _ = cv.Rodrigues(rvec)
-        # Multiply the translation vector by the scale factor to adjust for scale errors
-        tvec = tvec * self.scale_factor
+        # Multiply the translation vector by the computed scale factor
+        tvec = tvec * scale_factor
         T = self.__transform(R, tvec)
         # Return the transformation from frame i-1 to i (inverse if needed by your convention)
         return np.linalg.inv(T)
@@ -249,6 +267,5 @@ class StereoVisualOdometry:
 # Test
 if __name__ == "__main__":
     folder_path = r"sequences\01\image_"
-    # Adjust scale_factor as needed; default is 1.0 (no change)
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True, scale_factor=1.0)
+    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True)
     vo.run_vo()

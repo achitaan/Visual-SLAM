@@ -150,16 +150,11 @@ class StereoVisualOdometry:
             print(f"Not enough stereo matches at index {i}")
             return None, None, None, None, []
 
-        # Points in left image and right image
         p_left  = np.float32([kp1[m.queryIdx].pt for m in matches])
         p_right = np.float32([kp2[m.trainIdx].pt for m in matches])
         return p_left, p_right, kp1, kp2, matches
 
     def triangulate_from_stereo(self, p_left: NDArray, p_right: NDArray) -> NDArray:
-        """
-        Given matched keypoints from left/right images (same frame),
-        triangulate to obtain 3D points in the LEFT camera coordinate system.
-        """
         # Triangulate points => shape: (4, N)
         points_4d_hom = cv.triangulatePoints(self.P1, self.P2, p_left.T, p_right.T)
         # Convert homogeneous to 3D
@@ -167,11 +162,7 @@ class StereoVisualOdometry:
         return points_3d
 
     def find_transf_pnp(self, i: int):
-        """
-        1) Obtain 3D points from the PREVIOUS frame's stereo images (i-1).
-        2) Match those same feature locations from (i-1) left image to the i-th left image => 2D points.
-        3) Use PnP to solve for R,t between frame i-1 and i.
-        """
+
         # --- (1) Triangulate 3D from the previous stereo pair (left/right at i-1)
         p_left, p_right, kpL, kpR, stereo_matches = self.get_stereo_matches(i - 1)
         if len(stereo_matches) < 5:
@@ -180,11 +171,6 @@ class StereoVisualOdometry:
 
         pts_3d_prev = self.triangulate_from_stereo(p_left, p_right)  # 3D in the old (i-1) left-cam frame
 
-        # --- (2) Now match features from the old left image (i-1) to the new left image (i).
-        # We want the *same* feature points that we used in stereo, so we track them from (i-1)->(i).
-        # For simplicity, let's just do a fresh match (not 1:1 the same indices). In a real pipeline,
-        # you would track the same feature IDs if you want a perfect 3D->2D pairing.
-        
         if hasattr(self, 'orb'):
             p1, p2, old_kp, new_kp, matches_2d = self.bf_match_features(i)
         else:
@@ -194,17 +180,6 @@ class StereoVisualOdometry:
             print(f"2D matching insufficient between frames {i-1} and {i}")
             return np.eye(4)
 
-        # --- (3) Build correspondences: 
-        # in a robust pipeline, you'd ensure p1 lines up with p_left from stereo.
-        # We'll do a naive approach: try to find nearest neighbor in old_kp for p_left 
-        # so we can align which 3D point corresponds to which 2D point in the new image.
-        # This can be improved with e.g. BFS or an ID-based approach, but here is a simple demonstration.
-
-        # We do a nearest search in (p1 = old_kp2D from frame i-1) for each stereo keypoint p_left.
-        # Then we pick the corresponding p2 for the new image location.
-        # Finally we call solvePnP.
-        
-        # Convert p1 to a list for searching
         p1_list = np.array(p1)  # shape (N, 2)
         pts_3d_list = []
         pts_2d_list = []

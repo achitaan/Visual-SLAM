@@ -41,7 +41,12 @@ class StereoVisualOdometry:
 
     def __init_orb(self):
         self.orb = cv.ORB_create(nfeatures=3000)
-        self.brute_force = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
+        #self.brute_force = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
+
+        FLANN_INDEX_KDTREE = 1
+        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+        search_params = dict(checks=50)
+        self.flann = cv.FlannBasedMatcher(index_params, search_params)
 
     def __init_sift(self):
         self.sift = cv.SIFT_create()
@@ -128,10 +133,20 @@ class StereoVisualOdometry:
         p2 = np.float32([kp2[m.trainIdx].pt for m in matches])
         return p1, p2, kp1, kp2, matches
 
-    def flann_match_features(self, i: int):
+    def flann_match_features(self, i: int, orb: bool = False):
         # Match features between left image at frame i-1 and frame i using SIFT + FLANN
-        kp1, desc1 = self.sift.detectAndCompute(self.Images_1[i - 1], None)
-        kp2, desc2 = self.sift.detectAndCompute(self.Images_1[i], None)
+        if orb:
+            kp1, desc1 = self.orb.detectAndCompute(self.Images_1[i - 1], None)
+            kp2, desc2 = self.orb.detectAndCompute(self.Images_1[i], None)
+
+        if desc1.dtype != np.float32:
+            desc1 = desc1.astype(np.float32)
+        if desc2.dtype != np.float32:
+            desc2 = desc2.astype(np.float32)
+
+        else:
+            kp1, desc1 = self.sift.detectAndCompute(self.Images_1[i - 1], None)
+            kp2, desc2 = self.sift.detectAndCompute(self.Images_1[i], None)
         matches = self.flann.knnMatch(desc1, desc2, k=2)
         thresh, good_matches = 0.7, []
         for m, n in matches:
@@ -178,7 +193,7 @@ class StereoVisualOdometry:
         
         # (3) Match features between frame i-1 and frame i (left images)
         if hasattr(self, 'orb'):
-            p1, p2, old_kp, new_kp, matches_2d = self.bf_match_features(i)
+            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i, True)
         else:
             p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i)
         if len(matches_2d) < 5:

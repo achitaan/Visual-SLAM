@@ -278,6 +278,6 @@ class StereoVisualOdometry:
 # Test
 if __name__ == "__main__":
     folder_path = r"sequences\01\image_" 
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=False)
+    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True)
     vo.run_vo()
     # This will run your new find_transf_pnp approach on the entire sequence.

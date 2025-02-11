@@ -5,13 +5,13 @@ import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 
 class StereoVisualOdometry:
-    def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
+    def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool, scale_factor: float = 1.0):
         # Load calibration data (projection matrices and intrinsics)
         self.K1, self.P1, self.K2, self.P2 = self.__calib(filepath=calibration_path)
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        self.true_poses = self.__load_poses(r"poses\01.txt")
+        self.true_poses = self.__load_poses(r"poses\00.txt")
         self.poses = [self.true_poses[0]] 
 
         # Load left and right images
@@ -23,14 +23,18 @@ class StereoVisualOdometry:
         f = self.K1[0, 0]
         cx = self.K1[0, 2]
         cy = self.K1[1, 2]
-        # Baseline from P2 (assuming P2[0,3] = -f*B)
-        baseline = -self.P2[0, 3] / f  
+        print((f, cx, cy))
+        # Baseline from P2 (assuming P2[0,3] = -f*B). Use absolute value for proper scaling.
+        baseline = np.abs(self.P2[0, 3]) / f  
         self.Q = np.array([
             [1, 0, 0, -cx],
             [0, 1, 0, -cy],
             [0, 0, 0, f],
             [0, 0, -1 / baseline, 0]
         ], dtype=np.float32)
+
+        # Save the scale factor (used to multiply the translation vector from PnP)
+        self.scale_factor = scale_factor
 
         # Initialize feature detector/matcher (ORB or SIFT)
         if use_brute_force:
@@ -160,6 +164,11 @@ class StereoVisualOdometry:
         # Compute disparity and scale it to float32 values in pixels
         disparity = stereo.compute(left, right).astype(np.float32) / 16.0
         return disparity
+    
+    def _compiute_depth(self, disparity):
+        # Compute depth from disparity (not used in the current pipeline)
+        depth = self.K1[0, 0] * self.P2[0, 3] / disparity
+        return depth
 
     def find_transf_pnp(self, i: int):
         # (1) Compute disparity on frame i-1 using StereoSGBM
@@ -219,6 +228,8 @@ class StereoVisualOdometry:
             return np.eye(4)
         
         R, _ = cv.Rodrigues(rvec)
+        # Multiply the translation vector by the scale factor to adjust for scale errors
+        tvec = tvec * self.scale_factor
         T = self.__transform(R, tvec)
         # Return the transformation from frame i-1 to i (inverse if needed by your convention)
         return np.linalg.inv(T)
@@ -238,5 +249,6 @@ class StereoVisualOdometry:
 # Test
 if __name__ == "__main__":
     folder_path = r"sequences\01\image_"
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True)
+    # Adjust scale_factor as needed; default is 1.0 (no change)
+    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True, scale_factor=1.0)
     vo.run_vo()

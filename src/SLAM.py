@@ -1,6 +1,5 @@
 import g2o
 
-
 class SLAM:
     def __init__(self):
         pass

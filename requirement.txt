@@ -1,6 +1,5 @@
 # Packages listed in alphabetical order
 numpy
-g2o-python
 opencv-contrib-python
 pytest
 pyyaml

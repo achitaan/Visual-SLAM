@@ -64,7 +64,7 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
 
 def main() -> None:
     folder_path = r"sequences\01\image_"  # Folder containing stereo images (subfolders for left/right)
-    vo = StereoVisualOdometry(folder_path, r"sequences\01\calib.txt", use_brute_force=True)
+    vo = StereoVisualOdometry(folder_path, r"sequences\00\calib.txt", use_brute_force=True)
     num_frames = len(vo.Images_1)
     for i in range(1, num_frames):
         T = vo.find_transf_pnp(i)

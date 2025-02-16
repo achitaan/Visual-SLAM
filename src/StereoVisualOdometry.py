@@ -15,7 +15,7 @@ class StereoVisualOdometry:
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        self.true_poses = self.__load_poses(r"poses\01.txt")
+        self.true_poses = self.__load_poses(r"poses\00.txt")
         self.poses = [self.true_poses[0]] 
 
         # Load left and right images

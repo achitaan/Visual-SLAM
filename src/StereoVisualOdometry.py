@@ -240,7 +240,7 @@ class StereoVisualOdometry:
         R, _ = cv.Rodrigues(rvec)
 
 
-        T = self.__transform(R, tvec * depth)
+        T = self.__transform(R, tvec)
         # Return the transformation from frame i-1 to i (inverse if needed by your convention)
         return np.linalg.inv(T)
     

@@ -5,8 +5,6 @@ import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt 
 from numpy.typing import NDArray
-from bokeh.plotting import figure, show
-from bokeh.io import output_notebook, output_file
 
 class VisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):

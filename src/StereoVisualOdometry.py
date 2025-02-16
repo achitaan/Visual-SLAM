@@ -4,6 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt 
 from numpy.typing import NDArray
 
+WINDOW_SIZE = 5
+MINIMUM_DISPARITY = 0
+NUMBER_OF_DISPARITY = 16 * 6  # divisible by 16
+
 class StereoVisualOdometry:
     def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
         # Load calibration data (projection matrices and intrinsics)
@@ -11,7 +15,7 @@ class StereoVisualOdometry:
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        self.true_poses = self.__load_poses(r"poses\00.txt")
+        self.true_poses = self.__load_poses(r"poses\01.txt")
         self.poses = [self.true_poses[0]] 
 
         # Load left and right images
@@ -32,6 +36,19 @@ class StereoVisualOdometry:
             [0, 0, 0, f],
             [0, 0, -1 / baseline, 0]
         ], dtype=np.float32)
+
+
+        self.stereo = cv.StereoSGBM_create(
+            minDisparity=MINIMUM_DISPARITY,
+            numDisparities=NUMBER_OF_DISPARITY,
+            blockSize=WINDOW_SIZE,
+            P1=8 * 3 * WINDOW_SIZE**2,
+            P2=32 * 3 * WINDOW_SIZE**2,
+            disp12MaxDiff=1,
+            uniquenessRatio=10,
+            speckleWindowSize=100,
+            speckleRange=32
+        )
 
         # Initialize feature detector/matcher (ORB or SIFT)
         if use_brute_force:
@@ -156,26 +173,6 @@ class StereoVisualOdometry:
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
         return p1, p2, kp1, kp2, good_matches
-
-    def compute_disparity(self, left, right):
-        # Set up StereoSGBM parameters
-        window_size = 5
-        min_disp = 0
-        num_disp = 16 * 6  # must be divisible by 16
-        stereo = cv.StereoSGBM_create(
-            minDisparity=min_disp,
-            numDisparities=num_disp,
-            blockSize=window_size,
-            P1=8 * 3 * window_size**2,
-            P2=32 * 3 * window_size**2,
-            disp12MaxDiff=1,
-            uniquenessRatio=10,
-            speckleWindowSize=100,
-            speckleRange=32
-        )
-        # Compute disparity and scale it to float32 values in pixels
-        disparity = stereo.compute(left, right).astype(np.float32) / 16.0
-        return disparity
     
     def _compiute_depth(self, disparity):
         # Compute depth from disparity
@@ -186,7 +183,7 @@ class StereoVisualOdometry:
         # (1) Compute disparity on frame i-1 using StereoSGBM
         left_prev = self.Images_1[i - 1]
         right_prev = self.Images_2[i - 1]
-        disparity = self.compute_disparity(left_prev, right_prev)
+        disparity = self.stereo.compute(left_prev, right_prev).astype(np.float32) / 16.0
         
         # (2) Reproject disparity to a dense 3D point cloud using Q matrix
         points_3d_dense = cv.reprojectImageTo3D(disparity, self.Q)
@@ -239,8 +236,11 @@ class StereoVisualOdometry:
             print(f"PnP failed for frame {i}")
             return np.eye(4)
         
+        depth = self.K1[0, 0] * self.P2[0, 3] / disparity
         R, _ = cv.Rodrigues(rvec)
-        T = self.__transform(R, tvec)
+
+
+        T = self.__transform(R, tvec * depth)
         # Return the transformation from frame i-1 to i (inverse if needed by your convention)
         return np.linalg.inv(T)
     

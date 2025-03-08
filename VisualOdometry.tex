@@ -1,0 +1,601 @@
+\documentclass{article}
+\usepackage{graphicx, amsmath, blindtext, mathtools, listings, amsfonts, amsthm, amssymb}
+\usepackage[most]{tcolorbox}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\usepackage{physics}
+
+
+\usepackage[colorlinks]{hyperref}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{problem}{Problem}
+\newtheorem{solution}{Solution}
+
+% Programming 
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+%--------------------------------------------------------------
+\lhead{Visual Odometry: A TLDR}
+\rhead{\thepage }
+\cfoot{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+%--------------------------------------------------------------
+
+\title{Visual Odometry: A TLDR}
+\author{Achita Anantachina}
+\date{July 2024}
+\hypersetup{
+    colorlinks=true,% make the links colored
+    linkcolor=blue!65!white
+}
+
+\begin{document}
+\maketitle
+This document provides a comprehensive summary of Visual Odometry, currently under development, synthesizing information from a variety of reputable sources, including An Invitation to 3-D Vision, lecture slides from Carnegie Mellon University and the University of Toronto, IEEE Robotics \& Automation Magazine, and CS231A from Stanford University, among others. It focuses on the most critical aspects necessary for coding the program and understanding the underlying mathematical concepts.
+\tableofcontents
+\thispagestyle{empty}
+
+\newpage
+
+\section{Introduction}
+Visual Odometry (VO) is the process of estimating the position and orientation of a camera from a sequence of images. The path estimation is done sequentially by a new frame $I_k$, only providing local or relative estimates. The program of VO can be broken down into two steps the front end and back end. The front end extracts the data via the camera while the back end calculates the pose. Furthermore, the process of VO can be broken down into a few steps.
+\vspace{0.75cm}
+\begin{tcolorbox}[enhanced,breakable, colback=purple!5!white,colframe=purple!75!black, title=Process of Visual Odometry, drop shadow=black!40!white]
+\begin{enumerate}
+\item Capture a frame $I_k$
+\item Extract and match the feature between $I_{k-1}$ and its subsequent term $I_k$
+\item Compute the essential matrix, $E$, using the 8-point theorem between the image pair $I_{k-1}$, $I_{k-1}$.
+$$WE=0$$
+\item Decompose $E_k$ into $R_k$ and $t_k$ into four pairs using Single Value Decomposition
+ $$E = U\Sigma V^T$$
+Where $U$ and $V^T$ are rotation matrices\\
+\item Find the correct pose via triangulating the key points to form the transformation matrix $T$,
+$$T_k = \begin{bmatrix}
+   R_k & t_k  \\
+    0 & 1 \\
+\end{bmatrix}$$
+\item Compute the relative scale and rescale $t_k$ accordingly
+$$r =\frac{||x_{k-1, i} - x_{k-1,j}||}{||x_{k, i} - x_{k,j}||}$$
+\item Concatenate the transformation by computing
+$$C_k =T_kC_{k-1}$$
+\end{enumerate}
+\end{tcolorbox}
+\newpage
+\section{Image Sequencing}
+\begin{tcolorbox}[enhanced,breakable, toggle left and right,sharp corners, colback=blue!5!white, colframe=blue!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white, title=Step 1 ---  Capture Frame $I_k$]
+We define $$I_{0:n} = \{I_0, I_1, \ldots I_{n-1}, I_n\}$$
+Trivially, using OpenCV, we can capture an instance of the sequence, $I_k$, and analyze at least eight key features of the image.
+\end{tcolorbox}
+Import OpenCV and run a video loop that captures a single frame every iteration.
+\begin{lstlisting}[language=python]
+import cv2 as cv
+
+video = cv.VideoCapture(self.captureIndex)
+assert video.isOpened()
+
+video.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+video.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+
+while True: 
+    ret, frame = video.read() # Captures frame by frame 
+    # video.read() -> (bool of frame is read correctly, frame)
+    if not ret: break # breaks if read incorrectly
+
+    if cv.waitKey(1) & 0xFF == ord(" "): break
+
+# Release the capture
+video.release()
+cv2.destroyAllWindows()
+\end{lstlisting}
+
+
+\vspace{0.5cm}
+\begin{tcolorbox}[enhanced,breakable, toggle left and right,sharp corners, colback=blue!5!white, colframe=blue!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white, title=Step 2 ---  Extract and match the feature between $I_{k-1}$ and its subsequent term $I_k$]
+The step which is the link between the frontend and backend of the program. It takes a key feature (point) from frame $I_{k-1}$ and matches it to the corresponding point in the subsequent image $I_k$.
+\end{tcolorbox}
+Initialize Oriented FAST and Rotated BRIEF (ORB) to detect $nfeatures$ key features of the subsequent frames.
+\begin{lstlisting}[language=python]
+orb=cv.ORB_create(nfeatures=1500)
+
+# Keypoints and descriptor of the two frames
+kp1, desc1 = orb.detectAndCompute(I[i-1], None)
+kp2, desc2 = orb.detectAndCompute(I[i], None)
+\end{lstlisting}
+
+Use Fast Library for Approximate Nearest Neighbor (Flann) to estimate the corresponding key features between the two frames and filter the matches for accuracy. Note: Another approach is through a brute-force approach.
+\begin{lstlisting}[language=python]
+
+FLANN_INDEX_KDTREE = 0
+idxPrams = dict(algorithm=FLANN_INDEX_KDTREE, table_number=6, key_size=12, multi_probe_level=1)
+searchPrams = dict(checks=50)
+flann = cv.FlannBasedMatcher(idxPrams,searchPrams) 
+
+matches = flann.knnMatch(desc1, desc2)
+
+thresh, goodMatch=0.7, []
+# Filters the matches (uses Lowe's ratio test)
+for m, n in matches:
+    if m.distance<thresh*n.distance:
+        goodMatch.append(m)
+
+\end{lstlisting}
+
+
+\newpage
+\section{Exploring Epipolar Geometry}
+Consider two images taken at two distinct vantage points, assuming a calibrated camera (When $K=I$, where $K$ is the calibration matrix), the image coordinates $x$ and the spacial coordinates $X$ of some point $p$, with respect to the camera frame is $$\lambda x=\Pi_0 X.$$
+Where,\\
+$\lambda$: is the scale factor of depth\\
+$\Pi_0$: is the projection from $\mathbb{R}^3 \to \mathbb{R}^2$
+\subsection{The Epipolar Constraint}
+\begin{tcolorbox}[enhanced,breakable,sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Theorem 3.1---(Epipolar Constraint). }} 
+    For two images $x_1, x_2$ of the point $P$, seen from two vantage points satisfy the following constraint
+\[x_2^\top\hat{t}Rx_1 = x_2^\top Ex_1=0\]
+Where $(R, t)$ is the relative pose (position and orientation) between the two camera frames and the essential matrix
+$$E = \hat{t}R$$
+\end{tcolorbox}
+
+\begin{proof}
+Define $X_1, X_2 \in \mathbb{R}^3$, the 3-D coordinates of a point $P$ relative to the two camera frames respectively, then they are related by
+$$X_2 = RX_1+t$$ 
+Then let $x_1, x_2 \in \mathbb{R}^2$ be the projection of the same two points $P$ in the image planes, then
+$$\lambda_2 x_2 = R\lambda_1x_1+t$$ 
+Multiplying both sides by $\hat{t}$
+\begin{align*}
+\lambda_2 x_2 = R\lambda_1x_1+t \implies &\lambda_2 \hat{t} x_2 = \hat{t}R\lambda_1x_1+\hat{t}t\\
+\implies&\lambda_2 (t \times x_2) = \hat{t}R\lambda_1x_1+t\times t\\ 
+\implies& \lambda_2 (t \times x_2) = \hat{t}R\lambda_1x_1
+\end{align*}
+\text{Multiply both sides by $x_2^\top$}
+\begin{align*}
+\implies& \lambda_2 x_2^\top(t \times x_2) = x_2^\top\hat{t}R\lambda_1x_1\\
+\implies& \lambda_2 x_2\cdot(t \times x_2) = x_2^\top\hat{t}R\lambda_1x_1\\
+\end{align*}
+By definition $t \times x_2$ produces a vector orthogonal to both of the operands, thus
+\begin{align*}
+x_2^\top\hat{t}R\lambda_1x_1 = x_2^\top\hat{t}Rx_1 = 0
+\end{align*}
+\end{proof}
+
+\subsection{Properties of the Essential Matrix and Pose Recovery}
+The essential matrix $E = \hat{t}R$ encodes the relative pose between the two cameras defined by the relative position $t$ and the orientation $R \in SO(3)$ (Special orthogonal matrices of size 3). Matrices of this belong to a set of matrices in $\mathbb{R}^{3\times 3}$ called the essential space and denoted by $\mathcal{E}$.
+$$\mathcal{E} = \{\hat{t}R | R \in SO(3), t\in\mathbb{R}^3\}$$
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=green!5!white, colframe=green!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+    {\color{green!55!black} \textbf{Claim ---}} 
+    A non-zero matrix $E \in \mathbb{R}^{3\times 3}$ is an Essential matrix iff $E$ has a singular value decomposition (SVD) of
+$$E = U\Sigma V^\top$$
+Where
+$$\Sigma = diag\{\sigma, \sigma, 0\} = 
+\begin{bmatrix}
+    \sigma &    0    &  0\\
+      0    &  \sigma &  0 \\
+      0    &    0    &  0 \\
+\end{bmatrix}$$
+For some $\sigma \in \mathbb{R}^+$ and $U, V \in SO(3)$
+\end{tcolorbox}
+\begin{proof}
+    For $t$ there exists a pair $R_0$ s.t. 
+$$R_0t = \begin{bmatrix} 0 \\ 0 \\ ||T||\\
+\end{bmatrix}$$
+Define $a\in\mathbb{R}^3$ to be $a=R_0t$
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Lemma 3.2---(The hat operator).}} For a vector $T\in\mathbb{R}^3$ and a matrix $K\in\mathbb{R}^{3\times3}$, then the property $$\hat{T}=K^\top\widehat{KT}K$$
+    holds when $\det(K)=1$. Where $\hat{u}$ represents skew-symmetric matrix that has the property  $$\hat{u}v = u\times v$$
+\end{tcolorbox}
+
+\begin{proof}
+Suppose there exists some $K$ and $T$ s.t. $\hat{T}=K^\top\widehat{KT}K$, then
+\begin{align*}
+\hat{T}=K^\top\widehat{KT}K \iff & y^\top\hat{T}x=y^{\top}K^{\top}\widehat{KT}Kx \space \forall x, y\\
+& \iff y^\top(T\times x)=(Ky)^\top(KT\times Kx)\\
+& \iff y\cdot(T\times x)= (Ky)\cdot(KT\times Kx)\\
+\text{Which can be written as}\\
+& \iff \det([y, T, x])=\det([Ky, KT, Kx])\\
+& \iff \det([y, T, x])=\det(K)\det([y, T,x])\\
+\end{align*}
+This property exists iff $\det(K)=1$.
+\end{proof}
+\vspace{0.5cm}
+Since $R_0$ is a pure rotation, $\det(R_0)=1$, then
+$$\hat{t} = R_0^\top\hat{R_0t}R_0=  R_0^\top\hat{a}R_0 \ldots \textcircled{1}$$
+Now consider $EE^\top$,
+\begin{align*}
+    EE^\top =& \hat{t}R(\hat{t}R)^\top\\
+    =& \hat{t}RR\top\hat{t}^\top = \hat{t}\hat{t}^\top
+\end{align*}
+From $\textcircled{1}$
+\begin{align*}
+    \hat{t}\hat{t}^\top=& R_0^\top\hat{a}R_0(R_0^\top\hat{a}R_0)^\top\\
+    =& R_0^\top\hat{a}R_0R_0^\top\hat{a}^\top R_0\\
+    =& R_0^\top\hat{a}\hat{a}^\top R_0
+\end{align*}
+
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm,drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Definition --- (Similarity Transformation).}} A Similarity transformation refers to a matrix transformation that results in a geometric similarity. The transformation is a conformal mapping (\textit{a mapping that preserves angles but not necessarily lengths}) whose transformation matrix $A$ can be written as
+    $$A = KBK^{-1}$$
+    where $A$ and $B$ are called similar matrices having the same determinant and eigenvalues.
+\end{tcolorbox}
+Since ${a}\hat{a}^\top$ is similar to $EE^\top$, the have the same eigenvalues.
+$$\hat{a}\hat{a}^\top =
+\begin{bmatrix}
+      0    &  -||T|| &  0\\
+    ||T||  &    0    &  0 \\
+      0    &    0    &  0 \\
+\end{bmatrix}
+\begin{bmatrix}
+      0    &  ||T||  &  0\\
+    -||T|| &    0    &  0 \\
+      0    &    0    &  0 \\
+\end{bmatrix}
+= 
+\begin{bmatrix}
+     ||T||^2 &     0     &  0\\
+      0      &   ||T||^2 &  0 \\
+      0      &     0     &  0 \\
+\end{bmatrix}
+$$
+Thus, finding the eigenvalues 
+
+\begin{align*}
+({a}\hat{a}^\top-\lambda)x = \begin{bmatrix}
+     ||T||^2 -\lambda &     0     &  0\\
+      0      &   ||T||^2-\lambda &  0 \\
+      0      &     0     &  -\lambda \\
+\end{bmatrix}
+= 0
+\end{align*}
+to find non trivial solutions 
+$$\det{({a}\hat{a}^\top-\lambda)} = -\lambda(||T||^2-\lambda)^2=0$$
+Then the eigenvalues are $||T||^2,||T||^2$ and 0 which means the single values are $\sigma = \sqrt{\lambda} = ||T||, ||T||$ and 0.
+Thus,
+$$\Sigma = diag\{||T||, ||T||, 0\}$$
+Now we need to find $U$ and $V$ and prove $U, V \in SO(3)$ (determinant of $+1$).\\
+Define $R_z(\theta) = e^{z\theta}$ to be the matrix representing a rotation around the $z$-axis by $\theta$ radians. Then
+$$
+R_z\left(+\frac{\pi}{2}\right)= \begin{bmatrix}
+      0      &     -1    &  0\\
+      1      &     0     &  0 \\
+      0      &     0     &  0 \\
+\end{bmatrix}$$
+Then $$\hat{a} = R_z\left(+\frac{\pi}{2}\right)R_z\left(+\frac{\pi}{2}\right)^\top\hat{a} = R_z\left(+\frac{\pi}{2}\right)\Sigma$$
+Thus,
+$$E = \hat{T}R=R_0^\top R_z\left(+\frac{\pi}{2}\right)\Sigma R_0R$$
+So in our SVD decomposition $E=U\Sigma V^\top$, then we can define $U=R_0^\top R_z\left(+\frac{\pi}{2}\right)$ and $V^\top = R_0R$. Since we have constructed $U$ and $V$ to be products of matrices in $SO(3)$, trivially, they are in $SO(3)$ as well and thus are rotation matrices.\\\\
+we can write
+$$\hat{a} = R_z(\frac{\pi}{2})R_z(\frac{\pi}{2})\Sigma R_z^\top(\frac{\pi}{2})$$
+Then since
+\begin{align*}
+\hat{T} &= R_0^\top \hat{a} R_0= R_0^\top R_z(\frac{\pi}{2})R_z(\frac{\pi}{2})\Sigma R_z^\top(\frac{\pi}{2}) R_0\\
+&= UR_z(\frac{\pi}{2})\Sigma (R_0^\top R_z(\frac{\pi}{2}))^\top = UR_z(\frac{\pi}{2})\Sigma U^\top 
+\end{align*}
+Now we need a $R$ s.t. $E = \hat{T}R = U\Sigma V^\top$ with a trivial solution being
+$$R = UR_z(\frac{\pi}{2})V^\top$$
+It is also easy to see that if we had $R_z^\top(\frac{\pi}{2})$ instead of $R_z(\frac{\pi}{2})$ every computation would be the same, 
+$$R_z^\top(\frac{\pi}{2}) = R_z(-\frac{\pi}{2})$$
+thus, we have constructed two relative pairs 
+\begin{tcolorbox}[enhanced,breakable, colback=blue!5!white, colframe=blue!55!black, boxrule=0.5pt, arc=4pt, boxsep=0pt, left=6pt, right=6pt, drop shadow=black!40!white]
+$$(\hat{T}_1, R_1) = (UR_z(\frac{\pi}{2})\Sigma U^\top, UR_z^\top(\frac{\pi}{2})V^\top)$$
+$$(\hat{T}_2, R_2) = (UR_z(-\frac{\pi}{2})\Sigma U^\top, UR_z^\top(-\frac{\pi}{2})V^\top)$$
+\end{tcolorbox}
+It is easy to verify that $E$ is an essential matrix.
+
+\end{proof}
+
+\newpage
+\subsection{Possible Pose Solution Pairs}
+\begin{tcolorbox}[enhanced,breakable,sharp corners, colback=green!5!white, colframe=green!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+    {\color{green!55!black} \textbf{Claim --- (Pose recovery from the essential matrix)}} There exists only two relative poses of $(R, t)$ with $R \in SO(3)$ and $t\in \mathbb{R}^3$ corresponding to a non-zero essential matrix in $E\in \mathcal{E}$.
+\end{tcolorbox}
+\begin{proof}
+   Assume there exists more than one solution pair for the decomposition of $E=tR$.\\\\
+   Lets define the solution set $S_n = \{(R_1, t_2), (R_2, t_2), \ldots (R_n, t_n)\}$ where $(R_k, t_k) \in SE(3), \forall k \in \mathbb{N} $ s.t. $k \leq n$ 
+   Then, to prove that no such $n$ other than $n=2$ can exist, we consider $$E = \hat{t_1}R_1 = \hat{t_i}R_i$$ where $0 < i \leq n$.\\\\
+   We can manipulate the equality to get:
+    $$\hat{t_1} = \hat{t_i}R_iR_1^\top$$
+    since $R_iR_1^\top$ is a rotation matrix, then $\hat{t_i}R_iR_1^\top \in SE(3)$.\\\\
+    Thus, from \textbf{Lemma 3.5}, $R_iR_1^\top = I$ or $e^{\hat{u}\pi}$, meaning $R_i = R_1$ or $R_i = e^{\hat{u}\pi}R_1$ . Now it is easy to see that the only two distinct solutions are 
+    \begin{tcolorbox}[enhanced,breakable, colback=blue!5!white, colframe=blue!55!black, boxrule=0.5pt, arc=4pt, boxsep=0pt, left=6pt, right=6pt, drop shadow=black!40!white]
+$$(\hat{t}_1, R_1) = (UR_z(\frac{\pi}{2})\Sigma U^\top, UR_z^\top(\frac{\pi}{2})V^\top)$$
+$$(\hat{t}_2, R_2) = (UR_z(-\frac{\pi}{2})\Sigma U^\top, UR_z^\top(-\frac{\pi}{2})V^\top)$$
+\end{tcolorbox}
+It is easy to verify that $E$ is an essential matrix.
+
+\end{proof}
+
+\begin{tcolorbox}[enhanced,breakable,sharp corners, colback=black!5!white, colframe=black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+    \textbf{Remark --- (Pose Recovery)} Since both $E$ and $-E$ satisfy the same Epipolar constraints, thus there are $2 \times 2 = 4$ possible pairs of poses. However, this does not pose an issue as only one of the four possible poses guarantees that all depths of each point are positive meaning the other three poses are physically impossible. 
+\end{tcolorbox}
+\newpage
+
+\subsection{Eight Point Algorithim}
+The essential matrix E is the matrix associated with the epipolar constraint. We can define $E\in SE(3)$ to be:
+$$E = 
+\begin{bmatrix}
+    e_1& e_2& e_3\\
+    e_4& e_5& e_6\\
+    e_7& e_8& e_9
+\end{bmatrix}
+$$
+From this, we can define a vector $e \in \mathbb{R}^9$ containing the elements of $E$:
+$$e = [e_1, e_2, e_3, e_4, e_5, e_6, e_7, e_8, e_9]^\top$$
+Recall the epipolar constraint:
+$$X^\top_2 E X_1 = 0 $$\
+Define the vectors $X_1 \in \mathbb{R}^3$ and $\mathbb{R}^3$ to be $X_1 = [x_1, y_2, z_3]^\top$ and $X_2 = [x_2, y_2, z_2]^\top$.
+Then expanding the epipolar constraint
+\begin{align*}
+    [x_2, y_2, z_2]\begin{bmatrix}
+    e_1& e_2& e_3\\
+    e_4& e_5& e_6\\
+    e_7& e_8& e_9
+\end{bmatrix}
+\begin{bmatrix}
+    x_1\\ y_1\\ z_1
+\end{bmatrix} = & \left(x_2e_1+y_2e_4+z_2e_7\right)x_1
+\\&+\left(x_2e_2+y_2e_5+z_2e_8\right)y_1+\left(x_2e_3+y_2e_6+z_2e_9\right)z_1 = 0
+\end{align*}
+Rearranging this and rewriting it:
+$$\begin{bmatrix}
+    x_2x_1, x_2y_1, x_2z_1, y_2x_1, y_2y_1, y_2z_1, z_2x_1, z_2y_1, z_2z_1
+\end{bmatrix}\begin{bmatrix}
+    e_1\\ e_2\\ e_3\\ e_4\\e_5\\ e_6\\ e_7\\ e_8\\ e_9
+\end{bmatrix} = 0$$
+Which can be simplified as 
+$$(x_1\otimes x_2)^\top e = 0$$
+Define $a=x_1\otimes x_2$, then the epipolar constraint can be written as an inner product of $a$ and $e$
+$$a^\top e = 0$$
+To generalize this, we can extend $a$ as matrix that contains all corresponding image points $A\in \mathbb{R}^{9\times n }$
+$$A = [a_1, a_2, \ldots, a_n], \forall n \in \mathbb{N}$$
+Now we get the essential formula $$Ae=0$$
+While for a theoretically perfect system $A\in \mathbb{R}^{9\times n }$, will have a rank of 8 as it is the minimum point pairs needed to find the essential matrix, in a real-world scenario, the data posses noise, thus we must minimize the error using least squares.
+\subsection{Projection Into The Essential Space }
+
+As previously mentioned, the data collected in the real world is noisier than the ideal scenario. It is insufficient for $e$ to be contained in the null space of $A$ while ignoring the internal structure of the essential matrix. Thus, to find the most accurate essential matrix, $E$, we project the solution to $Ae=0$ into $\mathcal{E}$. 
+
+\begin{tcolorbox}[enhanced,breakable,sharp corners, colback=green!5!white, colframe=green!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+    {\color{green!55!black} \textbf{Claim --- (Projection )}} Given a real matrix $E' \in \mathbb{R}^{3\times3}$ with a SVD of $E' = Udiag\{\lambda_1, \lambda_2, \lambda_3\}V^\top$ with $U, V \in SO(3), \lambda_1 \geq \lambda_2 \geq \lambda_3$, then the essential matrix $E\in\mathcal{E}$ which minimizes the error $||E-E'||^2_f$ is given by $E=Udiag\{\sigma, \sigma, 0\}V^\top$ with $\sigma = (\lambda_1 + \lambda_2)/2$.
+\end{tcolorbox}
+
+\begin{proof}
+    For the projection of $E'$ onto $\mathcal{E}$ to be minimized, then using the least squares method, $||E-E'||_f^2$ must be minimized.
+    \begin{align*}
+        ||E-E'||_f^2 &= ||U_1\Sigma V_1^\top - U\Sigma_\lambda V^\top||_f^2\\
+        &= ||U^\top U_1\Sigma V_1^\top V - U^\top U\Sigma_\lambda V^\top V||_f^2\\
+        &= ||U^\top U_1\Sigma V_1^\top V - \Sigma_\lambda ||_f^2\\
+        &= tr((U^\top U_1\Sigma V_1^\top V - \Sigma_\lambda)(U^\top U_1\Sigma V_1^\top V - \Sigma_\lambda)^\top)\\
+        &= tr((U^\top U_1\Sigma V_1^\top V)^2) -2tr(U^\top U_1\Sigma V_1^\top V\Sigma_\lambda)+(\Sigma_\lambda^2)     
+    \end{align*}
+
+    Lets define two matrices $P, Q \in SO(3)$ where
+    $$P = \begin{bmatrix}
+        p_1& p_2& p_3\\ p_4& p_5& p_6\\ p_7& p_8& p_9
+    \end{bmatrix} \text{ and } Q = \begin{bmatrix}
+        q_1& q_2& q_3\\ q_4& q_5& q_6\\ q_7& q_8& q_9
+    \end{bmatrix}$$
+    such that $P = U^\top U_1$ and $Q=V^\top V_1$, then
+    \begin{align*}
+        ||E-E'||_f^2 &= tr((P\Sigma Q^\top)^2) -2tr(P\Sigma Q^\top\Sigma_\lambda)+(\Sigma_\lambda^2)\\
+        &= tr(\Sigma^2) -2tr(P\Sigma Q^\top\Sigma_\lambda)+(\Sigma_\lambda^2)
+    \end{align*}
+    Then, to minimize $||E-E'||_f^2$, then $tr(P\Sigma Q^\top\Sigma_\lambda)$ has to be maximized. 
+    \begin{align*}
+        P\Sigma Q^\top\Sigma_\lambda &= tr\left(\begin{bmatrix}
+        p_1& p_2& p_3\\ p_4& p_5& p_6\\ p_7& p_8& p_9
+    \end{bmatrix} diag\{\sigma, \sigma, 0\} \begin{bmatrix}
+        q_1& q_2& q_3\\ q_4& q_5& q_6\\ q_7& q_8& q_9
+    \end{bmatrix} diag\{\lambda_1, \lambda_2, \lambda_3\}\right)\\
+    &= \sigma[\lambda_1(p_1q_1 + p_2q_2) + \lambda_2(p_4q_4+p_5q_5)]
+    \end{align*}
+    To minimize the function, recognize that the four elements of $P$ and $Q$ follow the property of special orthogonal matrices where the general form, thus define 
+        $$P = \begin{bmatrix}
+        \cos\theta & -\sin \theta & 0\\ \sin \theta& \cos \theta& 0\\ 0 & 0 & 1
+    \end{bmatrix} \text{ and } Q = \begin{bmatrix}
+        \cos\phi& -\sin \phi& 0\\ \sin \phi& \cos \phi & 0 \\ 0 & 0 & 1
+    \end{bmatrix}$$
+    Then, we find that we need to maximize the function
+        $$f(x,y) = p_1q_1+p_2q_2 = \cos{\theta}\cos\phi + \sin\theta \sin\phi$$
+    Trivially, it is easy to see that the function is at a maximum when $\theta=\phi$, thus
+    $$\max_{\theta,\phi\in\mathbb{R}} f(x, y) = \sin^2\theta + \cos^2\theta = 1$$
+    The same follows for $p_4q_4+p_5q_5$. We can conclude that $P = Q$ and 
+    \begin{align*}
+        \max P\Sigma Q^\top\Sigma_\lambda &= \sigma[\lambda_1(p_1q_1 + p_2q_2) + \lambda_2(p_4q_4+p_5q_5)]\\
+        &= \sigma(\lambda_1 + \lambda_2)
+    \end{align*}
+    Then, 
+        \begin{align*}
+        \max_{\sigma \in \mathbb{R}} ||E-E'||_f^2 &=\max_{\sigma \in \mathbb{R}} tr(\Sigma^2) -2\sigma(\lambda_1 + \lambda_2)+(\Sigma_\lambda^2)\\
+        &= \max_{\sigma \in \mathbb{R}} tr(\Sigma^2) -2(\lambda_1 + \lambda_2)\sigma+2\sigma^2
+    \end{align*}
+    Finally, 
+    $$\dfrac{\partial}{\partial\sigma}||E-E'||_f^2 = 0 \implies \sigma = \dfrac{\lambda_1 + \lambda_2}{2}$$
+\end{proof}
+
+\subsection{Triangulation}
+Recall that the decomposition of the Essential matrix $E$ yields four solutions. Looking back at the remark, consider that three out of the four possible solutions cannot physically exist, thus the approach we will take is performing a triangulation and confirming whether the point is in front of the camera.
+
+\newpage
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Lemma 3.5.}}
+    Consider an arbitrary non-zero skew-symmetric matrix $\hat{T} \in so(3)$ with $T \in \mathbb{R}^3$. If, for a rotation matrix $R \in SO(3)$, $\hat{T}R$ is also a skew matrix , then $R=I$ or $e^{\hat{u}\pi}$ where $u=\frac{T}{||T||}$. Further, $\hat{T}e^{\hat{u}\pi}=-T$
+\end{tcolorbox}
+\begin{proof}
+    WLOG assume $T$ is unit length, then since we defined $\hat{T}R$ to be skew 
+        $$(\hat{T}R)^\top = -\hat{T}R \implies
+        (R\hat{T}R)^\top = -\hat{T}\implies
+        R\hat{T}R = \hat{T}$$
+        Since $R$ is a rotation matrix, then there exists $\omega \in \mathbb{R}^3, ||\omega||=1$ and $\theta\in \mathbb{R}$ s.t. $R = e^{\hat{\omega}\theta}$, thus        $$e^{\hat{\omega}\theta}\hat{T}e^{\hat{\omega}\theta} = \hat{T}$$
+        Applying the transformation to $\omega$ gives
+        $$e^{\hat{\omega}\theta}\hat{T}e^{\hat{\omega}\theta}\omega = \hat{T}\omega$$
+        Since $R$ is defined to be a rotation around $\omega$, then the rotation of $\omega$ is
+        $$e^{\hat{\omega}\theta}\omega = \omega$$ 
+        $$e^{\hat{\omega}\theta}\hat{T}\omega = \hat{T}\omega$$  
+        Since $e^{\hat{\omega}}$ is a 2D rotation in a 3D space, it has an eigenvalue of 1 associated with the eigenvector $\omega$ (it performs a rotation on everything except the lines that spans $\omega$) and as $\hat{T}\omega = T\times \omega$, then due to the property of the cross product, inherently, $\hat{T}\omega$ is orthogonal to $\omega$, thus $\hat{T}\omega$ has to be zero for no rotation to occur.
+        From $\hat{T}\omega = T\times \omega$, then $$\omega = \pm\frac{T}{||T||} = \pm u$$
+
+        \begin{tcolorbox}[enhanced,breakable,sharp corners, colback=green!5!white, colframe=green!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+        {\color{green!55!black} \textbf{Claim --- (Commutativity)}}
+            Given a vector $\omega \in \mathbb{R}^3$ with $||\omega || = 1$, the skew matrix equivalent $\hat{\omega}$, and the rotation matrix around the axis $\omega $, $R = e^{\hat{\omega} \theta}$, then it follows that:
+            $$R\hat{\omega} R = R^2 \hat{\omega}$$
+        \end{tcolorbox}
+        \begin{proof}
+            Let $RHS =R^2\hat{\omega}$ and from \textbf{Lemma 3.2}: 
+            $$\hat{\omega}=R^\top\widehat{R\omega}R \implies R \hat{\omega}=\widehat{R\omega}R$$
+            Since, $R=e^{\hat{\omega}\theta}$, then $R\omega=\omega$.
+            $$R\hat{\omega}=\hat{\omega}R$$
+            Thus,
+            $$RHS=R \hat{\omega}R = LHS$$
+        \end{proof}
+        Then, using the claim 
+        $$e^{\hat{\omega}\theta}\hat{\omega} e^{\hat{\omega}\theta} = e^{2\hat{T}\theta} \hat{T}=\hat{T}$$
+        From \textbf{Rodrigues’ Formula} and multiplying it by $\hat{\omega}$:
+        $$e^{2\hat{\omega}t} = I + \hat{\omega}\sin{2\theta} + \hat{\omega}^2(1-\cos{2\theta}) \implies \hat{\omega}^2\sin{2\theta} + \hat{\omega}^3(1-\cos{2\theta}) = 0$$
+        \begin{tcolorbox}[enhanced,breakable,sharp corners, colback=green!5!white, colframe=green!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm]
+        {\color{green!55!black} \textbf{Claim --- (Linear Independence)}}
+            Given a vector $\omega \in \mathbb{R}^3$ where $||\omega || = 1$, then $\hat{\omega}^2$ and $\hat{\omega}^3$ are linearly independent matrices.
+        \end{tcolorbox}
+    \begin{proof}
+        Let $\omega = [a, b, c]^\top$, then
+        $$\hat{\omega} = \begin{pmatrix}0&-c&b\\ \:\:\:\:\:\:c&0&-a\\ \:\:\:\:\:\:-b&a&0\end{pmatrix}$$
+        Now it is easy to see that is easy to see that:
+        $$\hat{\omega}^2 
+        = \begin{pmatrix}-c^2-b^2&ba&ca\\ ba&-c^2-a^2&cb\\ ca&cb&-b^2-a^2\end{pmatrix}
+        $$
+        Since $||\omega|| = \sqrt{a^2 + b^2 + c^2} =1$
+        $$\hat{\omega}^2 = \begin{pmatrix}a^2-1&ab&ac\\ ba&b^2-1&bc\\ ca&cb&c^2-1\end{pmatrix} = \omega\omega^\top - I$$
+        Furthermore, we know that $\hat{\omega}^3 = -\hat{\omega}$. For $\hat{\omega}^2$ and $\hat{\omega}^3$ to be linearly dependant, then it must satisfy:
+        $$\hat{\omega}^2 = \lambda\hat{\omega}^3$$
+        Since $\hat{\omega}^3 = -\hat{\omega}$ is skew-symmetric while $\hat{\omega}^2=\omega\omega^\top-I$ is symmetric but not skew, then the condition cannot be met, thus they are \textbf{Linearly Independent}.
+    \end{proof}
+    It follows that for $$\hat{\omega}^2\sin{2\theta} + \hat{\omega}^3(1-\cos{2\theta}) = 0$$
+    to be true, then we have $\sin{2\theta}=1-cos{2\theta}=0$, that is to say that $\theta = 2k\pi, k\in\mathbb{Z}$
+\end{proof}
+
+
+
+
+
+
+ \newpage
+\section{Theorems and Definitions}
+\begin{tcolorbox}[enhanced,breakable, toggle left and right,sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Definition --- (Skew-Symmetric matrix).}} Given a curve $R(t) : \mathbb{R} \to SO(3)$ which describes a continuous rotational motion, the rotation must satisfy the following constraint: $$R(t)R^\top(t) = I$$
+    Taking the derivative with respect to $t$, we obtain:
+    $$\dot R(t)R^\top(t) + R(t)\dot R^\top(t) = 0$$
+    $$\implies \dot R(t)R^\top(t) = -R(t)\dot R^\top(t) = -(\dot R(t)R^\top(t))^\top$$
+    Which results in $R(t)R^\top(t) \in \mathbb{R}^{3\times 3}$ being a skew symmetric matrix. Then consider the vector $$\hat{\omega} = \dot R(t)R^\top(t)$$
+    When multiplying both sides by $R(t)$ you get
+    $$\dot R(t) = \hat{\omega}R(t)$$
+    and from the above equation, given an initial time, $t_0$ where $R(t_0) = I$, we get a first-order (linear) approximation of the rotation matrix:
+    $$R(t_0 + dt) \approx I + \hat{\omega}(t_0)dt$$ 
+    The space of all skew-symmetric matrices is denoted
+    $$so(3) = \{ \hat{\omega} \in \mathbb{R}^{3\times 3} | \omega \in \mathbb{R}^3\}$$
+    Which is called the tangent space of $SO(3)$.
+\end{tcolorbox}
+
+\begin{tcolorbox}[enhanced,breakable, toggle left and right,sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Definition --- (Rotation Matrices).}}
+    The equation $\dot R(t) = \hat{\omega}R(t)$
+    can be thought of as a linear ordinary differential equation (ODE) where $\hat{\omega}$ is the state transition matrix. To simplify we can write it as
+    $$\dot x(t) = \hat{\omega}x(t), x(t) \in \mathbb{R}^3$$
+    It is clear that the solution to the above ODE can be derived from the singular variable calculus.
+    $$x(t) = x(0)e^{\hat{\omega}t}$$
+    where we define $e^A$ to be the Taylor expansion 
+    $$e^{At} = \exp{(At)} = I + At + \cdots + \frac{t^n}{n!}A^n + \cdots + = \sum_{k=0}^\infty \frac{t^k}{k!}A^k$$
+    Thus the rotation matrix around a given axis $\omega \in \mathbb{R}^3$ by $t$ radians is given to be: 
+    $$R(t) = e^{\hat{\omega}t}$$
+\end{tcolorbox}
+
+
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Definition --- (Frobenius Norm).}}
+    The Frobenius norm is a matrix norm equivalent to the 2 norm on $\mathbb{C}^{n^2}$, denoted as $||A||_f^2$ where $A \in \mathbb{C}^{n\times n}$. The Frobenius norm can be viewed as the vector-2-norm of the concatenated matrix $A$. 
+    $$\left(\sum^n_{i=1}\sum^n_{j=1}|a_{ij}|^2\right)^{1/2}=\sqrt{tr(A^*A)} =\sqrt{tr(AA^*)}$$
+
+    \textbf{Proposition.} The Frobenius norm satisfies the following properties:
+    \begin{enumerate}
+        \item It is a matrix norm; that is $||AB||_f \leq ||A||_f||B||_f, \forall A,B \in \mathbb{C}^{n^2}$
+        \item It is unitarily invariant, thus for all unitary matrices U, V, we have:
+        $$||A||_f = ||UA||_f = ||AV||_f = ||UAV||_f$$
+    \end{enumerate}
+    
+\end{tcolorbox}
+
+\begin{tcolorbox}[enhanced,breakable,sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white]
+    {\color{purple!55!black} \textbf{Definition --- (Trace).}}
+    Let $A$ be a $K \times K$ matrix, Then, its trace, denoted by $tr(A)$, is the sum of its diagonal entries:
+    $$tr(A) = \sum^k_{K=1}A_{kk}$$
+    \textbf{Properties:}
+    \begin{enumerate}
+        \item $tr(A+B) = tr(A) + tr(B)$
+        \item $tr(kA) = ktr(A)$
+        \item $tr(A) = tr(A^\top)$
+        \item $tr(AB) = tr(BA)$
+    \end{enumerate}
+\end{tcolorbox}
+
+\newpage
+
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=purple!5!white, colframe=purple!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!50!white]
+    {\color{purple!55!black} \textbf{Theorem --- (Rodrigues' Formula).}} Given $\omega \in \mathbb{R}^3$ with $||\omega||=1$ and $t\in\mathbb{R}$, the matrix $R = e^{\hat{\omega}t}$ is given by the formula:
+    $$e^{\hat{\omega}t} = I + \hat{\omega}\sin t + \hat{\omega}^2(1-\cos t)$$
+\end{tcolorbox}
+\begin{proof} 
+Let $\omega = [a, b, c]^\top$, then
+$$\hat{\omega} = \begin{pmatrix}0&-c&b\\ \:\:\:\:\:\:c&0&-a\\ \:\:\:\:\:\:-b&a&0\end{pmatrix}$$
+Now it is easy to see that is easy to see that:
+\begin{align*}
+    \hat{\omega}^3
+=\begin{pmatrix}0&ca^2-c\left(-c^2-b^2\right)&b\left(-c^2-b^2\right)-ba^2\\ c\left(-c^2-a^2\right)-cb^2&0&b^2a-a\left(-c^2-a^2\right)\\ c^2b-b\left(-b^2-a^2\right)&a\left(-b^2-a^2\right)-c^2a&0\end{pmatrix}
+\end{align*}
+
+from the same property, $||\omega|| = \sqrt{a^2 + b^2 + c^2} =1$
+$$\hat{\omega} = \begin{pmatrix}0&ca^2-c\left(a^2-1\right)&b\left(a^2-1\right)-ba^2\\ c\left(b^2-1\right)-cb^2&0&b^2a-a\left(b^2-1\right)\\ c^2b-b\left(c^2-1\right)&a\left(c^2-1\right)-c^2a&0\end{pmatrix} = -\hat{\omega}$$
+Thus, we can conclude that
+$$\hat{\omega}^{2n} = (-1)^{n+1}\hat{\omega}^{2} \text{  and  } \hat{\omega}^{2n+1} = (-1)^{n}\hat{\omega}$$
+Then, from 
+\begin{align*}
+        e^{\hat{\omega}t} &= \exp{(At)} = \sum_{k=0}^\infty \frac{t^k}{k!}(\hat{\omega})^k\\
+        &= I + t\hat{\omega} + \frac{t^2}{2}\hat{\omega}^2 + \frac{t^3}{6}\hat{\omega}^3 + \cdots \\
+        &= I + \sum^{\infty}_{n=0}\frac{t^{2n+1}}{(2n+1)!}\hat{\omega}^{2n+1} - \sum^{\infty}_{n=1}\frac{t^{2n+1}}{(2n)!}\hat{\omega}^{2n}\\
+        &= I + \sum^{\infty}_{n=0}\frac{(-1)^{n}t^{2n+1}}{(2n+1)!}\hat{\omega} + \sum^{\infty}_{n=1}\frac{(-1)^{n+1}t^{2n+1}}{(2n)!}\hat{\omega}^{2}\\
+        &= I + \sum^{\infty}_{n=0}\frac{(-1)^{n}t^{2n+1}}{(2n+1)!}\hat{\omega} + \left(1- \sum^{\infty}_{n=0}\frac{(-1)^{n}t^{2n+1}}{(2n)!}\hat{\omega}^{2}\right)\\
+        &= I + \hat{\omega}\sin(t) + \hat{\omega}^{2}(1-\cos(t))
+\end{align*}
+Thus, we have $e^{\hat{\omega}t} = I + \hat{\omega}\sin t + \hat{\omega}^2(1-\cos t)$
+\end{proof}
+\newpage
+\section{Implementation of Epipolar Geometry}
+\begin{tcolorbox}[enhanced,breakable, sharp corners, colback=blue!5!white, colframe=blue!55!black, boxrule=0mm,top=0mm,bottom=0mm,leftrule=1mm, drop shadow=black!40!white, title=Step 3 --- Compute the Essential matrix]
+To calculate the Essential matrix, $E$, we have a deeper understanding of Epipolar geometry, the geometry of stereo vision, and how to apply it to our problem.
+\end{tcolorbox}
+
+
+\section{}
+\end{document}

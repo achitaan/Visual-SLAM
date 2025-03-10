@@ -160,11 +160,12 @@ for m, n in matches:
 
 Consider two images taken at two distinct vantage points, assuming a calibrated camera (when $K = I$, where $K$ is the calibration matrix). Let the image coordinates be $x$ and the spatial coordinates of some point $p$ be $X$, both with respect to the camera frame. Then:
 
-$$
-\lambda x = \Pi_0 X,
-$$
+\[
+\lambda \, x \;=\; \Pi_0 X,
+\]
 
 where:
+
 - $\lambda$ is the scale factor (depth),
 - $\Pi_0$ is the projection $\mathbb{R}^3 \to \mathbb{R}^2$.
 
@@ -173,64 +174,73 @@ where:
 ## The Epipolar Constraint
 
 > **Theorem 3.1 — (Epipolar Constraint)**  
-> For two images $x_1, x_2$ of the point $P$, seen from two vantage points, the following constraint holds:
-> $$
-> x_2^\top \hat{t} R \, x_1 
+> For two images $x_1, x_2$ of a point $P$, seen from two vantage points, the following constraint holds:
+>
+> \[
+> x_2^\top \,\hat{t}\,R \, x_1
 > \;=\;
 > x_2^\top E \, x_1
-> \;=\; 0,
-> $$
-> where $(R, t)$ is the relative pose (position and orientation) between the two camera frames and the **essential matrix** $E$ is defined by
-> $$
-> E = \hat{t} R.
-> $$
+> \;=\;
+> 0,
+> \]
+>
+> where $(R, t)$ is the relative pose (position and orientation) between the two camera frames, and the **essential matrix** $E$ is defined by
+>
+> \[
+> E \;=\; \hat{t}\,R.
+> \]
 
 ### Proof
 
-Let $X_1, X_2 \in \mathbb{R}^3$ be the coordinates of a point $P$ relative to two camera frames, so
+Let $X_1, X_2 \in \mathbb{R}^3$ be the 3D coordinates of a point $P$ relative to two camera frames. Then:
 
-$$
-X_2 = R X_1 + t.
-$$
+\[
+X_2 \;=\; R\,X_1 \;+\; t.
+\]
 
-Let $x_1, x_2 \in \mathbb{R}^2$ be the projections of $P$ on the two image planes. Hence:
+Let $x_1, x_2 \in \mathbb{R}^2$ be the projections of $P$ onto the two image planes. Hence:
 
-$$
-\lambda_2 x_2 = R(\lambda_1 x_1) + t.
-$$
+\[
+\lambda_2 \, x_2 \;=\; R \bigl(\lambda_1 \, x_1\bigr) + t.
+\]
 
-Multiplying both sides by the skew-symmetric matrix $\hat{t}$:
+Multiplying both sides by $\hat{t}$ (the skew-symmetric matrix of $t$):
 
 \[
 \begin{aligned}
-\lambda_2 x_2 &= R(\lambda_1 x_1) + t \\
+\lambda_2 \, x_2 
+&=\; R \bigl(\lambda_1 \, x_1\bigr) \;+\; t,\\
 \lambda_2 \,\hat{t}\, x_2 
-  &= \hat{t}\,R(\lambda_1 x_1) + \hat{t}\,t \\
-\lambda_2 (\,t \times x_2\,) 
-  &= t \times (\,R (\lambda_1 x_1)\,) + (\,t \times t\,) \\
-\lambda_2 (\,t \times x_2\,) 
-  &= \hat{t}\,R\,(\lambda_1 x_1),
+&=\; \hat{t}\,R \bigl(\lambda_1 \, x_1\bigr) 
+    \;+\; \hat{t}\,t,\\
+\lambda_2 \,\bigl(t \times x_2\bigr) 
+&=\; t \times \bigl(R\,(\lambda_1 \, x_1)\bigr) 
+    \;+\; \bigl(t \times t\bigr),\\
+\lambda_2 \,\bigl(t \times x_2\bigr) 
+&=\; \hat{t}\,R\,\bigl(\lambda_1 \, x_1\bigr).
 \end{aligned}
 \]
 
-where we used $\,\hat{t}\,x = t \times x\,$. Next, multiply on the left by $\,x_2^\top\,$:
+Next, multiply on the left by $x_2^\top$:
 
 \[
 \begin{aligned}
-\lambda_2 \, x_2^\top \,(t \times x_2) 
-  &= x_2^\top \,\hat{t}\, R\,(\lambda_1 x_1),\\
-\lambda_2\,\bigl[x_2 \cdot (\,t \times x_2\,)\bigr] 
-  &= x_2^\top \hat{t}\, R\,(\lambda_1 x_1).
+\lambda_2 \; x_2^\top \,\bigl(t \times x_2\bigr) 
+&=\; x_2^\top\,\hat{t}\,R\,\bigl(\lambda_1 \, x_1\bigr),\\
+\lambda_2 \;\bigl[x_2 \cdot \bigl(t \times x_2\bigr)\bigr] 
+&=\; x_2^\top \,\hat{t}\,R\,\bigl(\lambda_1 \, x_1\bigr).
 \end{aligned}
 \]
 
-But $\,x_2 \cdot (\,t \times x_2\,) = 0\,$ (orthogonality of cross products). Hence,
+But $\,x_2 \cdot (t \times x_2) = 0\,$ (orthogonality of cross product), so
 
-$$
-x_2^\top \,\hat{t}\, R\, x_1 
-\;=\; x_2^\top\, (\hat{t} R)\, x_1
-\;=\; 0,
-$$
+\[
+x_2^\top \,\hat{t}\,R\, x_1 
+\;=\;
+x_2^\top \,( \hat{t}\,R )\, x_1
+\;=\;
+0,
+\]
 
 which completes the proof.
 
@@ -238,40 +248,44 @@ which completes the proof.
 
 ## Properties of the Essential Matrix and Pose Recovery
 
-The **essential matrix** is $\,E = \hat{t}\,R,\,$ which encodes the relative pose between two cameras (the translation $t$ and a rotation $R \in SO(3)$). We define the **essential space**:
+The **essential matrix** is
+\[
+E \;=\; \hat{t}\,R,
+\]
+which encodes the relative pose between two cameras (the translation $t$ and a rotation $R \in SO(3)$). We define the **essential space**:
 
-$$
-\mathcal{E} 
-\;=\; 
-\{\;\hat{t}\,R \;\mid\; R \in SO(3),\; t \in \mathbb{R}^3\}.
-$$
+\[
+\mathcal{E}
+\;=\;
+\{\,\hat{t}\,R \;\mid\; R \in SO(3),\; t \in \mathbb{R}^3\}.
+\]
 
 > **Claim.**  
-> A non-zero matrix $\,E \in \mathbb{R}^{3\times 3}\,$ is an essential matrix if and only if $\,E\,$ has a singular value decomposition (SVD) of the form
+> A non-zero matrix $E \in \mathbb{R}^{3 \times 3}$ is an essential matrix if and only if $E$ has a singular value decomposition (SVD) of the form
 > \[
-> E 
-> \;=\; 
-> U\;\Sigma\;V^\top,
+> E
+> \;=\;
+> U\,\Sigma\,V^\top,
 > \]
 > where
 > \[
-> \Sigma 
-> \;=\; 
-> \mathrm{diag}\{\sigma, \sigma, 0\} 
-> \;=\; 
+> \Sigma
+> \;=\;
+> \mathrm{diag}\{\sigma,\sigma,0\}
+> \;=\;
 > \begin{bmatrix}
-> \sigma & 0 & 0\\
-> 0 & \sigma & 0\\
+> \sigma & 0 & 0\\[6pt]
+> 0 & \sigma & 0\\[6pt]
 > 0 & 0 & 0
 > \end{bmatrix},
 > \]
-> for some $\sigma > 0$ and $U,\,V \in SO(3)$.
+> for some $\sigma > 0$ and $U, V \in SO(3)$.
 
 ### Sketch of Proof
 
-1. We start by noting that $E = \hat{t}\,R$ implies certain rank and skew-symmetric properties in $E$.  
-2. By appropriate rotations, we can transform $t$ to a canonical form $(\,0,\,0,\,\|t\|)^\top$, showing that $E$ has exactly two equal non-zero singular values and a zero singular value.  
-3. Reversing this process shows that any matrix with that singular-value pattern can be decomposed in the form $\,\hat{t}\,R\,$ with $\,R \in SO(3)\,$.
+1. $E = \hat{t}\,R$ implies certain rank and skew properties in $E$.  
+2. By applying a suitable rotation, we can place $t$ in a canonical form $(0,0,\|t\|)^\top$, revealing that $E$ has two equal non-zero singular values and one zero singular value.  
+3. Reversing this process shows that any matrix with exactly two identical non-zero singular values and one zero singular value can be written as $\hat{t}\,R$ with $R \in SO(3)$.
 
 ---
 
@@ -283,96 +297,108 @@ $$
 ### Idea of Proof
 
 - Suppose $E = \hat{t}_1 R_1 = \hat{t}_2 R_2$. Then
+
   \[
-    \hat{t}_1 
-    \;=\;
-    \hat{t}_2 \, R_2 \, R_1^\top.
+  \hat{t}_1
+  \;=\;
+  \hat{t}_2 \, R_2 \, R_1^\top.
   \]
-- Because $R_2\,R_1^\top$ is itself a rotation, from a lemma about skew-symmetric transformations we get that $R_2\,R_1^\top$ is either the identity or $\,e^{\hat{u}\,\pi}\,$ (rotation by $\pi$).  
-- Consequently, there are exactly two distinct $(R,t)$ pairs that yield the same essential matrix $\,E$.
+
+- Because $R_2 R_1^\top$ is itself a rotation, a lemma about skew-symmetric transformations shows that $R_2 R_1^\top$ is either the identity or a rotation by $\pi$.  
+- Hence, there are exactly two distinct $(R,t)$ pairs that give the same essential matrix $E$.
 
 > **Remark — (Pose Recovery)**  
-> Both $\,E\,$ and $-E$ satisfy the same epipolar constraints. Hence, there are $2\times 2 = 4$ possible $(R,\,t)$ solutions. However, only one of these 4 solutions places all scene points **in front** of both cameras (positive depth), making the other three physically invalid.
+> Both $E$ and $-E$ satisfy the same epipolar constraints. Hence, in total, there are $2 \times 2 = 4$ possible $(R,t)$ solutions. However, only one of these yields positive depth for all points in both cameras, so the other three are physically invalid.
 
 ---
 
 ## The Eight-Point Algorithm
 
-To find $\,E\,$ from point correspondences, let us define:
+To solve for $E$, we collect point correspondences $(x_1, x_2)$ in normalized coordinates. Let
 
-$$
-E 
-\;=\; 
+\[
+E
+\;=\;
 \begin{bmatrix}
   e_1 & e_2 & e_3 \\
   e_4 & e_5 & e_6 \\
   e_7 & e_8 & e_9
 \end{bmatrix}.
-$$
-
-We can store it as a 9-vector $\,e = (e_1, e_2, \dots, e_9)^\top\,$.  
-The **epipolar constraint** for normalized image points $x_1, x_2$ is:
-
-\[
-  x_2^\top \,E\, x_1
-  \;=\;
-  0.
 \]
 
-Expanding yields a linear equation in the elements of $E$. If we have $\,n\,$ correspondences, we obtain
+This can be stored as a 9-vector $\,e = (e_1,\ldots,e_9)^\top$. The epipolar constraint for each pair is
 
 \[
-  A\,e
-  \;=\; 
-  0,
+x_2^\top \, E \, x_1 
+\;=\;
+0.
 \]
 
-where $A \in \mathbb{R}^{n \times 9}$ is constructed from the coordinates of the matched points $(x_1, x_2)$. With at least 8 correspondences (hence the “eight-point” name), $A$ typically has rank 8, and we solve $A e = 0$ for $\,e\,$ (up to a scale factor). In practice, we use more than 8 points and solve via SVD or least squares.
+If we have $n$ such correspondences, we form an $n \times 9$ matrix $A$ so that
+
+\[
+A \, e
+\;=\;
+0.
+\]
+
+With at least 8 well-chosen correspondences (hence “eight-point algorithm”), $A$ usually has rank 8 and we solve $Ae=0$ for $e$ (up to scale). In practice, more than 8 points are used with an SVD or least-squares approach.
 
 ---
 
 ## Projection Into the Essential Space
 
-In reality, $e$ found by $A e=0$ might not perfectly reshape into a valid essential matrix (two identical non-zero singular values, plus one zero). We **project** onto $\mathcal{E}$:
+Real-world data is noisy, so the solution $e$ from $A e=0$ often does **not** reshape into a perfect essential matrix (two identical non-zero singular values plus one zero). Therefore, we **project** $E'$ onto $\mathcal{E}$:
 
 > **Claim — (Projection)**  
-> Given a real matrix $\,E' \in \mathbb{R}^{3 \times 3}\,$ with SVD $E' = U\,\mathrm{diag}(\lambda_1,\lambda_2,\lambda_3)\,V^\top,$ where $U, V \in SO(3)$ and $\lambda_1 \ge \lambda_2 \ge \lambda_3$, the essential matrix $\,E \in \mathcal{E}\,$ minimizing $\,\|E - E'\|_F^2\,$ is
+> Let $E' \in \mathbb{R}^{3 \times 3}$ have SVD
+> \[
+> E'
+> \;=\;
+> U \,\mathrm{diag}(\lambda_1,\lambda_2,\lambda_3)\,V^\top,
+> \]
+> with $U, V \in SO(3)$ and $\lambda_1 \ge \lambda_2 \ge \lambda_3$. The matrix $E \in \mathcal{E}$ that **minimizes** $\|\,E - E'\|_F^2$ is
 > \[
 > E
 > \;=\;
-> U 
-> \,\mathrm{diag}\!\bigl(\sigma,\sigma,0\bigr)
-> \,V^\top,
+> U \,\mathrm{diag}\!\bigl(\sigma,\sigma,0\bigr)\,V^\top,
 > \quad
 > \text{where}
 > \quad
-> \sigma = \dfrac{\lambda_1 + \lambda_2}{2}.
+> \sigma 
+> \;=\;
+> \frac{\lambda_1 + \lambda_2}{2}.
 > \]
 
 ### Proof Sketch
 
-1. We want to minimize $\,\|E - E'\|_F^2\,$ subject to $\,E\,$ being in the essential space.  
-2. The best choice keeps the same $U, V$ and forces the singular values to $(\sigma, \sigma, 0)$, with $\sigma = (\lambda_1 + \lambda_2)/2$.  
-3. One checks that this results in the smallest Frobenius-norm difference by ensuring the middle two singular values match and the last is zero.
+1. We want to minimize $\|E - E'\|_F^2$ subject to $E$ having the structure $(\hat{t}\,R)$.  
+2. The best choice keeps the same $U,V$ and clamps the singular values to $(\sigma,\sigma,0)$.  
+3. One checks via trace arguments that this leads to the smallest Frobenius norm difference.
 
 ---
 
 ## Triangulation and Disambiguation
 
-After recovering $E$ and decomposing it into $(R,t)$ (recall there are four possible solutions), we **triangulate** a 3D point from each image pair. Only one of these four will yield consistent, positive-depth points in front of both cameras, thus identifying the physically correct $(R,t)$.
+After recovering $E$ and decomposing it into $(R,t)$, recall there are four possible $(R,t)$ solutions (because $E$ and $-E$ each allow two decompositions). We **triangulate** a 3D point from each solution. Only one solution yields points with positive depth in both cameras, thus identifying the physically correct $(R,t)$.
 
 ---
 
 ## Lemma 3.5 (A Skew-Symmetric Matrix Lemma)
 
 > **Lemma 3.5.**  
-> Let $\hat{T}\in so(3)$ be non-zero (thus $T\in\mathbb{R}^3$). If for a rotation $R \in SO(3)$ the product $\hat{T}R$ is also skew-symmetric, then $R$ must be either the identity matrix $I$ or $e^{\hat{u}\,\pi}$, a rotation by $\pi$ about the axis $u = T / \|T\|$. Furthermore, $\hat{T}\,e^{\hat{u}\,\pi} = -\,\hat{T}$.
+> Let $\hat{T} \in so(3)$ be non-zero (thus $T \in \mathbb{R}^3$). If for some $R \in SO(3)$ the product $\hat{T}\,R$ is also skew-symmetric, then $R$ must be either the identity $I$ or a rotation by $\pi$ about the axis $u = T/\|T\|$. Furthermore,
+>
+> \[
+> \hat{T}\,\bigl(e^{\hat{u}\,\pi}\bigr) 
+> \;=\;
+> -\,\hat{T}.
+> \]
 
-**Proof Idea**:  
+**Proof Idea**:
 
-1. Assume $\hat{T}R$ is skew. Then $(\hat{T}R)^\top = -\hat{T}R$.  
-2. Use the fact that $R$ is orthonormal and see how $R$ commutes with $\hat{T}$.  
+1. Assume $\hat{T}\,R$ is skew. Then $(\hat{T}\,R)^\top = -\,\hat{T}\,R$.  
+2. Use the orthonormality of $R$ to see how it commutes with $\hat{T}$.  
 3. Show $R$ must be a rotation by $0$ or $\pi$ around the direction of $T$.  
-4. The relation $\hat{T}\,e^{\hat{u}\,\pi} = -\hat{T}$ follows similarly.
-
+4. The relation $\hat{T}\,e^{\hat{u}\,\pi} = -\hat{T}$ follows.
 

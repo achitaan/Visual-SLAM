@@ -286,6 +286,93 @@ $$
   \[
     \hat{t}_1 
     \;=\;
-    \hat{t}_2 \,
+    \hat{t}_2 \, R_2 \, R_1^\top.
+  \]
+- Because $R_2\,R_1^\top$ is itself a rotation, from a lemma about skew-symmetric transformations we get that $R_2\,R_1^\top$ is either the identity or $\,e^{\hat{u}\,\pi}\,$ (rotation by $\pi$).  
+- Consequently, there are exactly two distinct $(R,t)$ pairs that yield the same essential matrix $\,E$.
+
+> **Remark — (Pose Recovery)**  
+> Both $\,E\,$ and $-E$ satisfy the same epipolar constraints. Hence, there are $2\times 2 = 4$ possible $(R,\,t)$ solutions. However, only one of these 4 solutions places all scene points **in front** of both cameras (positive depth), making the other three physically invalid.
+
+---
+
+## The Eight-Point Algorithm
+
+To find $\,E\,$ from point correspondences, let us define:
+
+$$
+E 
+\;=\; 
+\begin{bmatrix}
+  e_1 & e_2 & e_3 \\
+  e_4 & e_5 & e_6 \\
+  e_7 & e_8 & e_9
+\end{bmatrix}.
+$$
+
+We can store it as a 9-vector $\,e = (e_1, e_2, \dots, e_9)^\top\,$.  
+The **epipolar constraint** for normalized image points $x_1, x_2$ is:
+
+\[
+  x_2^\top \,E\, x_1
+  \;=\;
+  0.
+\]
+
+Expanding yields a linear equation in the elements of $E$. If we have $\,n\,$ correspondences, we obtain
+
+\[
+  A\,e
+  \;=\; 
+  0,
+\]
+
+where $A \in \mathbb{R}^{n \times 9}$ is constructed from the coordinates of the matched points $(x_1, x_2)$. With at least 8 correspondences (hence the “eight-point” name), $A$ typically has rank 8, and we solve $A e = 0$ for $\,e\,$ (up to a scale factor). In practice, we use more than 8 points and solve via SVD or least squares.
+
+---
+
+## Projection Into the Essential Space
+
+In reality, $e$ found by $A e=0$ might not perfectly reshape into a valid essential matrix (two identical non-zero singular values, plus one zero). We **project** onto $\mathcal{E}$:
+
+> **Claim — (Projection)**  
+> Given a real matrix $\,E' \in \mathbb{R}^{3 \times 3}\,$ with SVD $E' = U\,\mathrm{diag}(\lambda_1,\lambda_2,\lambda_3)\,V^\top,$ where $U, V \in SO(3)$ and $\lambda_1 \ge \lambda_2 \ge \lambda_3$, the essential matrix $\,E \in \mathcal{E}\,$ minimizing $\,\|E - E'\|_F^2\,$ is
+> \[
+> E
+> \;=\;
+> U 
+> \,\mathrm{diag}\!\bigl(\sigma,\sigma,0\bigr)
+> \,V^\top,
+> \quad
+> \text{where}
+> \quad
+> \sigma = \dfrac{\lambda_1 + \lambda_2}{2}.
+> \]
+
+### Proof Sketch
+
+1. We want to minimize $\,\|E - E'\|_F^2\,$ subject to $\,E\,$ being in the essential space.  
+2. The best choice keeps the same $U, V$ and forces the singular values to $(\sigma, \sigma, 0)$, with $\sigma = (\lambda_1 + \lambda_2)/2$.  
+3. One checks that this results in the smallest Frobenius-norm difference by ensuring the middle two singular values match and the last is zero.
+
+---
+
+## Triangulation and Disambiguation
+
+After recovering $E$ and decomposing it into $(R,t)$ (recall there are four possible solutions), we **triangulate** a 3D point from each image pair. Only one of these four will yield consistent, positive-depth points in front of both cameras, thus identifying the physically correct $(R,t)$.
+
+---
+
+## Lemma 3.5 (A Skew-Symmetric Matrix Lemma)
+
+> **Lemma 3.5.**  
+> Let $\hat{T}\in so(3)$ be non-zero (thus $T\in\mathbb{R}^3$). If for a rotation $R \in SO(3)$ the product $\hat{T}R$ is also skew-symmetric, then $R$ must be either the identity matrix $I$ or $e^{\hat{u}\,\pi}$, a rotation by $\pi$ about the axis $u = T / \|T\|$. Furthermore, $\hat{T}\,e^{\hat{u}\,\pi} = -\,\hat{T}$.
+
+**Proof Idea**:  
+
+1. Assume $\hat{T}R$ is skew. Then $(\hat{T}R)^\top = -\hat{T}R$.  
+2. Use the fact that $R$ is orthonormal and see how $R$ commutes with $\hat{T}$.  
+3. Show $R$ must be a rotation by $0$ or $\pi$ around the direction of $T$.  
+4. The relation $\hat{T}\,e^{\hat{u}\,\pi} = -\hat{T}$ follows similarly.
 
 

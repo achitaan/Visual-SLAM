@@ -44,13 +44,16 @@ class SLAM:
             return index[0][0]
         return None
 
-    def add_odometry_edge(self, from_idx, to_idx, relative_transform):
-        self.odometry_edges.append((from_idx, to_idx, relative_transform))
+    def add_odometry_edge(self, from_idx, to_idx, relative_transform, information=None):
+        info = information if information is not None else np.identity(6)
+        self.odometry_edges.append((from_idx, to_idx, relative_transform, info, False))
 
-    def add_loop_closure_edge(self, from_idx, to_idx, relative_transform):
-        self.loop_edges.append((from_idx, to_idx, relative_transform))
+    def add_loop_closure_edge(self, from_idx, to_idx, relative_transform, information=None):
+        info = information if information is not None else np.identity(6)
+        self.loop_edges.append((from_idx, to_idx, relative_transform, info, True))
 
     def optimize_pose_graph(self, num_iterations=10):
+        self.optimizer.clear()
         for i, pose in enumerate(self.initial_poses):
             v = g2o.VertexSE3()
             v.set_id(i)
@@ -61,12 +64,16 @@ class SLAM:
 
         all_edges = self.odometry_edges + self.loop_edges
         for edge in all_edges:
-            frm, to, rel_transform = edge
+            frm, to, rel_transform, info, use_robust = edge
             e = g2o.EdgeSE3()
             e.set_vertex(0, self.optimizer.vertex(frm))
             e.set_vertex(1, self.optimizer.vertex(to))
             e.set_measurement(g2o.Isometry3d(rel_transform))
-            e.set_information(np.identity(6))
+            e.set_information(info)
+            if use_robust:
+                kernel = g2o.RobustKernelHuber()
+                kernel.set_delta(1.0)
+                e.set_robust_kernel(kernel)
             self.optimizer.add_edge(e)
 
         self.optimizer.initialize_optimization()
@@ -74,13 +81,13 @@ class SLAM:
         optimized = [self.optimizer.vertex(i).estimate().matrix() for i in range(len(self.initial_poses))]
         return optimized
 
-    def process_frame(self, descriptors, initial_pose):
+    def process_frame(self, descriptors, initial_pose, loop_threshold=0.3):
         self.descriptor_list.append(descriptors)
         self.initial_poses.append(initial_pose)
         loop_idx = None
         if self.kmeans is not None:
             hist = self.compute_bow_histogram(descriptors)
-            loop_idx = self.detect_loop_closure(hist, threshold=0.3)
+            loop_idx = self.detect_loop_closure(hist, threshold=loop_threshold)
             self.histograms.append(hist)
         else:
             self.histograms.append(np.zeros(1))

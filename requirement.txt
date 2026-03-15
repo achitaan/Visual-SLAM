@@ -6,4 +6,5 @@ pyyaml
 scikit-learn
 matplotlib
 bokeh
+websockets
 # pytorch special case, see requirements-pytorch.txt

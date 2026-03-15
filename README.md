@@ -3,6 +3,53 @@
 **Author:** Achita  
 **Date:** July 2024
 
+## Quick Start (VO + Dashboard)
+
+### Backend (VO + telemetry)
+1. Install Python dependencies:
+   ```bash
+   pip install -r requirement.txt
+   ```
+2. Run the VO pipeline with telemetry enabled:
+   ```bash
+   python src/main.py
+   ```
+3. WebSocket telemetry publishes at `ws://localhost:8765` by default.
+
+### Dashboard (Next.js)
+1. Install dashboard dependencies:
+   ```bash
+   cd dashboard
+   npm install
+   ```
+2. Start the dashboard:
+   ```bash
+   npm run dev
+   ```
+3. Open `http://localhost:3000` to view the live dashboard.
+
+You can override the telemetry URL with:
+```
+NEXT_PUBLIC_WS_URL=ws://localhost:8765
+```
+
+## Feature Flags (incremental SLAM)
+Configure in `src/config.py`:
+- `ENABLE_KEYFRAMES`, `ENABLE_LOCAL_MAP`, `ENABLE_POSE_GRAPH`, `ENABLE_LOOP_CLOSURE`
+- `USE_RELATIVE_SCALE_FIX` (optional scale computation update)
+- `KEYFRAME_INTERVAL`, `MIN_KEYFRAME_TRANSLATION`
+- `VOCAB_BUILD_MIN_FRAMES`, `VOCAB_NUM_CLUSTERS`, `LOOP_CLOSURE_THRESHOLD`, `POSE_GRAPH_OPT_EVERY`
+
+### Optional Dependencies
+Loop closure + pose graph use `g2o` via `src/SLAM.py`. If `g2o` is unavailable, the backend will skip pose graph/loop closure features.
+
+## Telemetry Schema (v1)
+Fields published per frame:
+- `pose_T_wc` (4x4), `frame_index`, `timestamp`, `mode`
+- `tracking` (`num_matches`, `num_inliers`, `inlier_ratio`)
+- `map` (`keyframes`, `map_points`)
+- optional: `image`, `features`, `events`, `fps`
+
 This document provides a comprehensive summary of Visual SLAM,
 currently under development, synthesizing information from a variety of
 reputable sources, including An Invitation to 3-D Vision, lecture slides

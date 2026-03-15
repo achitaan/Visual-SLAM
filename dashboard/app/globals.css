@@ -1,0 +1,171 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #1a1a1a;
+  color: #d0d0d0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  height: 100vh;
+}
+
+.panel {
+  background: #252525;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 10px;
+}
+
+.panel h2 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8a8a8a;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stack {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.metricCard {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.metricCard strong {
+  color: #4fc3f7;
+  font-size: 14px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.button {
+  background: #3a3a3a;
+  border: 1px solid #4a4a4a;
+  color: #d0d0d0;
+  border-radius: 3px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s;
+}
+
+.button:hover {
+  background: #4a4a4a;
+}
+
+.button.primary {
+  background: #2e7d32;
+  border-color: #388e3c;
+}
+
+.button.primary:hover {
+  background: #388e3c;
+}
+
+.button.danger {
+  background: #c62828;
+  border-color: #d32f2f;
+}
+
+.button.danger:hover {
+  background: #d32f2f;
+}
+
+.button.secondary {
+  background: #2a2a2a;
+}
+
+.button.active {
+  background: #1565c0;
+  border-color: #1976d2;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: #333;
+  font-size: 11px;
+  color: #8a8a8a;
+}
+
+.badge.live {
+  background: #1b5e20;
+  color: #81c784;
+}
+
+.badge.stopped {
+  background: #b71c1c;
+  color: #ef9a9a;
+}
+
+.tabBar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #3a3a3a;
+  padding-bottom: 6px;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: #6a6a6a;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 3px 3px 0 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.tab:hover {
+  color: #a0a0a0;
+}
+
+.tab.active {
+  color: #4fc3f7;
+  background: #2a2a2a;
+  border-bottom: 2px solid #4fc3f7;
+}
+
+.rightPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: calc(100vh - 24px);
+}

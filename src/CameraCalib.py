@@ -4,7 +4,6 @@ from numpy.typing import NDArray
 
 class CameraCalib:
     def __init__(self, camera_id, board_size, square_size, frame):
-        self.dir = dir
         self.w, self.l = board_size
         self.camera_id, self.images = camera_id, []
         self.frame = frame
@@ -42,7 +41,7 @@ class CameraCalib:
             cv.imshow("fram", frame)
 
             if cv.waitKey(1) & 0xFF == ord(" "): 
-                image = cv.cvtColor(frame, cv.IMREAD_GRAYSCALE)
+                image = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
                 self.images.append(image)
                 print(len(self.images))
 
@@ -54,13 +53,12 @@ class CameraCalib:
         return True
 
         
-    def find_matrix(self, display: bool = False):
+    def find_matrix(self, display: bool = False, save_path: str = "camera_matrix.txt"):
         criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
         for image in self.images:
             ret, corners = cv.findChessboardCorners(image, (self.w, self.l), None)
 
-            print("askdaksdm")
             if ret:
                 self.p3d.append(self.obj)
                 self.p2d.append(corners)
@@ -82,7 +80,8 @@ class CameraCalib:
         
         print(cameraMatrix)
 
-        self.__save()
+        if save_path:
+            self.__save(save_path, cameraMatrix)
         return True
 
 

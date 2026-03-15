@@ -7,25 +7,31 @@ import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 
 class VisualOdometry:
-    def __init__(self, folder_path: str, calibration_path: str, use_brute_force: bool):
-        self.K, self.P = self.__calib(camera_id=1, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+    def __init__(
+        self,
+        folder_path: str,
+        calibration_path: str,
+        use_brute_force: bool,
+        camera_id: int = 1,
+        draw_matches: bool = True,
+    ):
+        self.K, self.P = self.__calib(camera_id=camera_id, filepath=calibration_path)  # Intrinsic camera matrix (example values)
+        self.draw_matches = draw_matches
 
-        print(self.K)
-
-        self.true_poses = self.__load_poses(r"poses\01.txt")
-        #self.true_poses = self.__load_poses(r"KITTI_sequence_2\poses.txt")
-        
-        #self.true_poses = [np.eye(4)]
+        poses_path = r"poses\01.txt"
+        if os.path.exists(poses_path):
+            self.true_poses = self.__load_poses(poses_path)
+        else:
+            # Fallback when ground-truth poses are not available.
+            self.true_poses = [np.eye(4)]
         self.poses = [self.true_poses[0]] 
         self.Images = self.__load(folder_path)
 
 
-        print("asda")
         if use_brute_force:
             self.__init_orb()
         else:
             self.__init_sift()
-        print("asdas")
 
     def __init_orb(self):
         self.orb = cv.ORB_create(nfeatures=3000)
@@ -96,6 +102,9 @@ class VisualOdometry:
                 f.write(f"Pose {i}: \n")
                 np.savetxt(f, pose, fmt="%6f")
                 f.write("\n")
+
+    def save_poses(self, filepath: str) -> None:
+        self.__save(filepath)
     
     def __draw_corresponding_points(self, i, kp1, kp2, good_matches):
         draw_params = dict(
@@ -117,12 +126,23 @@ class VisualOdometry:
     
     def __calib(self, camera_id: int, filepath: str) -> tuple[NDArray, NDArray]:
         with open(filepath, 'r') as f:
-            for line in f:
-                if line.startswith(f"P1:"):  # Change this to the appropriate projection matrix
-                    params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
-                    P = np.reshape(params, (3, 4))
-                    K = P[0:3, 0:3]
-                    return K, P
+            lines = [line.strip() for line in f if line.strip()]
+
+        # Prefer labeled format (e.g., "P1: ..."), otherwise fall back to line index.
+        for line in lines:
+            if line.startswith(f"P{camera_id}:"):
+                params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
+                P = np.reshape(params, (3, 4))
+                K = P[0:3, 0:3]
+                return K, P
+
+        if len(lines) > camera_id:
+            params = np.fromstring(lines[camera_id], dtype=np.float64, sep=' ')
+        else:
+            params = np.fromstring(lines[0], dtype=np.float64, sep=' ')
+        P = np.reshape(params, (3, 4))
+        K = P[0:3, 0:3]
+        return K, P
 
     def __relative_scale(): pass
 
@@ -142,12 +162,13 @@ class VisualOdometry:
 
         matches = self.brute_force.match(desc1, desc2)
 
-        self.__draw_corresponding_points(i, kp1, kp2, matches)
+        if self.draw_matches:
+            self.__draw_corresponding_points(i, kp1, kp2, matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in matches])
         return p1, p2
 
-    def flann_match_features(self, i: int) -> tuple[NDArray, NDArray]:
+    def flann_match_features(self, i: int, return_debug: bool = False):
         """
         Finds and matches the coresponding consistent points between images I_k-1 and I_k
 
@@ -168,10 +189,18 @@ class VisualOdometry:
             if m.distance < thresh * n.distance:
                 good_matches.append(m)
 
-        self.__draw_corresponding_points(i, kp1, kp2, good_matches)
+        if self.draw_matches:
+            self.__draw_corresponding_points(i, kp1, kp2, good_matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
         p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
-        return p1, p2
+        if not return_debug:
+            return p1, p2
+        return p1, p2, kp1, kp2, desc1, desc2, good_matches
+
+    def extract_features(self, i: int):
+        if hasattr(self, "orb"):
+            return self.orb.detectAndCompute(self.Images[i], None)
+        return self.sift.detectAndCompute(self.Images[i], None)
 
     def find_transf_fast(self, p1: NDArray, p2: NDArray) -> NDArray:
         E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -183,7 +212,13 @@ class VisualOdometry:
         T = self.__transform(R, t)
         return np.linalg.inv(T)
 
-    def find_transf(self, p1: NDArray, p2: NDArray) -> NDArray:
+    def find_transf(
+        self,
+        p1: NDArray,
+        p2: NDArray,
+        return_debug: bool = False,
+        use_scale_fix: bool = False,
+    ):
         """
         Finds the most accurate transformation matrix from points p1 and p2
 
@@ -225,9 +260,20 @@ class VisualOdometry:
                     p1_valid = p1_3d_hom[:, valid_points]
                     p2_valid = p2_3d_hom[:, valid_points]
 
-                    # Compute distances between corresponding points
-                    dist_p1 = np.linalg.norm(p1_valid, axis=0)  # Distances from origin in frame 1
-                    dist_p2 = np.linalg.norm(p2_valid, axis=0)  # Distances from origin in frame 2
+                    if use_scale_fix:
+                        # Compute inter-point distances for scale (more stable than origin distance).
+                        p1_pairs = p1_valid.T
+                        p2_pairs = p2_valid.T
+                        if p1_pairs.shape[0] > 1:
+                            dist_p1 = np.linalg.norm(p1_pairs[1:] - p1_pairs[:-1], axis=1)
+                            dist_p2 = np.linalg.norm(p2_pairs[1:] - p2_pairs[:-1], axis=1)
+                        else:
+                            dist_p1 = np.array([])
+                            dist_p2 = np.array([])
+                    else:
+                        # Legacy: distances from origin in each frame.
+                        dist_p1 = np.linalg.norm(p1_valid, axis=0)
+                        dist_p2 = np.linalg.norm(p2_valid, axis=0)
 
                     # Avoid division by zero or invalid distances
                     valid_distances = (dist_p1 > 1e-6) & (dist_p2 > 1e-6)
@@ -240,7 +286,44 @@ class VisualOdometry:
 
         R, t = best_pose
         t = t * relative_scale  # Scale the translation vector
-        return np.linalg.inv(self.__transform(R, t))
+        T = np.linalg.inv(self.__transform(R, t))
+
+        if not return_debug:
+            return T
+
+        num_matches = int(len(p1))
+        inlier_mask = None
+        if mask is not None:
+            inlier_mask = [bool(v) for v in mask.ravel().tolist()]
+        num_inliers = int(np.sum(mask)) if mask is not None else None
+        inlier_ratio = (num_inliers / num_matches) if num_inliers is not None and num_matches > 0 else None
+        debug = {
+            "num_matches": num_matches,
+            "num_inliers": num_inliers,
+            "inlier_ratio": inlier_ratio,
+            "relative_scale": float(relative_scale),
+            "inlier_mask": inlier_mask,
+            "scale_fix_enabled": bool(use_scale_fix),
+            "best_R": R,
+            "best_t": t,
+        }
+        return T, debug
+
+    def triangulate_points(self, p1: NDArray, p2: NDArray, R: NDArray, t: NDArray, inlier_mask=None):
+        P1 = self.K @ np.eye(3, 4)
+        P2 = np.concatenate((self.K, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
+        if inlier_mask is not None:
+            mask = np.array(inlier_mask, dtype=bool)
+            p1 = p1[mask]
+            p2 = p2[mask]
+        if len(p1) < 2:
+            return []
+        points_4d_hom = cv.triangulatePoints(P1, P2, p1.T, p2.T)
+        points_3d = (points_4d_hom[:3] / points_4d_hom[3]).T
+        # Keep points with positive depth in both cameras
+        p2_cam = (R @ points_3d.T + t.reshape(-1, 1)).T
+        valid = (points_3d[:, 2] > 0) & (p2_cam[:, 2] > 0)
+        return [points_3d[i] for i in range(points_3d.shape[0]) if valid[i]]
 
 
 # Test

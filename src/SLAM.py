@@ -1,23 +1,16 @@
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors
-import g2o
+from pose_graph import optimize
 
 class SLAM:
     def __init__(self):
-        self.__init_graph()
         self.descriptor_list = []
         self.histograms = []
         self.initial_poses = []
         self.odometry_edges = []
         self.loop_edges = []
         self.kmeans = None
-
-    def __init_graph(self):
-        self.optimizer = g2o.SparseOptimizer()
-        solver = g2o.BlockSolverSE3(g2o.LinearSolverEigenSE3())
-        solver = g2o.OptimizationAlgorithmLevenberg(solver)
-        self.optimizer.set_algorithm(solver)
 
     def build_vocabulary(self, descriptors, num_clusters=50):
         all_desc = np.vstack(descriptors)
@@ -52,34 +45,9 @@ class SLAM:
         info = information if information is not None else np.identity(6)
         self.loop_edges.append((from_idx, to_idx, relative_transform, info, True))
 
-    def optimize_pose_graph(self, num_iterations=10):
-        self.optimizer.clear()
-        for i, pose in enumerate(self.initial_poses):
-            v = g2o.VertexSE3()
-            v.set_id(i)
-            v.set_estimate(g2o.Isometry3d(pose))
-            if i == 0:
-                v.set_fixed(True)
-            self.optimizer.add_vertex(v)
-
-        all_edges = self.odometry_edges + self.loop_edges
-        for edge in all_edges:
-            frm, to, rel_transform, info, use_robust = edge
-            e = g2o.EdgeSE3()
-            e.set_vertex(0, self.optimizer.vertex(frm))
-            e.set_vertex(1, self.optimizer.vertex(to))
-            e.set_measurement(g2o.Isometry3d(rel_transform))
-            e.set_information(info)
-            if use_robust:
-                kernel = g2o.RobustKernelHuber()
-                kernel.set_delta(1.0)
-                e.set_robust_kernel(kernel)
-            self.optimizer.add_edge(e)
-
-        self.optimizer.initialize_optimization()
-        self.optimizer.optimize(num_iterations)
-        optimized = [self.optimizer.vertex(i).estimate().matrix() for i in range(len(self.initial_poses))]
-        return optimized
+    def optimize_pose_graph(self, num_iterations=100, diagnostics=None):
+        return optimize(self.initial_poses, self.odometry_edges + self.loop_edges,
+                        max_evaluations=num_iterations, diagnostics=diagnostics)
 
     def process_frame(self, descriptors, initial_pose, loop_threshold=0.3):
         self.descriptor_list.append(descriptors)

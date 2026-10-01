@@ -3,24 +3,74 @@
 **Author:** Achita  
 **Date:** July 2024
 
+## Tested project status — October 1, 2026
+
+Metric stereo odometry and **offline pose graph optimization** have completed
+all 11 public-ground-truth KITTI odometry sequences (00–10): **23,201 frames**
+and **61 geometrically verified loops**. Segment-weighted translation drift
+improved from **2.287% to 1.773%**, and rotation drift from **0.00863 to 0.00648
+degrees/m**. These are public training-set measurements, not a submission to
+the hidden KITTI test leaderboard.
+
+See the [complete benchmark report](docs/benchmark/REPORT.md) for all sequence
+metrics, trajectory plots, position-error curves, methodology, repeatability
+checks and limitations. The [machine-readable results](docs/benchmark/results.json)
+and [completion plan](PLAN.md) are included in the repository. The dashboard's
+saved benchmark snapshot contains all 11 raw and corrected runs.
+
+The orange **Pose graph** curve is the trajectory **after optimization** and
+propagation of the keyframe corrections to every frame. Blue is the original
+stereo odometry. With no verified loops, the corrected trajectory remains
+identical to the original. Ground truth is used only to evaluate the result.
+
+The work fixes inconsistent graph vertex IDs, incorrect loop-edge conventions,
+unmeasured loop constraints, invalid stereo depth handling, and an optimizer
+convergence failure on a real loop graph. The dashboard now uses equal trajectory
+axis scales, explicit metric/alignment labels, actual socket state and saved
+benchmark comparisons.
+
+Local validation: **45 Python tests**, **3 dashboard socket tests**, and the
+dashboard production build passed. Every raw and corrected sequence agrees
+with the official KITTI devkit evaluator within the declared tolerance.
+Windows/Linux CI is configured; a remote CI result is not yet claimed.
+
+Full live SLAM remains under development. Persistent landmarks, local bundle
+adjustment, relocalization, and feedback of optimized poses into live tracking
+and mapping still need work. Sequence 01 has 23 repeatable lost tracking pairs;
+sequence 09 improves ATE but worsens translation drift after optimization.
+The sparse optimizer branch for graphs above 300 keyframes has not been validated
+by this batch. Monocular output has arbitrary scale.
+
 ## Quick Start (VO + Dashboard)
 
 ### Backend (VO + telemetry)
-1. Install Python dependencies:
-   ```bash
-   pip install -r requirement.txt
-   ```
-2. Run the VO pipeline with telemetry enabled:
-   ```bash
-   python src/main.py
-   ```
-3. WebSocket telemetry publishes at `ws://localhost:8765` by default.
+
+Use Python 3.12 and the tested dependency lock for a reproducible environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-lock.txt
+.\.venv\Scripts\python src/main.py --max-frames 51
+```
+
+The default input is the bundled monocular sample. Full KITTI input must be
+specified with `--data-root`; invalid paths fail instead of silently falling
+back to a different dataset. Add `--slam` for keyframes and the local map,
+`--no-telemetry` for batch processing, and `--output results/00.txt` for KITTI
+trajectory export. Plot windows are opened only with `--plot`.
+OpenCV defaults to one worker to bound memory. Use `--opencv-threads N` to
+increase workers when sufficient RAM is available. The runner uses a fixed
+OpenCV seed, matching the benchmark configuration.
+
+See [the completion plan](PLAN.md) for the audit, benchmark protocol, known
+accuracy gaps, and acceptance checks.
+WebSocket telemetry publishes at `ws://localhost:8765` by default.
 
 ### Dashboard (Next.js)
 1. Install dashboard dependencies:
    ```bash
    cd dashboard
-   npm install
+   npm ci
    ```
 2. Start the dashboard:
    ```bash
@@ -41,14 +91,142 @@ Configure in `src/config.py`:
 - `VOCAB_BUILD_MIN_FRAMES`, `VOCAB_NUM_CLUSTERS`, `LOOP_CLOSURE_THRESHOLD`, `POSE_GRAPH_OPT_EVERY`
 
 ### Optional Dependencies
-Loop closure + pose graph use `g2o` via `src/SLAM.py`. If `g2o` is unavailable, the backend will skip pose graph/loop closure features.
+Pose graph optimization uses SciPy and does not require g2o. Loop detection
+in the live runner reports appearance candidates; it does not insert unverified
+loop constraints. The offline evaluator verifies metric loops using stereo
+geometry. Integrating that verifier and correction feedback into live tracking
+and mapping remains unfinished. Monocular translation currently has arbitrary
+unit scale; use stereo for metric accuracy evaluation.
+
+### Benchmark and tests
+
+```powershell
+$data = 'C:\path\to\KITTI\dataset'
+.\.venv\Scripts\python src/eval_kitti.py --data-root "$data" --poses-root "$data\poses" --sequences 00 01 02 03 04 05 06 07 08 09 10 --stereo --output-root results/stereo
+.\.venv\Scripts\python -m pytest -q
+cd dashboard
+npm ci
+npm test
+npm run build
+```
+
+The evaluator writes poses, per-sequence JSON, and `summary.json`. It reports
+ATE with explicitly labeled alignment and KITTI drift over 100–800 m segments.
+Drift is computed without scale alignment. A sequence too short for these
+segments reports null drift metrics. `--max-frames` allows a labeled partial
+run; omit it for the full sequence. `--estimates-root` evaluates saved poses
+without rerunning odometry. FPS includes image I/O, including OneDrive hydration.
+Keep datasets local before comparing speed.
+
+For limited disk space or unavailable OneDrive images, the batch runner reads the
+official grayscale archive using HTTP ranges. It caches one sequence when space
+permits, otherwise streams CRC-checked images through bounded caches. Ground-truth
+pose files must first be copied into `results/benchmark-batch/reference/poses`.
+
+```powershell
+.\scripts\run_kitti_batch.ps1
+# Run missing selected sequences, with a separate log if another batch is active:
+.\scripts\run_kitti_batch.ps1 -Sequences @('03','06','05') -LogName retry-batch.log
+# Deliberately repeat tracking and geometric verification for a complete run:
+.\scripts\run_kitti_batch.ps1 -Sequences @('07') -ForceRetest -LogName repeat-07.log
+.\.venv\Scripts\python scripts/summarize_kitti_batch.py
+.\.venv\Scripts\python scripts/plot_kitti_batch.py
+# Verify source poses, official evaluator parity, retained graphs and cleanup:
+.\.venv\Scripts\python scripts/verify_kitti_ground_truth.py
+.\.venv\Scripts\python scripts/recompute_kitti_metrics.py
+.\.venv\Scripts\python scripts/check_kitti_devkit.py
+.\.venv\Scripts\python scripts/check_kitti_devkit.py --reports-root results/benchmark-batch/graph --output results/benchmark-batch/devkit-parity-graph.json
+.\.venv\Scripts\python scripts/verify_kitti_batch.py
+# Reoptimize saved, verified image constraints after image cleanup:
+.\.venv\Scripts\python scripts/run_kitti_stream.py --sequence 07 --replay-graph
+```
+
+Each sequence exports raw and corrected poses, full accuracy metrics, verified
+loop transforms, source checksums, runtime versions and explicit failure status.
+Only owned `.datasets/batch-scratch/NN` image/keyframe caches are deleted after
+testing; the original dataset and benchmark reports are retained. The summary
+accounts for all 11 ground-truth sequences, including pending/failed runs, and
+uses segment-count weighting for aggregate drift. `REPORT.md` and `plots/` hold
+every sequence's trajectory and position-error graphs. Batch graph correction is
+separate from live tracking and landmark feedback.
+
+Completed full runs are reused only when pose counts, rigid poses and the saved
+constraint checksum match. `-ForceRetest` requests a new image-based run;
+`--replay-graph` repeats only optimization from the retained measurements.
+KITTI segment endpoints follow the official devkit's float32 distance arithmetic.
+`scripts/check_kitti_devkit.py` compares every saved segment with the compiled
+official evaluator; the declared tolerance is 0.0001 percentage points and
+0.0001 degrees/m. Small pose graphs use a bounded dense SVD solve because the
+approximate sparse solve stalled on a real seven-loop graph.
+The SVD path groups independent vertices when computing forward differences;
+a regression test checks this Jacobian against independent column differences.
+Graph reports retain solver success, evaluation counts, initial/final objective,
+optimality and solve time. Image-constraint replay can reproduce these diagnostics
+after the temporary dataset images have been removed.
+The official devkit comparison needs a compiled `calcSequenceErrors` wrapper;
+the measured Windows reference and its source are retained under
+`results/benchmark-batch/devkit`. That reference uses MinGW flags
+`-O2 -msse2 -mfpmath=sse` so distance arithmetic follows IEEE float32.
+
+Dashboard `Clear view` clears the displayed history and reconnects; it does
+not restart the backend. Pause/Resume controls telemetry streaming while the
+odometry pipeline continues processing.
+
+The dashboard has Live, Benchmarks and Events views. Saved benchmark snapshots
+are built from actual JSON reports and pose files, with complete/partial coverage
+and separate raw error and aligned ATE. Refresh the saved snapshot before building:
+
+```powershell
+.\.venv\Scripts\python scripts/update_dashboard_benchmarks.py --data-root "$data"
+```
+
+### Loop-containing pose graph experiment
+
+Check image availability before a long OneDrive run:
+
+```powershell
+.\.venv\Scripts\python scripts/check_kitti_data.py --data-root "$data" --sequences 00 03 04 --max-frames 300
+```
+
+An alternative is to download one sequence from the official grayscale KITTI
+archive into `.datasets/kitti`. This uses HTTP ranges, verifies each ZIP member's
+CRC, and checks disk space before extracting. It does not download the full 22 GB
+archive. Ground-truth poses must be supplied separately.
+
+```powershell
+.\.venv\Scripts\python scripts/download_kitti_sequence.py --sequence 07 --inspect
+.\.venv\Scripts\python scripts/download_kitti_sequence.py --sequence 07
+.\.venv\Scripts\python src/eval_kitti.py --data-root .datasets/kitti --poses-root "$data\poses" --sequence 07 --stereo --output-root results/stereo-loop-07
+.\.venv\Scripts\python src/eval_pose_graph.py --data-root .datasets/kitti --poses-root "$data\poses" --estimates-root results/stereo-loop-07 --sequence 07 --output-root results/pose-graph
+```
+
+This is a **batch graph experiment**, separate from live SLAM. It retrieves loop
+candidates using visual words and temporal exclusion; requires mutual descriptor
+matches, bidirectional PnP, positive depth, image coverage and reprojection checks;
+and passes independently measured metric transforms to the same `SLAM` optimizer.
+Ground truth is loaded only after optimization, for accuracy evaluation. Rigid
+corrections propagate to every intermediate frame, and raw/corrected ATE and drift
+are reported together. Information weights are fixed experimental parameters,
+not estimated measurement covariances. A run with zero verified loops leaves the
+trajectory unchanged. Live tracking/landmark correction feedback is still missing.
+Loop features are capped at 1,500 per keyframe and graph evaluation uses one
+OpenCV worker. Saved `07-constraints.json` records the image-derived transforms
+and raw trajectory checksum. Add `--resume-graph` to retry optimization with
+those same constraints and configuration, without rerunning image retrieval.
 
 ## Telemetry Schema (v1)
 Fields published per frame:
 - `pose_T_wc` (4x4), `frame_index`, `timestamp`, `mode`
 - `tracking` (`num_matches`, `num_inliers`, `inlier_ratio`)
 - `map` (`keyframes`, `map_points`)
-- optional: `image`, `features`, `events`, `fps`
+- optional: `image`, `features`, `events`, `fps`, `sequence`, `total_frames`, `run_id`, `overlay_enabled`
+
+## Original learning notes
+
+The notes below describe the original project and mathematical background.
+They are not the current stereo benchmark's implementation specification:
+the tested stereo frontend uses SIFT/SGBM/PnP, ORB matching uses Hamming distance,
+and the original relative-scale heuristic does not establish monocular metric scale.
 
 This document provides a comprehensive summary of Visual SLAM,
 currently under development, synthesizing information from a variety of

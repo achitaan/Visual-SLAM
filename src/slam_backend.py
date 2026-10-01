@@ -5,6 +5,7 @@ from typing import List, Optional
 
 import cv2 as cv
 import numpy as np
+import warnings
 
 from config import (
     ENABLE_KEYFRAMES,
@@ -22,6 +23,7 @@ from config import (
     ENABLE_RELOCALIZATION,
     VOCAB_BUILD_MIN_FRAMES,
     VOCAB_NUM_CLUSTERS,
+    LOCAL_MAP_MAX_POINTS,
 )
 from map import Keyframe, LocalMap
 
@@ -49,7 +51,8 @@ class SlamBackend:
     def _try_init_slam(self):
         try:
             from SLAM import SLAM  # noqa: N812
-        except Exception:
+        except ImportError as exc:
+            warnings.warn(f"Pose graph and loop closure unavailable: {exc}", RuntimeWarning)
             return None
         return SLAM()
 
@@ -66,10 +69,14 @@ class SlamBackend:
     def pose_graph_state(self, current_keyframe_index: Optional[int]) -> Optional[dict]:
         if self._optimized_poses is None or current_keyframe_index is None:
             return None
-        if current_keyframe_index >= len(self._optimized_poses):
+        frame_indices = [keyframe.index for keyframe in self.local_map.keyframes]
+        if current_keyframe_index not in frame_indices:
+            return None
+        graph_index = frame_indices.index(current_keyframe_index)
+        if graph_index >= len(self._optimized_poses):
             return None
         return {
-            "optimized_pose_T_wc": self._optimized_poses[current_keyframe_index].tolist(),
+            "optimized_pose_T_wc": self._optimized_poses[graph_index].tolist(),
             "optimized_poses_count": len(self._optimized_poses),
             "optimized_poses": [pose.tolist() for pose in self._optimized_poses],
         }
@@ -162,12 +169,7 @@ class SlamBackend:
                             self._lost_counter = 0
                             return pose, events
 
-            pose = self._keyframe_poses[best_idx]
-            events.append(
-                SlamEvent(timestamp, "relocalized", f"Relocalized to keyframe {best_idx} ({best_matches} matches).")
-            )
-            self._lost_counter = 0
-            return pose, events
+            # Appearance retrieval alone does not estimate the current camera pose.
 
         events.append(SlamEvent(timestamp, "relocalization_failed", "Relocalization failed.", "warn"))
         return None, events
@@ -191,12 +193,12 @@ class SlamBackend:
         keyframe = Keyframe(index=index, pose_T_wc=pose_T_wc, image=image, features=None)
         self.local_map.add_keyframe(keyframe)
         self._keyframe_poses.append(pose_T_wc)
-        if descriptors is not None:
-            self._keyframe_desc.append(descriptors)
+        self._keyframe_desc.append(descriptors)
         if map_points and map_descriptors and len(map_points) == len(map_descriptors):
             self.local_map.add_points_with_desc(map_points, map_descriptors)
         elif map_points:
             self.local_map.add_points(map_points)
+        self.local_map.map_points = self.local_map.map_points[-LOCAL_MAP_MAX_POINTS:]
 
         events.append(SlamEvent(timestamp, "keyframe_added", f"Keyframe {index} added."))
         self._maybe_update_slam(index=index, pose_T_wc=pose_T_wc, descriptors=descriptors, timestamp=timestamp, events=events)
@@ -211,13 +213,18 @@ class SlamBackend:
         timestamp: float,
         events: List[SlamEvent],
     ) -> None:
-        if self._slam is None or descriptors is None:
+        if self._slam is None:
             return
 
+        # Every keyframe is a graph vertex, including those before BoW startup.
+        self._slam.initial_poses = [pose.copy() for pose in self._keyframe_poses]
+
         # Build vocabulary when enough keyframes collected.
-        if len(self._keyframe_desc) == VOCAB_BUILD_MIN_FRAMES and self._slam.kmeans is None:
+        valid_descriptors = [desc for desc in self._keyframe_desc if desc is not None and len(desc)]
+        if len(valid_descriptors) >= VOCAB_BUILD_MIN_FRAMES and self._slam.kmeans is None:
             try:
-                self._slam.build_vocabulary(self._keyframe_desc[:VOCAB_BUILD_MIN_FRAMES], num_clusters=VOCAB_NUM_CLUSTERS)
+                self._slam.build_vocabulary(valid_descriptors[:VOCAB_BUILD_MIN_FRAMES], num_clusters=VOCAB_NUM_CLUSTERS)
+                self._slam.histograms = [self._slam.compute_bow_histogram(desc) if desc is not None and len(desc) else np.zeros(VOCAB_NUM_CLUSTERS) for desc in self._keyframe_desc[:-1]]
                 events.append(SlamEvent(timestamp, "vocab_built", "BoW vocabulary built."))
             except Exception:
                 events.append(SlamEvent(timestamp, "vocab_failed", "BoW vocabulary build failed.", "warn"))
@@ -225,7 +232,9 @@ class SlamBackend:
         loop_idx = None
         if ENABLE_LOOP_CLOSURE and self._slam.kmeans is not None:
             try:
-                loop_idx = self._slam.process_frame(descriptors, pose_T_wc, loop_threshold=LOOP_CLOSURE_THRESHOLD)
+                hist = self._slam.compute_bow_histogram(descriptors) if descriptors is not None and len(descriptors) else np.zeros(VOCAB_NUM_CLUSTERS)
+                loop_idx = self._slam.detect_loop_closure(hist, threshold=LOOP_CLOSURE_THRESHOLD)
+                self._slam.histograms.append(hist)
             except Exception:
                 loop_idx = None
 
@@ -238,18 +247,14 @@ class SlamBackend:
 
         if ENABLE_LOOP_CLOSURE and loop_idx is not None and abs(loop_idx - (len(self._keyframe_poses) - 1)) > 1:
             current_idx = len(self._keyframe_poses) - 1
-            rel = np.linalg.inv(self._keyframe_poses[loop_idx]) @ self._keyframe_poses[current_idx]
-            if np.isfinite(rel).all():
-                info = np.identity(6) * 1.0
-                self._slam.add_loop_closure_edge(current_idx, loop_idx, rel, information=info)
-                events.append(SlamEvent(timestamp, "loop_closure", f"Loop closure with keyframe {loop_idx}."))
-            else:
-                events.append(SlamEvent(timestamp, "loop_closure_skipped", "Loop closure transform invalid.", "warn"))
+            # Never manufacture a loop measurement from the drifted trajectory.
+            # An independently verified PnP/Sim(3) measurement is still required.
+            events.append(SlamEvent(timestamp, "loop_candidate", f"Candidate keyframe {loop_idx}; geometric verification required."))
 
         if ENABLE_POSE_GRAPH and POSE_GRAPH_OPT_EVERY > 0:
             if len(self._keyframe_poses) % POSE_GRAPH_OPT_EVERY == 0:
                 try:
-                    optimized = self._slam.optimize_pose_graph(num_iterations=10)
+                    optimized = self._slam.optimize_pose_graph(num_iterations=100)
                     self._optimized_poses = optimized
                     events.append(SlamEvent(timestamp, "pose_graph_opt", "Pose graph optimized."))
                 except Exception:

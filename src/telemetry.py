@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, Optional
 import cv2 as cv
 import numpy as np
 import websockets
+from websockets.asyncio.server import ServerConnection
 
 SCHEMA_VERSION = 1
 
@@ -54,6 +55,10 @@ def make_frame_message(
     velocity: Optional[Iterable[float]] = None,
     events: Optional[Iterable[Dict[str, Any]]] = None,
     state: Optional[TelemetryState] = None,
+    translation_scale: str = "unspecified",
+    sequence: Optional[str] = None,
+    total_frames: Optional[int] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     state = state or TelemetryState()
     return {
@@ -61,6 +66,11 @@ def make_frame_message(
         "frame_index": frame_index,
         "timestamp": timestamp,
         "mode": state.mode,
+        "translation_scale": translation_scale,
+        "sequence": sequence,
+        "total_frames": total_frames,
+        "run_id": run_id,
+        "overlay_enabled": state.overlay_enabled,
         "stream_enabled": state.stream_enabled,
         "pose_T_wc": pose_T_wc.tolist(),
         "velocity": list(velocity) if velocity is not None else None,
@@ -81,19 +91,43 @@ class TelemetryServer:
         self.host = host
         self.port = port
         self.state = state or TelemetryState()
-        self._clients: set[websockets.WebSocketServerProtocol] = set()
+        self._clients: set[ServerConnection] = set()
         self._queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ready = threading.Event()
+        self._stopped = threading.Event()
+        self._error: Optional[Exception] = None
+        self._latest: Optional[Dict[str, Any]] = None
+        self._queue = queue.Queue(maxsize=2)
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        if not self._ready.wait(timeout=5):
+            raise RuntimeError("Telemetry server startup timed out")
+        if self._error is not None:
+            raise RuntimeError(f"Telemetry server failed: {self._error}") from self._error
+
+    def stop(self) -> None:
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                raise RuntimeError("Telemetry server did not stop")
 
     def publish(self, payload: Dict[str, Any]) -> None:
-        self._queue.put(payload)
+        self._latest = payload
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._queue.put_nowait(payload)
 
     def set_stream_enabled(self, enabled: bool) -> None:
         self.state.stream_enabled = enabled
@@ -105,17 +139,28 @@ class TelemetryServer:
         self.state.overlay_enabled = enabled
 
     def _run(self) -> None:
-        asyncio.run(self._run_async())
+        try:
+            asyncio.run(self._run_async())
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
 
     async def _run_async(self) -> None:
-        async with websockets.serve(self._handler, self.host, self.port):
+        async with websockets.serve(self._handler, self.host, self.port) as server:
+            self.port = server.sockets[0].getsockname()[1]
+            self._ready.set()
             await self._broadcast_loop()
 
-    async def _handler(self, websocket: websockets.WebSocketServerProtocol) -> None:
+    async def _handler(self, websocket: ServerConnection) -> None:
         self._clients.add(websocket)
         try:
+            if self._latest is not None:
+                await websocket.send(json.dumps(self._snapshot()))
             async for message in websocket:
                 self._handle_message(message)
+                if self._latest is not None:
+                    # Controls remain acknowledged while streaming is paused.
+                    await websocket.send(json.dumps(self._snapshot()))
         finally:
             self._clients.discard(websocket)
 
@@ -124,7 +169,7 @@ class TelemetryServer:
             data = json.loads(message)
         except json.JSONDecodeError:
             return
-        if data.get("type") != "control":
+        if not isinstance(data, dict) or data.get("type") != "control":
             return
         action = data.get("action")
         if action == "start":
@@ -140,9 +185,17 @@ class TelemetryServer:
             if isinstance(enabled, bool):
                 self.set_overlay_enabled(enabled)
 
+    def _snapshot(self) -> Dict[str, Any]:
+        return {**(self._latest or {}), "mode": self.state.mode, "stream_enabled": self.state.stream_enabled,
+                "overlay_enabled": self.state.overlay_enabled}
+
     async def _broadcast_loop(self) -> None:
-        while True:
-            payload = await asyncio.to_thread(self._queue.get)
+        while not self._stopped.is_set():
+            try:
+                payload = self._queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.01)
+                continue
             if not self.state.stream_enabled:
                 continue
             if not self._clients:
@@ -152,6 +205,9 @@ class TelemetryServer:
                 *(client.send(message) for client in list(self._clients)),
                 return_exceptions=True,
             )
+        # Deliver the final pose before closing the server at end of sequence.
+        if self._latest is not None and self._clients:
+            await asyncio.gather(*(client.send(json.dumps(self._snapshot())) for client in list(self._clients)), return_exceptions=True)
 
 
 def now() -> float:

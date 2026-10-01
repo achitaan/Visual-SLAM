@@ -4,6 +4,7 @@ opencv-contrib-python
 pytest
 pyyaml
 scikit-learn
+scipy
 matplotlib
 bokeh
 websockets

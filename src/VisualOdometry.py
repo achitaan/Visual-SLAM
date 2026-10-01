@@ -5,6 +5,8 @@ import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt 
 from numpy.typing import NDArray
+from kitti import image_paths, save_poses_txt
+from image_sequence import ImageSequence
 
 class VisualOdometry:
     def __init__(
@@ -14,18 +16,15 @@ class VisualOdometry:
         use_brute_force: bool,
         camera_id: int = 1,
         draw_matches: bool = True,
+        max_frames: int | None = None,
     ):
         self.K, self.P = self.__calib(camera_id=camera_id, filepath=calibration_path)  # Intrinsic camera matrix (example values)
         self.draw_matches = draw_matches
 
-        poses_path = r"poses\01.txt"
-        if os.path.exists(poses_path):
-            self.true_poses = self.__load_poses(poses_path)
-        else:
-            # Fallback when ground-truth poses are not available.
-            self.true_poses = [np.eye(4)]
-        self.poses = [self.true_poses[0]] 
-        self.Images = self.__load(folder_path)
+        # Ground truth is for evaluation only, never estimator initialization.
+        self.true_poses = []
+        self.poses = [np.eye(4)]
+        self.Images = self.__load(folder_path, max_frames)
 
 
         if use_brute_force:
@@ -73,21 +72,8 @@ class VisualOdometry:
         return T
 
     @staticmethod
-    def __load(filepath: str) -> list[NDArray]:
-        """
-        Load images from the specified folder
-        
-        Parameters:
-            filepath (str): path to folder
-
-        """
-        images = []
-        for filename in sorted(os.listdir(filepath)):
-            path = os.path.join(filepath, filename)
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            if img is not None:
-                images.append(img)
-        return images
+    def __load(filepath: str, max_frames: int | None = None):
+        return ImageSequence(filepath, max_frames)
 
     def __save(self, filepath: str) -> None:
         """
@@ -104,7 +90,7 @@ class VisualOdometry:
                 f.write("\n")
 
     def save_poses(self, filepath: str) -> None:
-        self.__save(filepath)
+        save_poses_txt(filepath, self.poses)
     
     def __draw_corresponding_points(self, i, kp1, kp2, good_matches):
         draw_params = dict(
@@ -160,12 +146,12 @@ class VisualOdometry:
         kp1, desc1 = self.orb.detectAndCompute(self.Images[i - 1], None)
         kp2, desc2 = self.orb.detectAndCompute(self.Images[i], None)
 
-        matches = self.brute_force.match(desc1, desc2)
+        matches = self.brute_force.match(desc1, desc2) if desc1 is not None and desc2 is not None else []
 
         if self.draw_matches:
             self.__draw_corresponding_points(i, kp1, kp2, matches)
-        p1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-        p2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+        p1 = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 2)
+        p2 = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 2)
         return p1, p2
 
     def flann_match_features(self, i: int, return_debug: bool = False):
@@ -182,17 +168,20 @@ class VisualOdometry:
         kp1, desc1 = self.sift.detectAndCompute(self.Images[i - 1], None)
         kp2, desc2 = self.sift.detectAndCompute(self.Images[i], None)
 
-        matches = self.flann.knnMatch(desc1, desc2, k=2)
+        matches = self.flann.knnMatch(desc1, desc2, k=2) if desc1 is not None and desc2 is not None and len(desc2) >= 2 else []
 
         thresh, good_matches = 0.7, []
-        for m, n in matches:
+        for pair in matches:
+            if len(pair) != 2:
+                continue
+            m, n = pair
             if m.distance < thresh * n.distance:
                 good_matches.append(m)
 
         if self.draw_matches:
             self.__draw_corresponding_points(i, kp1, kp2, good_matches)
-        p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
-        p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
+        p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
+        p2 = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
         if not return_debug:
             return p1, p2
         return p1, p2, kp1, kp2, desc1, desc2, good_matches
@@ -203,127 +192,54 @@ class VisualOdometry:
         return self.sift.detectAndCompute(self.Images[i], None)
 
     def find_transf_fast(self, p1: NDArray, p2: NDArray) -> NDArray:
-        E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        _, R, t, mask = cv.recoverPose(E, p1, p2, self.K)
+        return self.find_transf(p1, p2)
 
-        # Normalize the translation vector
-        t = t / np.linalg.norm(t)
+    def find_transf(self, p1: NDArray, p2: NDArray, return_debug: bool = False,
+                    use_scale_fix: bool = False):
+        """Estimate T_previous_current; monocular translation has unit scale.
 
-        T = self.__transform(R, t)
-        return np.linalg.inv(T)
-
-    def find_transf(
-        self,
-        p1: NDArray,
-        p2: NDArray,
-        return_debug: bool = False,
-        use_scale_fix: bool = False,
-    ):
+        OpenCV recovers X_current = R X_previous + t. Invert that transform
+        for camera-to-world pose accumulation. Ground truth never sets scale.
         """
-        Finds the most accurate transformation matrix from points p1 and p2
+        p1, p2 = np.asarray(p1, dtype=np.float32).reshape(-1, 2), np.asarray(p2, dtype=np.float32).reshape(-1, 2)
+        if p1.shape != p2.shape:
+            raise ValueError("Matched point arrays must have equal shape")
+        debug = {"num_matches": len(p1), "num_inliers": 0, "inlier_ratio": 0.0,
+                 "inlier_mask": [False] * len(p1), "relative_scale": 1.0,
+                 "scale_observable": False, "tracking_ok": False}
+        transform = np.eye(4)
+        if len(p1) >= 8 and np.isfinite(p1).all() and np.isfinite(p2).all():
+            if np.median(np.linalg.norm(p2 - p1, axis=1)) > 1e-3:
+                essential, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC,
+                                                       prob=0.999, threshold=1.0)
+                if essential is not None and essential.shape == (3, 3):
+                    count, rotation, translation, mask = cv.recoverPose(essential, p1, p2, self.K, mask=mask)
+                    if count >= 8 and np.isfinite(rotation).all() and np.isfinite(translation).all():
+                        transform = np.linalg.inv(self.__transform(rotation, translation))
+                        debug.update({"num_inliers": int(count), "inlier_ratio": count / len(p1),
+                                      "inlier_mask": [bool(v) for v in mask.ravel()],
+                                      "best_R": rotation, "best_t": translation.reshape(3), "tracking_ok": True})
+        return (transform, debug) if return_debug else transform
 
-        Parameters:
-            p1 (ndarray): numpy array of points in the previous image
-            p2 (ndarray): numpy array of the coresponding subsequent points
-
-        Returns:
-            T (ndarray): 2D numpy array of shape (4, 4)
-        """
-        E, mask = cv.findEssentialMat(p1, p2, self.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        R1, R2, t = cv.decomposeEssentialMat(E)
-        t = np.squeeze(t)
-
-        pairs = [(R1, t), (R1, -t), (R2, t), (R2, -t)]
-        P1 = self.K @ np.eye(3, 4)
-        
-        max_z_count, best_pose = 0, 0
-        relative_scale = 1.0  # Default scale factor
-
-        for R, t in pairs:
-            P2 = np.concatenate((self.K, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
-
-            points_4d_hom = cv.triangulatePoints(self.P, P2, p1.T, p2.T)
-            p1_3d_hom = points_4d_hom[:3] / points_4d_hom[3]
-            p2_3d_hom = R @ p1_3d_hom + t.reshape(-1, 1)
-            z1, z2 = p1_3d_hom[2], p2_3d_hom[2]
-
-            pos_z_count = np.sum((z1 > 0) & (z2 > 0))
-            
-            # Calculate relative scale using only points with positive depth
-            if pos_z_count > max_z_count:
-                max_z_count = pos_z_count
-                best_pose = (R, t)
-                
-                # Filter points with positive depth
-                valid_points = (z1 > 0) & (z2 > 0)
-                if np.sum(valid_points) > 1:  # Need at least 2 points to compute distances
-                    p1_valid = p1_3d_hom[:, valid_points]
-                    p2_valid = p2_3d_hom[:, valid_points]
-
-                    if use_scale_fix:
-                        # Compute inter-point distances for scale (more stable than origin distance).
-                        p1_pairs = p1_valid.T
-                        p2_pairs = p2_valid.T
-                        if p1_pairs.shape[0] > 1:
-                            dist_p1 = np.linalg.norm(p1_pairs[1:] - p1_pairs[:-1], axis=1)
-                            dist_p2 = np.linalg.norm(p2_pairs[1:] - p2_pairs[:-1], axis=1)
-                        else:
-                            dist_p1 = np.array([])
-                            dist_p2 = np.array([])
-                    else:
-                        # Legacy: distances from origin in each frame.
-                        dist_p1 = np.linalg.norm(p1_valid, axis=0)
-                        dist_p2 = np.linalg.norm(p2_valid, axis=0)
-
-                    # Avoid division by zero or invalid distances
-                    valid_distances = (dist_p1 > 1e-6) & (dist_p2 > 1e-6)
-                    if np.sum(valid_distances) > 0:
-                        relative_scale = np.median(dist_p1[valid_distances] / dist_p2[valid_distances])
-                    else:
-                        relative_scale = 1.0  # Fallback to default scale
-                else:
-                    relative_scale = 1.0  # Fallback to default scale
-
-        R, t = best_pose
-        t = t * relative_scale  # Scale the translation vector
-        T = np.linalg.inv(self.__transform(R, t))
-
-        if not return_debug:
-            return T
-
-        num_matches = int(len(p1))
-        inlier_mask = None
-        if mask is not None:
-            inlier_mask = [bool(v) for v in mask.ravel().tolist()]
-        num_inliers = int(np.sum(mask)) if mask is not None else None
-        inlier_ratio = (num_inliers / num_matches) if num_inliers is not None and num_matches > 0 else None
-        debug = {
-            "num_matches": num_matches,
-            "num_inliers": num_inliers,
-            "inlier_ratio": inlier_ratio,
-            "relative_scale": float(relative_scale),
-            "inlier_mask": inlier_mask,
-            "scale_fix_enabled": bool(use_scale_fix),
-            "best_R": R,
-            "best_t": t,
-        }
-        return T, debug
-
-    def triangulate_points(self, p1: NDArray, p2: NDArray, R: NDArray, t: NDArray, inlier_mask=None):
+    def triangulate_points(self, p1: NDArray, p2: NDArray, R: NDArray, t: NDArray, inlier_mask=None, return_indices=False):
         P1 = self.K @ np.eye(3, 4)
         P2 = np.concatenate((self.K, np.zeros((3, 1))), axis=1) @ self.__transform(R, t)
+        indices = np.arange(len(p1))
         if inlier_mask is not None:
             mask = np.array(inlier_mask, dtype=bool)
             p1 = p1[mask]
             p2 = p2[mask]
+            indices = indices[mask]
         if len(p1) < 2:
-            return []
+            return ([], []) if return_indices else []
         points_4d_hom = cv.triangulatePoints(P1, P2, p1.T, p2.T)
-        points_3d = (points_4d_hom[:3] / points_4d_hom[3]).T
+        with np.errstate(divide="ignore", invalid="ignore"):
+            points_3d = (points_4d_hom[:3] / points_4d_hom[3]).T
         # Keep points with positive depth in both cameras
         p2_cam = (R @ points_3d.T + t.reshape(-1, 1)).T
-        valid = (points_3d[:, 2] > 0) & (p2_cam[:, 2] > 0)
-        return [points_3d[i] for i in range(points_3d.shape[0]) if valid[i]]
+        valid = np.isfinite(points_3d).all(axis=1) & (points_3d[:, 2] > 0) & (p2_cam[:, 2] > 0)
+        points = list(points_3d[valid])
+        return (points, indices[valid].tolist()) if return_indices else points
 
 
 # Test

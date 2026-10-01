@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class TelemetryConfig:
     enabled: bool = True
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8765
     stream_images: bool = True  # Camera view
     stream_features: bool = True

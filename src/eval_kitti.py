@@ -1,139 +1,95 @@
+"""Run KITTI VO or evaluate saved trajectories without importing OpenCV."""
 import argparse
-import math
 import os
-from typing import List, Tuple
-
-import numpy as np
-
-from StereoVisualOdometry import StereoVisualOdometry
-from VisualOdometry import VisualOdometry
-
-
-def load_poses_txt(path: str) -> List[np.ndarray]:
-    poses = []
-    with open(path, "r") as f:
-        for line in f:
-            values = np.fromstring(line.strip(), dtype=np.float64, sep=" ")
-            if values.size != 12:
-                continue
-            T = values.reshape(3, 4)
-            T = np.vstack((T, [0.0, 0.0, 0.0, 1.0]))
-            poses.append(T)
-    return poses
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+import json
+from pathlib import Path
+import time
+from kitti import load_poses_txt, save_poses_txt, validate_sequence
+from metrics import compute_ate_rmse, evaluate_trajectory, umeyama_alignment
 
 
-def umeyama_alignment(src: np.ndarray, dst: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray]:
-    # Align src to dst: dst ~= scale * R * src + t
-    assert src.shape == dst.shape
-    mu_src = src.mean(axis=0)
-    mu_dst = dst.mean(axis=0)
-    src_centered = src - mu_src
-    dst_centered = dst - mu_dst
-    cov = dst_centered.T @ src_centered / src.shape[0]
-    U, S, Vt = np.linalg.svd(cov)
-    R = U @ Vt
-    if np.linalg.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = U @ Vt
-    var_src = np.var(src_centered, axis=0).sum()
-    scale = 1.0 if var_src < 1e-12 else (S.sum() / var_src)
-    t = mu_dst - scale * (R @ mu_src)
-    return R, scale, t
+def run_vo_sequence(image_dir, calib_path, camera_id, max_frames, use_stereo, stereo_root=None, stats=None):
+    import cv2 as cv
+    cv.setRNGSeed(0)
+    cv.setNumThreads(1)
+    tracked = 0
+    if use_stereo:
+        from StereoVisualOdometry import StereoVisualOdometry
+        vo = StereoVisualOdometry(stereo_root, calib_path, use_brute_force=False,
+                                  draw_matches=False, max_frames=max_frames)
+        for i in range(1, len(vo.Images_1)):
+            transform, debug = vo.find_transf_pnp_debug(i)
+            tracked += int(debug.get("tracking_ok", True))
+            vo.poses.append(vo.poses[-1] @ transform)
+            if i % 100 == 0:
+                print(f"Processed {i + 1}/{len(vo.Images_1)} stereo frames", flush=True)
+    else:
+        from VisualOdometry import VisualOdometry
+        vo = VisualOdometry(image_dir, calib_path, use_brute_force=False, camera_id=camera_id,
+                            draw_matches=False, max_frames=max_frames)
+        for i in range(1, len(vo.Images)):
+            p1, p2 = vo.flann_match_features(i)
+            transform, debug = vo.find_transf(p1, p2, return_debug=True)
+            tracked += int(debug["tracking_ok"])
+            vo.poses.append(vo.poses[-1] @ transform)
+            if i % 100 == 0:
+                print(f"Processed {i + 1}/{len(vo.Images)} monocular frames", flush=True)
+    if stats is not None:
+        stats.update({"tracked_pairs": tracked, "lost_pairs": len(vo.poses) - 1 - tracked})
+    return vo.poses
 
 
-def compute_ate_rmse(gt: np.ndarray, est: np.ndarray) -> float:
-    errors = np.linalg.norm(gt - est, axis=1)
-    return math.sqrt(np.mean(errors**2))
-
-
-def run_vo_sequence(
-    image_dir: str,
-    calib_path: str,
-    camera_id: int,
-    max_frames: int | None,
-    use_stereo: bool,
-    stereo_root: str | None = None,
-) -> List[np.ndarray]:
-    if use_stereo and stereo_root:
-        vo = StereoVisualOdometry(
-            stereo_root,
-            calib_path,
-            use_brute_force=False,
-            poses_path=None,
-            draw_matches=False,
-        )
-        num_frames = len(vo.Images_1)
-        if max_frames is not None:
-            num_frames = min(num_frames, max_frames)
-        print(f"Running stereo VO on {num_frames} frames...")
-        for i in range(1, num_frames):
-            T, _ = vo.find_transf_pnp_debug(i)
-            vo.poses.append(vo.poses[-1] @ T)
-        return vo.poses[:num_frames]
-
-    vo = VisualOdometry(
-        image_dir,
-        calib_path,
-        use_brute_force=False,
-        camera_id=camera_id,
-        draw_matches=False,
-    )
-    num_frames = len(vo.Images)
-    if max_frames is not None:
-        num_frames = min(num_frames, max_frames)
-    print(f"Running mono VO on {num_frames} frames...")
-    for i in range(1, num_frames):
-        p1, p2 = vo.flann_match_features(i)
-        T = vo.find_transf(p1, p2)
-        vo.poses.append(vo.poses[-1] @ T)
-    return vo.poses[:num_frames]
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sequence", default="00")
-    parser.add_argument("--data-root", default=r"C:\Users\SSGSS\Documents\Visual-SLAM\data_odometry_gray\dataset")
-    parser.add_argument("--poses-root", default=r"C:\Users\SSGSS\Documents\Visual-SLAM\data_odometry_poses\dataset\poses")
-    parser.add_argument("--max-frames", type=int, default=300)
-    parser.add_argument("--stereo", action="store_true")
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--sequences', '--sequence', nargs='+', default=['00'])
+    parser.add_argument('--data-root', type=Path, help='KITTI dataset directory containing sequences/')
+    parser.add_argument('--poses-root', type=Path, required=True, help='Ground truth directory containing 00.txt, etc.')
+    parser.add_argument('--estimates-root', type=Path, help='Evaluate saved 00.txt, etc. without running VO')
+    parser.add_argument('--output-root', type=Path, default=Path('results/kitti'))
+    parser.add_argument('--max-frames', type=int)
+    parser.add_argument('--stereo', action='store_true')
+    parser.add_argument('--alignment', choices=['none', 'se3', 'sim3'], help='ATE only; drift is always unscaled')
     args = parser.parse_args()
+    if args.max_frames is not None and args.max_frames < 2:
+        parser.error('--max-frames must be at least 2')
+    if not args.estimates_root and not args.data_root:
+        parser.error('provide --data-root to run VO or --estimates-root to evaluate saved poses')
+    alignment = args.alignment or ('se3' if args.stereo else 'sim3')
+    reports = {}
+    for sequence in args.sequences:
+        if len(sequence) != 2 or not sequence.isdigit():
+            parser.error(f'invalid sequence: {sequence}')
+        gt = load_poses_txt(args.poses_root / f'{sequence}.txt')
+        started = time.perf_counter()
+        tracking = {}
+        if args.estimates_root:
+            est = load_poses_txt(args.estimates_root / f'{sequence}.txt')
+            if args.max_frames is not None:
+                est = est[:args.max_frames]
+        else:
+            seq_dir = validate_sequence(args.data_root, sequence, args.stereo, args.max_frames)
+            est = run_vo_sequence(str(seq_dir / 'image_0'), str(seq_dir / 'calib.txt'), 0,
+                                  args.max_frames, args.stereo, str(seq_dir / 'image_'), stats=tracking)
+        elapsed = time.perf_counter() - started
+        if args.max_frames is not None:
+            gt = gt[:args.max_frames]
+        # A short/failed prediction must not be silently truncated to appear complete.
+        report = evaluate_trajectory(gt, est, alignment)
+        report.update({'sequence': sequence, 'source': 'saved' if args.estimates_root else 'stereo_vo' if args.stereo else 'mono_vo'})
+        report.update(tracking)
+        report['translation_scale'] = 'metric' if args.stereo else 'unspecified' if args.estimates_root else 'arbitrary'
+        if not args.estimates_root:
+            report.update({'elapsed_s': elapsed, 'processing_fps': (len(est) - 1) / elapsed})
+        args.output_root.mkdir(parents=True, exist_ok=True)
+        save_poses_txt(args.output_root / f'{sequence}.txt', est)
+        (args.output_root / f'{sequence}.json').write_text(json.dumps(report, indent=2, allow_nan=False))
+        reports[sequence] = {key: value for key, value in report.items() if key != 'segments'}
+        print(json.dumps(reports[sequence], allow_nan=False))
+    (args.output_root / 'summary.json').write_text(json.dumps(
+        {'sequences': reports, 'drift_uses_scale_alignment': False}, indent=2, allow_nan=False))
 
-    seq = args.sequence
-    image_dir = os.path.join(args.data_root, "sequences", seq, "image_0")
-    calib_path = os.path.join(args.data_root, "sequences", seq, "calib.txt")
-    gt_path = os.path.join(args.poses_root, f"{seq}.txt")
 
-    if not os.path.isdir(image_dir):
-        raise FileNotFoundError(f"Missing image dir: {image_dir}")
-    if not os.path.isfile(calib_path):
-        raise FileNotFoundError(f"Missing calib file: {calib_path}")
-    if not os.path.isfile(gt_path):
-        raise FileNotFoundError(f"Missing gt poses: {gt_path}")
-
-    gt_poses = load_poses_txt(gt_path)
-    stereo_root = os.path.join(args.data_root, "sequences", seq, "image_")
-    est_poses = run_vo_sequence(
-        image_dir,
-        calib_path,
-        camera_id=0,
-        max_frames=args.max_frames,
-        use_stereo=args.stereo,
-        stereo_root=stereo_root,
-    )
-
-    count = min(len(gt_poses), len(est_poses))
-    gt_xyz = np.array([pose[:3, 3] for pose in gt_poses[:count]])
-    est_xyz = np.array([pose[:3, 3] for pose in est_poses[:count]])
-
-    R, scale, t = umeyama_alignment(est_xyz, gt_xyz)
-    est_aligned = (scale * (R @ est_xyz.T)).T + t
-
-    ate = compute_ate_rmse(gt_xyz, est_aligned)
-    print(f"Sequence {seq}")
-    print(f"Frames evaluated: {count}")
-    print(f"Alignment scale: {scale:.4f}")
-    print(f"ATE RMSE (m): {ate:.4f}")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

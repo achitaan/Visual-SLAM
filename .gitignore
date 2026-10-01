@@ -9,3 +9,11 @@ __pycache__/
 .conda_pkgs/
 node_modules/
 .next/
+.npm-cache/
+.pip-cache/
+.pytest_cache/
+.mpl-cache/
+*.tsbuildinfo
+results/
+.test-build/
+.datasets/

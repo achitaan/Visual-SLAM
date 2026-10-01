@@ -1,0 +1,123 @@
+{
+  "tolerances": {
+    "position_m": 0.01,
+    "rotation_deg": 0.001,
+    "ate_m": 0.001,
+    "translation_percent": 0.0001
+  },
+  "compared_sequences": 11,
+  "passed": true,
+  "results": [
+    {
+      "sequence": "00",
+      "frames": 4541,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 4.724545992828022e-05,
+      "max_rotation_difference_deg": 6.782201274145938e-06,
+      "ate_difference_m": 7.109954325290602e-07,
+      "translation_difference_percent": 2.8547122421507254e-07,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "01",
+      "frames": 1101,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.1104403651458925e-13,
+      "ate_difference_m": 3.674216486615478e-10,
+      "translation_difference_percent": 5.194689123300122e-10,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "02",
+      "frames": 4661,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.00016008585044195465,
+      "max_rotation_difference_deg": 1.3362095791664026e-05,
+      "ate_difference_m": 2.5130584209165363e-06,
+      "translation_difference_percent": 1.3498179685100808e-08,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "03",
+      "frames": 801,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.084616559393651e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "04",
+      "frames": 271,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 2.784198577482672e-13,
+      "ate_difference_m": 3.5454528202194524e-11,
+      "translation_difference_percent": 2.387470221520971e-10,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "05",
+      "frames": 2761,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.122621570858569e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "06",
+      "frames": 1101,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.144952335456471e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "07",
+      "frames": 1101,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.118991953759794e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "08",
+      "frames": 4071,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.1541157715998917e-13,
+      "ate_difference_m": 4.5925929725854076e-11,
+      "translation_difference_percent": 2.0921708809851225e-11,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "09",
+      "frames": 1591,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.2234261534168813e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "10",
+      "frames": 1201,
+      "identical_measured_loops": true,
+      "max_position_difference_m": 0.0,
+      "max_rotation_difference_deg": 3.11433696832205e-13,
+      "ate_difference_m": 0.0,
+      "translation_difference_percent": 0.0,
+      "within_tolerance": true
+    }
+  ],
+  "scope": "Same measured image constraints and graph weights; replays read serialized raw KITTI poses and use the current grouped Jacobian."
+}

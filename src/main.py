@@ -1,6 +1,10 @@
 import argparse
 import os
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
 import time
+import uuid
+from pathlib import Path
 import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,19 +14,9 @@ from bokeh.io import output_notebook, output_file
 
 from StereoVisualOdometry import StereoVisualOdometry
 from VisualOdometry import VisualOdometry
+from kitti import load_poses_txt, save_poses_txt, validate_sequence
 
 
-def load_poses_txt(path: str) -> list[np.ndarray]:
-    poses = []
-    with open(path, "r") as f:
-        for line in f:
-            values = np.fromstring(line.strip(), dtype=np.float64, sep=" ")
-            if values.size != 12:
-                continue
-            T = values.reshape(3, 4)
-            T = np.vstack((T, [0.0, 0.0, 0.0, 1.0]))
-            poses.append(T)
-    return poses
 from config import (
     ENABLE_KEYFRAMES,
     ENABLE_LOCAL_MAP,
@@ -94,43 +88,65 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", default=r"C:\Users\SSGSS\Documents\Visual-SLAM\data_odometry_gray\dataset")
+    parser.add_argument("--data-root", type=Path, help="KITTI root containing sequences/")
+    parser.add_argument("--poses-root", type=Path, help="Ground-truth poses for display only")
     parser.add_argument("--sequence", default="00")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--stereo", action="store_true")
+    parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
+    parser.add_argument("--no-telemetry", action="store_true")
+    parser.add_argument("--telemetry-port", type=int, default=TELEMETRY.port)
+    parser.add_argument("--frame-delay-ms", type=float, default=TELEMETRY.frame_delay_ms)
+    parser.add_argument("--output", type=Path, default=Path("results/poses.txt"))
+    parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
+    if args.opencv_threads < 1:
+        parser.error('--opencv-threads must be positive')
+    cv.setNumThreads(args.opencv_threads)
+    cv.setRNGSeed(0)
+    run_id = str(uuid.uuid4())
+    if args.max_frames is not None and args.max_frames < 2:
+        parser.error("--max-frames must be at least 2")
+    if args.frame_delay_ms < 0:
+        parser.error("--frame-delay-ms cannot be negative")
+    if not 0 <= args.telemetry_port <= 65535:
+        parser.error("--telemetry-port must be between 0 and 65535")
 
     gt_poses = None
     stereo_root = None
-    if os.path.isdir(args.data_root):
-        folder_path = os.path.join(args.data_root, "sequences", args.sequence, "image_0")
-        calib_path = os.path.join(args.data_root, "sequences", args.sequence, "calib.txt")
-        times_path = os.path.join(args.data_root, "sequences", args.sequence, "times.txt")
+    gt_path = None
+    if args.data_root is not None:
+        sequence_dir = validate_sequence(args.data_root, args.sequence, args.stereo, args.max_frames)
+        folder_path = str(sequence_dir / "image_0")
+        calib_path = str(sequence_dir / "calib.txt")
+        times_path = str(sequence_dir / "times.txt")
         camera_id = 0
-        stereo_root = os.path.join(args.data_root, "sequences", args.sequence, "image_")
-        poses_root = r"C:\Users\SSGSS\Documents\Visual-SLAM\data_odometry_poses\dataset\poses"
-        gt_path = os.path.join(poses_root, f"{args.sequence}.txt")
-        if os.path.isfile(gt_path):
-            gt_poses = load_poses_txt(gt_path)
+        stereo_root = str(sequence_dir / "image_")
     else:
-        folder_path = r"KITTI_sequence_1\image_l"
-        calib_path = r"KITTI_sequence_1\calib.txt"
+        if args.stereo:
+            parser.error("--stereo requires --data-root with matching image_0/image_1 frames")
+        sample_dir = Path(__file__).resolve().parent.parent / "KITTI_sequence_1"
+        folder_path = str(sample_dir / "image_l")
+        calib_path = str(sample_dir / "calib.txt")
         times_path = None
-        camera_id = 1
+        camera_id = 0
+    if args.poses_root:
+        gt_path = str(args.poses_root / f"{args.sequence}.txt")
+        gt_poses = load_poses_txt(gt_path)
 
     use_stereo = bool(args.stereo and stereo_root and os.path.isdir(stereo_root + "1"))
     if use_stereo:
         vo = StereoVisualOdometry(
             stereo_root,
             calib_path,
-            use_brute_force=True,  # ORB is faster than SIFT
+            use_brute_force=False,  # Match the SIFT benchmark configuration.
             poses_path=gt_path,
             draw_matches=False,
             max_frames=args.max_frames,
         )
-        telemetry_state = TelemetryState()
+        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo")
         telemetry = None
         slam_backend = SlamBackend(camera_matrix=vo.K1)
     else:
@@ -140,14 +156,15 @@ def main() -> None:
             use_brute_force=False,
             camera_id=camera_id,
             draw_matches=False,
+            max_frames=args.max_frames,
         )
-        telemetry_state = TelemetryState()
+        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo")
         telemetry = None
         slam_backend = SlamBackend(camera_matrix=vo.K)
     last_keyframe_pose = vo.poses[0]
     last_keyframe_index = 0
-    if TELEMETRY.enabled:
-        telemetry = TelemetryServer(TELEMETRY.host, TELEMETRY.port, telemetry_state)
+    if TELEMETRY.enabled and not args.no_telemetry:
+        telemetry = TelemetryServer(TELEMETRY.host, args.telemetry_port, telemetry_state)
         telemetry.start()
         if args.slam:
             telemetry_state.mode = "slam"
@@ -162,156 +179,158 @@ def main() -> None:
         with open(times_path, "r") as f:
             frame_times = [float(line.strip()) for line in f if line.strip()]
 
-    for i in range(1, num_frames):
+    try:
+        for i in range(1, num_frames):
 
-        mode_is_slam = telemetry_state.mode == "slam" if telemetry else True
-        use_keyframes = ENABLE_KEYFRAMES and mode_is_slam
-        use_local_map = ENABLE_LOCAL_MAP and mode_is_slam
-        use_relocalization = ENABLE_RELOCALIZATION and mode_is_slam
+            mode_is_slam = telemetry_state.mode == "slam"
+            use_keyframes = ENABLE_KEYFRAMES and mode_is_slam
+            use_local_map = ENABLE_LOCAL_MAP and mode_is_slam
+            use_relocalization = ENABLE_RELOCALIZATION and mode_is_slam
 
-        if use_stereo:
-            T, debug = vo.find_transf_pnp_debug(i)
-            kp2 = debug.get("keypoints", [])
-            desc2 = debug.get("descriptors")
-            p2 = np.array([kp.pt for kp in kp2], dtype=np.float32) if kp2 else np.empty((0, 2), dtype=np.float32)
-        else:
-            if use_keyframes or use_local_map:
-                match_debug = vo.flann_match_features(i, return_debug=True)
-                p1, p2, kp1, kp2, desc1, desc2, matches = match_debug
+            if use_stereo:
+                T, debug = vo.find_transf_pnp_debug(i)
+                kp2 = debug.get("keypoints", [])
+                desc2 = debug.get("descriptors")
+                p2 = np.asarray(debug.get("feature_points", []), dtype=np.float32).reshape(-1, 2)
             else:
-                p1, p2 = vo.flann_match_features(i)
-            T, debug = vo.find_transf(p1, p2, return_debug=True, use_scale_fix=USE_RELATIVE_SCALE_FIX)
+                if use_keyframes or use_local_map:
+                    match_debug = vo.flann_match_features(i, return_debug=True)
+                    p1, p2, kp1, kp2, desc1, desc2, matches = match_debug
+                else:
+                    p1, p2 = vo.flann_match_features(i)
+                T, debug = vo.find_transf(p1, p2, return_debug=True, use_scale_fix=USE_RELATIVE_SCALE_FIX)
         
-        vo.poses.append(vo.poses[-1] @ T)
+            vo.poses.append(vo.poses[-1] @ T)
 
-        events = []
-        if use_keyframes or use_local_map:
-            should_add_keyframe = False
-            if (i - last_keyframe_index) >= KEYFRAME_INTERVAL:
-                should_add_keyframe = True
-            else:
-                delta = vo.poses[-1][:3, 3] - last_keyframe_pose[:3, 3]
-                if np.linalg.norm(delta) >= MIN_KEYFRAME_TRANSLATION:
+            events = []
+            if (use_keyframes or use_local_map) and debug.get("tracking_ok", False):
+                should_add_keyframe = False
+                if (i - last_keyframe_index) >= KEYFRAME_INTERVAL:
                     should_add_keyframe = True
+                else:
+                    delta = vo.poses[-1][:3, 3] - last_keyframe_pose[:3, 3]
+                    if use_stereo and np.linalg.norm(delta) >= MIN_KEYFRAME_TRANSLATION:
+                        should_add_keyframe = True
 
-            if should_add_keyframe:
-                map_points = None
-                map_descriptors = None
-                if use_local_map and not use_stereo:
-                    best_R = debug.get("best_R")
-                    best_t = debug.get("best_t")
-                    if best_R is not None and best_t is not None:
-                        map_points = vo.triangulate_points(p1, p2, best_R, best_t, debug.get("inlier_mask"))
-                        if map_points:
-                            inlier_mask = debug.get("inlier_mask") or []
-                            match_descs = [desc2[m.trainIdx] for m in matches] if desc2 is not None else []
-                            if inlier_mask:
-                                match_descs = [d for d, keep in zip(match_descs, inlier_mask) if keep]
+                if should_add_keyframe:
+                    map_points = None
+                    map_descriptors = None
+                    if use_local_map and not use_stereo:
+                        best_R = debug.get("best_R")
+                        best_t = debug.get("best_t")
+                        if best_R is not None and best_t is not None:
+                            map_points, point_indices = vo.triangulate_points(p1, p2, best_R, best_t, debug.get("inlier_mask"), return_indices=True)
+                            if map_points:
+                                match_descs = [desc2[matches[j].trainIdx] for j in point_indices] if desc2 is not None else []
 
-                            prev_pose = vo.poses[-2] if len(vo.poses) > 1 else vo.poses[-1]
-                            filtered_points = []
-                            filtered_descs = []
-                            for point, desc in zip(map_points, match_descs):
-                                if point[2] < LOCAL_MAP_MIN_DEPTH:
-                                    continue
-                                if np.linalg.norm(point) > LOCAL_MAP_MAX_RANGE:
-                                    continue
-                                world_point = (prev_pose @ np.array([point[0], point[1], point[2], 1.0]))[:3]
-                                filtered_points.append(world_point)
-                                filtered_descs.append(desc)
+                                prev_pose = vo.poses[-2] if len(vo.poses) > 1 else vo.poses[-1]
+                                filtered_points = []
+                                filtered_descs = []
+                                for point, desc in zip(map_points, match_descs):
+                                    if point[2] < LOCAL_MAP_MIN_DEPTH:
+                                        continue
+                                    if np.linalg.norm(point) > LOCAL_MAP_MAX_RANGE:
+                                        continue
+                                    world_point = (prev_pose @ np.array([point[0], point[1], point[2], 1.0]))[:3]
+                                    filtered_points.append(world_point)
+                                    filtered_descs.append(desc)
 
-                            if filtered_points:
-                                if len(filtered_points) > LOCAL_MAP_MAX_POINTS:
-                                    filtered_points = filtered_points[:LOCAL_MAP_MAX_POINTS]
-                                    filtered_descs = filtered_descs[:LOCAL_MAP_MAX_POINTS]
-                                map_points = filtered_points
-                                map_descriptors = filtered_descs
+                                map_points = filtered_points[:LOCAL_MAP_MAX_POINTS]
+                                map_descriptors = filtered_descs[:LOCAL_MAP_MAX_POINTS]
 
-                events = slam_backend.maybe_add_keyframe(
-                    index=i,
-                    pose_T_wc=vo.poses[-1],
-                    image=vo.Images_1[i] if use_stereo else vo.Images[i],
-                    descriptors=desc2,
-                    timestamp=now(),
-                    should_add=True,
-                    map_points=map_points,
-                    map_descriptors=map_descriptors,
-                )
-                last_keyframe_pose = vo.poses[-1]
-                last_keyframe_index = i
-
-        if use_relocalization and (use_keyframes or use_local_map) and not use_stereo:
-            lost = slam_backend.update_tracking_state(
-                debug.get("num_inliers"),
-                debug.get("inlier_ratio"),
-            )
-            if lost:
-                relocalized_pose, relocalize_events = slam_backend.try_relocalize(kp2, desc2, now())
-                events.extend(relocalize_events)
-                if relocalized_pose is not None:
-                    vo.poses[-1] = relocalized_pose
-                    last_keyframe_pose = relocalized_pose
+                    events = slam_backend.maybe_add_keyframe(
+                        index=i,
+                        pose_T_wc=vo.poses[-1],
+                        image=vo.Images_1[i] if use_stereo else vo.Images[i],
+                        descriptors=desc2,
+                        timestamp=now(),
+                        should_add=True,
+                        map_points=map_points,
+                        map_descriptors=map_descriptors,
+                    )
+                    last_keyframe_pose = vo.poses[-1]
                     last_keyframe_index = i
 
+            if use_relocalization and (use_keyframes or use_local_map) and not use_stereo:
+                lost = slam_backend.update_tracking_state(
+                    debug.get("num_inliers"),
+                    debug.get("inlier_ratio"),
+                )
+                if lost:
+                    relocalized_pose, relocalize_events = slam_backend.try_relocalize(kp2, desc2, now())
+                    events.extend(relocalize_events)
+                    if relocalized_pose is not None:
+                        vo.poses[-1] = relocalized_pose
+                        last_keyframe_pose = relocalized_pose
+                        last_keyframe_index = i
+
+            if telemetry:
+                current_time = now()
+                dt = max(current_time - last_time, 1e-6)
+                last_time = current_time
+                fps = 1.0 / dt if TELEMETRY.stream_fps else None
+
+                features = None
+                if telemetry.state.overlay_enabled and TELEMETRY.stream_features:
+                    inlier_mask = debug.get("inlier_mask") or []
+                    features = []
+                    for idx, (x, y) in enumerate(p2):
+                        if idx >= TELEMETRY.max_features:
+                            break
+                        inlier = inlier_mask[idx] if idx < len(inlier_mask) else True
+                        features.append({"x": float(x), "y": float(y), "inlier": inlier})
+
+                image_payload = None
+                if telemetry.state.stream_enabled and TELEMETRY.stream_images:
+                    image_payload = encode_image(vo.Images_1[i] if use_stereo else vo.Images[i], encoding="jpg")
+
+                tracking = {
+                    "num_matches": debug.get("num_matches"),
+                    "num_inliers": debug.get("num_inliers"),
+                    "inlier_ratio": debug.get("inlier_ratio"),
+                    "reprojection_error": None,
+                    "tracking_ok": debug.get("tracking_ok", False),
+                }
+                map_state = slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
+                pose_graph_state = slam_backend.pose_graph_state(i if (use_keyframes or use_local_map) else None)
+                map_points_payload = None
+                if use_local_map and TELEMETRY.stream_map_points:
+                    map_points_payload = slam_backend.map_points_sample(TELEMETRY.max_map_points)
+
+                expected_pose = gt_poses[i] if gt_poses and i < len(gt_poses) else None
+                payload = make_frame_message(
+                    frame_index=i,
+                    timestamp=current_time,
+                    pose_T_wc=vo.poses[-1],
+                    tracking=tracking,
+                    map_state=map_state,
+                    map_points=map_points_payload,
+                    pose_graph=pose_graph_state,
+                    expected_pose_T_wc=expected_pose,
+                    image_payload=image_payload,
+                    features=features,
+                    fps=fps,
+                    state=telemetry.state,
+                    events=[e.__dict__ for e in events] if events else [],
+                    translation_scale="metric" if use_stereo else "arbitrary",
+                    sequence=args.sequence if args.data_root else "sample",
+                    total_frames=num_frames,
+                    run_id=run_id,
+                )
+                telemetry.publish(payload)
+            if args.realtime and frame_times and i < len(frame_times):
+                time.sleep(max(0.0, frame_times[i] - frame_times[i - 1]))
+            elif telemetry and args.frame_delay_ms > 0:
+                time.sleep(args.frame_delay_ms / 1000.0)
+    finally:
         if telemetry:
-            current_time = now()
-            dt = max(current_time - last_time, 1e-6)
-            last_time = current_time
-            fps = 1.0 / dt if TELEMETRY.stream_fps else None
-
-            features = None
-            if telemetry.state.overlay_enabled and TELEMETRY.stream_features:
-                inlier_mask = debug.get("inlier_mask") or []
-                features = []
-                for idx, (x, y) in enumerate(p2):
-                    if idx >= TELEMETRY.max_features:
-                        break
-                    inlier = inlier_mask[idx] if idx < len(inlier_mask) else True
-                    features.append({"x": float(x), "y": float(y), "inlier": inlier})
-
-            image_payload = None
-            if telemetry.state.stream_enabled and TELEMETRY.stream_images:
-                image_payload = encode_image(vo.Images_1[i] if use_stereo else vo.Images[i], encoding="jpg")
-
-            tracking = {
-                "num_matches": debug.get("num_matches"),
-                "num_inliers": debug.get("num_inliers"),
-                "inlier_ratio": debug.get("inlier_ratio"),
-                "reprojection_error": None,
-            }
-            map_state = slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
-            pose_graph_state = slam_backend.pose_graph_state(last_keyframe_index if (use_keyframes or use_local_map) else None)
-            map_points_payload = None
-            if use_local_map and TELEMETRY.stream_map_points:
-                map_points_payload = slam_backend.map_points_sample(TELEMETRY.max_map_points)
-
-            expected_pose = gt_poses[i] if gt_poses and i < len(gt_poses) else None
-            payload = make_frame_message(
-                frame_index=i,
-                timestamp=current_time,
-                pose_T_wc=vo.poses[-1],
-                tracking=tracking,
-                map_state=map_state,
-                map_points=map_points_payload,
-                pose_graph=pose_graph_state,
-                expected_pose_T_wc=expected_pose,
-                image_payload=image_payload,
-                features=features,
-                fps=fps,
-                state=telemetry.state,
-                events=[e.__dict__ for e in events] if events else [],
-            )
-            telemetry.publish(payload)
-        if args.realtime and frame_times and i < len(frame_times):
-            time.sleep(max(0.0, frame_times[i] - frame_times[i - 1]))
-        elif TELEMETRY.enabled and hasattr(TELEMETRY, "frame_delay_ms") and TELEMETRY.frame_delay_ms > 0:
-            time.sleep(TELEMETRY.frame_delay_ms / 1000.0)
+            telemetry.stop()
     print("Visual Odometry completed.")
-    if hasattr(vo, "save_poses"):
-        vo.save_poses("poses.txt")
-    if not TELEMETRY.enabled:
-        plot(vo.poses, vo.true_poses)
-        plot3D(vo.poses, vo.true_poses)
+    save_poses_txt(args.output, vo.poses)
+    print(f"Saved {len(vo.poses)} KITTI poses to {args.output}")
+    if args.plot:
+        plot(vo.poses, gt_poses)
+        plot3D(vo.poses, gt_poses)
 
 if __name__ == "__main__":
     main()

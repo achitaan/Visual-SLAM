@@ -1,0 +1,120 @@
+{
+  "passed": true,
+  "complete_sequences": 11,
+  "total_frames": 23201,
+  "total_lost_pairs": 23,
+  "sequences": [
+    {
+      "sequence": "00",
+      "frames": 4541,
+      "lost_pairs": 0,
+      "verified_loops": 30,
+      "raw_sha256": "02fd8c0227c94748c598d4c348b95baee0e34a471fdcaaec63ab916a9c099ace",
+      "corrected_sha256": "0f745d1cc9665a44379c5825ebe7fccb83f86324d20c4658df330069a22fe500",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "01",
+      "frames": 1101,
+      "lost_pairs": 23,
+      "verified_loops": 0,
+      "raw_sha256": "1ac6cc569d73f95d3865631f31cb1189080cac3076281d2c94fe6571adf73572",
+      "corrected_sha256": "1ac6cc569d73f95d3865631f31cb1189080cac3076281d2c94fe6571adf73572",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "02",
+      "frames": 4661,
+      "lost_pairs": 0,
+      "verified_loops": 9,
+      "raw_sha256": "85fbf94a3777212c3e7e5c71ad28ee6f24ed98f69a68e4e6f6dfd5e1f4583dee",
+      "corrected_sha256": "ef96b0058f034bfa82541822491d4f4cba7a762c8bdaa72d6e1c842aea4dd611",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "03",
+      "frames": 801,
+      "lost_pairs": 0,
+      "verified_loops": 0,
+      "raw_sha256": "9bcc6b760e4b9b83e739c2ec1904087f4c147426c0ab77ce6fde7e4df547fb72",
+      "corrected_sha256": "9bcc6b760e4b9b83e739c2ec1904087f4c147426c0ab77ce6fde7e4df547fb72",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "04",
+      "frames": 271,
+      "lost_pairs": 0,
+      "verified_loops": 0,
+      "raw_sha256": "c9a664c6cd467895f5c0b26c034f289e9acd90292bad0a9ef22a3e0ff5f34e07",
+      "corrected_sha256": "c9a664c6cd467895f5c0b26c034f289e9acd90292bad0a9ef22a3e0ff5f34e07",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "05",
+      "frames": 2761,
+      "lost_pairs": 0,
+      "verified_loops": 11,
+      "raw_sha256": "9ffdc9e616a6c5e13669d4ff79e95b091b6c460aeb856215080fb3691ddd7575",
+      "corrected_sha256": "ef628c92e31d23978d2f18060ce727d13d9a1c0e8bd3ba9e62249e3b9d61fafe",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "06",
+      "frames": 1101,
+      "lost_pairs": 0,
+      "verified_loops": 7,
+      "raw_sha256": "97f3240ebeab36e30ec381c54a6cba59faa92c575d854f694e2e9b58d2b15348",
+      "corrected_sha256": "8359d35dc4547e519cc83b779510e6d279d9684a2b514d558310dd42d3ef5f10",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "07",
+      "frames": 1101,
+      "lost_pairs": 0,
+      "verified_loops": 2,
+      "raw_sha256": "9737c6c16f5fe85e8143f790114cd3b6b7754c734c77b3074c1895c68d558522",
+      "corrected_sha256": "5797c01e05d73847ae121638d1c96bf41f88cd4e279723b801f9f6abad333a26",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "08",
+      "frames": 4071,
+      "lost_pairs": 0,
+      "verified_loops": 0,
+      "raw_sha256": "faca24d5bb622900846cb8d26004f3c85b5fdd9635f0cc214341a6589e988290",
+      "corrected_sha256": "faca24d5bb622900846cb8d26004f3c85b5fdd9635f0cc214341a6589e988290",
+      "translation_regressed": false,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "09",
+      "frames": 1591,
+      "lost_pairs": 0,
+      "verified_loops": 2,
+      "raw_sha256": "d87f7ea5a4bf1a3609e900664eceed90faf4917a10fb6dbad798d00c084baf10",
+      "corrected_sha256": "56c9e97016a7b1544692733aa95c40ce7d9b0c5048ddb33d0bdc3d27e73eaf33",
+      "translation_regressed": true,
+      "ate_regressed": false
+    },
+    {
+      "sequence": "10",
+      "frames": 1201,
+      "lost_pairs": 0,
+      "verified_loops": 0,
+      "raw_sha256": "6eba818fee3057a4ab289db68a782fa253868f467563f4492f7e78536fe40464",
+      "corrected_sha256": "6eba818fee3057a4ab289db68a782fa253868f467563f4492f7e78536fe40464",
+      "translation_regressed": false,
+      "ate_regressed": false
+    }
+  ],
+  "errors": [],
+  "checks": "Full coverage, finite rigid poses, tracking counts, fixed origin, zero-loop identity, saved measured transforms, raw checksums and official drift parity."
+}

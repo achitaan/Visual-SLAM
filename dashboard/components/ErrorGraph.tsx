@@ -17,6 +17,7 @@ export function ErrorGraph() {
   const errors = useMemo(() => {
     return frames
       .map((frame) => {
+        if (frame.translation_scale !== "metric") return null;
         const est = extractXYZ(frame.pose_graph?.optimized_pose_T_wc ?? frame.pose_T_wc);
         const exp = extractXYZ(frame.expected_pose_T_wc);
         if (!est || !exp) return null;
@@ -47,18 +48,19 @@ export function ErrorGraph() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const width = 380;
-    const height = 200;
+    const width = 580;
+    const height = 230;
     canvas.width = width;
     canvas.height = height;
 
-    ctx.fillStyle = "#1e1e1e";
+    ctx.fillStyle = "#fafbfd";
     ctx.fillRect(0, 0, width, height);
 
     if (errors.length < 2) {
-      ctx.fillStyle = "#6a6a6a";
+      ctx.fillStyle = "#98a4b2";
       ctx.font = "12px sans-serif";
-      ctx.fillText("Waiting for ground truth data...", 20, height / 2);
+      ctx.textAlign = "center";
+      ctx.fillText("Requires metric poses and ground truth", width / 2, height / 2);
       return;
     }
 
@@ -71,7 +73,7 @@ export function ErrorGraph() {
     const maxFrame = errors[errors.length - 1].frame;
     const frameRange = Math.max(maxFrame - minFrame, 1);
 
-    ctx.strokeStyle = "#3a3a3a";
+    ctx.strokeStyle = "#e9edf2";
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
       const y = pad.top + (plotH / 4) * i;
@@ -81,7 +83,7 @@ export function ErrorGraph() {
       ctx.stroke();
     }
 
-    ctx.fillStyle = "#6a6a6a";
+    ctx.fillStyle = "#98a4b2";
     ctx.font = "10px sans-serif";
     ctx.textAlign = "right";
     for (let i = 0; i <= 4; i++) {
@@ -98,7 +100,7 @@ export function ErrorGraph() {
     ctx.fillText("Error (m)", 0, 0);
     ctx.restore();
 
-    ctx.strokeStyle = "#ef5350";
+    ctx.strokeStyle = "#ce7979";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     errors.forEach((e, i) => {
@@ -114,7 +116,7 @@ export function ErrorGraph() {
 
     if (stats) {
       const meanY = pad.top + plotH - (stats.mean / maxError) * plotH;
-      ctx.strokeStyle = "#4fc3f7";
+      ctx.strokeStyle = "#11a58b";
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -126,11 +128,11 @@ export function ErrorGraph() {
   }, [errors, stats]);
 
   return (
-    <div className="panel">
-      <h2>Error Estimation</h2>
-      <canvas ref={canvasRef} style={{ width: "100%", height: "auto" }} />
+    <section className="panel errorPanel">
+      <div className="panelHeading"><div><span className="eyebrow">GROUND TRUTH DEVIATION</span><h2>Raw position error</h2></div><span className="pill">No alignment</span></div>
+      <div className="chartBody"><canvas ref={canvasRef} role="img" aria-label="Raw metric position error over received frames" /></div>
       {stats && (
-        <div className="metricsGrid" style={{ marginTop: 8 }}>
+        <div className="miniStats">
           <div className="metricCard">
             <div>RMSE</div>
             <strong>{stats.rmse.toFixed(3)} m</strong>
@@ -149,6 +151,7 @@ export function ErrorGraph() {
           </div>
         </div>
       )}
-    </div>
+      <div className="chartFooter">Received frames only · distinct from benchmark aligned ATE</div>
+    </section>
   );
 }

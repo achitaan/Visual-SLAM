@@ -17,3 +17,9 @@ node_modules/
 results/
 .test-build/
 .datasets/
+
+# Local editor and generated files
+.vscode/
+dashboard/AGENTS.md
+dashboard/CLAUDE.md
+trajectory.html

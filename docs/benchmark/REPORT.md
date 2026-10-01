@@ -49,7 +49,7 @@ ATE is the root-mean-square position error after SE(3) alignment, with no scale 
 - Every raw and corrected sequence matches the official devkit's segment keys and metrics within 0.0001 percentage points and 0.0001 degrees/m. Float32 distance arithmetic follows the official evaluator.
 - Full independent raw reruns of 01, 04 and 07 reproduce every saved pose element exactly. Sequence 01 reproduces all 23 lost pairs. Other raw sequences were not each independently rerun twice.
 - All 11 graphs were replayed from the same saved image measurements with the current solver. The largest position difference from the retained solver reference was 0.16 mm.
-- Local validation passed: 45 Python tests, 3 dashboard socket tests, and the production build including TypeScript checking. Windows/Linux CI is configured; remote execution has not yet been verified.
+- Local validation passed: 45 Python tests, 3 dashboard socket tests, and the production build including TypeScript checking. Windows/Linux CI is configured; see the repository workflow for current remote results.
 
 ## Remaining limitations and next work
 
@@ -57,10 +57,10 @@ Sequence 01 has repeatable frontend failures: one retained failure pair has 211 
 
 Live integration of the geometric loop verifier, corrected tracking poses and map landmarks remains unfinished. Persistent landmarks, local bundle adjustment and relocalization are the next implementation priorities. The sparse branch above 300 graph poses remains unvalidated by this batch; the largest tested graph has 234 keyframes. Monocular motion has arbitrary scale and would need appropriate scale-aware loop handling.
 
-Some original OneDrive files remained cloud-only and failed to read during the final readiness check. Official KITTI image downloads with ZIP CRC checks enabled full testing. Temporary owned image and geometry caches were deleted after processing; original data was left intact. Saved trajectories and measured constraints remain local under `results/benchmark-batch`, which is excluded from Git. This repository includes the compact metric snapshot, graphs and verification evidence without redistributing dataset images.
+Input images were downloaded from the official KITTI archive with ZIP CRC verification. Owned temporary image and geometry caches were deleted after processing. Saved trajectories and measured constraints remain local under `results/benchmark-batch`, which is excluded from Git. This repository includes the compact metric snapshot, graphs and verification evidence without redistributing dataset images.
 
 ## Reproduction and artifacts
 
-See [the README](../../README.md#benchmark-and-tests) for setup, full batch, deliberate retest, metric recomputation and graph replay commands, and [the completion plan](../../PLAN.md) for acceptance criteria. A fresh checkout needs KITTI poses and images or network access to the official image archive. The compiled official evaluator wrapper is a local validation dependency, not a shipped executable.
+See [the README](../../README.md#benchmark-and-tests) for setup, full batch, deliberate retest, metric recomputation and graph replay commands, and [the development roadmap](../ROADMAP.md) for acceptance criteria. A fresh checkout needs KITTI poses and images or network access to the official image archive. The compiled official evaluator wrapper is a local validation dependency, not a shipped executable.
 
 [Machine-readable results](results.json) contain full per-sequence aggregate metrics. The accompanying verification JSON files record pose provenance, official evaluator parity and graph replay differences. Individual plots are also available as `plots/00.png` through `plots/10.png`.

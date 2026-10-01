@@ -4,7 +4,7 @@ opencv-contrib-python
 pytest
 pyyaml
 scikit-learn
+scipy
 matplotlib
 bokeh
 websockets
-# pytorch special case, see requirements-pytorch.txt

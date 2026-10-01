@@ -1,86 +1,20 @@
 "use client";
-
-import { useMemo } from "react";
-import { useTelemetry } from "./TelemetryProvider";
-
-function extractXYZ(pose: number[][] | undefined | null) {
-  if (!pose || pose.length < 3) {
-    return null;
-  }
-  return [pose[0][3] ?? 0, pose[1][3] ?? 0, pose[2][3] ?? 0];
-}
+import { useTelemetry } from './TelemetryProvider';
 
 export function MetricsPanel() {
-  const { latest } = useTelemetry();
+  const { latest, connected } = useTelemetry();
   const tracking = latest?.tracking;
-  const lastEvent = latest?.events && latest.events.length > 0 ? latest.events[latest.events.length - 1] : undefined;
-  const trackingStatus = lastEvent?.type === "relocalized"
-    ? "Relocalized"
-    : lastEvent?.type === "relocalization_failed"
-      ? "Reloc Failed"
-      : lastEvent?.type === "tracking_lost"
-        ? "Tracking Lost"
-        : "OK";
-
-  const errorStats = useMemo(() => {
-    if (!latest?.expected_pose_T_wc || !latest?.pose_T_wc) {
-      return null;
-    }
-    const est = extractXYZ(latest.pose_graph?.optimized_pose_T_wc ?? latest.pose_T_wc);
-    const exp = extractXYZ(latest.expected_pose_T_wc);
-    if (!est || !exp) {
-      return null;
-    }
-    const dx = est[0] - exp[0];
-    const dy = est[1] - exp[1];
-    const dz = est[2] - exp[2];
-    const err = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    return { rmse: err };
-  }, [latest]);
-
-  return (
-    <div className="panel">
-      <h2>Live Metrics</h2>
-      <div className="metricsGrid">
-        <div className="metricCard">
-          <div>FPS</div>
-          <strong>{latest?.fps?.toFixed(1) ?? "--"}</strong>
-        </div>
-        <div className="metricCard">
-          <div>Matches</div>
-          <strong>{tracking?.num_matches ?? "--"}</strong>
-        </div>
-        <div className="metricCard">
-          <div>Inliers</div>
-          <strong>{tracking?.num_inliers ?? "--"}</strong>
-        </div>
-        <div className="metricCard">
-          <div>Inlier Ratio</div>
-          <strong>
-            {tracking?.inlier_ratio !== undefined && tracking?.inlier_ratio !== null
-              ? `${(tracking.inlier_ratio * 100).toFixed(1)}%`
-              : "--"}
-          </strong>
-        </div>
-        <div className="metricCard">
-          <div>Reproj Error</div>
-          <strong>{tracking?.reprojection_error?.toFixed(2) ?? "--"}</strong>
-        </div>
-        <div className="metricCard">
-          <div>Keyframes</div>
-          <strong>{latest?.map?.keyframes ?? 0}</strong>
-        </div>
-        <div className="metricCard">
-          <div>Tracking</div>
-          <strong>{trackingStatus}</strong>
-        </div>
-        {errorStats ? (
-          <div className="metricCard">
-            <div>GT Error</div>
-            <strong>{errorStats.rmse.toFixed(3)} m</strong>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+  const ratio = tracking?.inlier_ratio;
+  const positionError = latest?.translation_scale === 'metric' && latest.expected_pose_T_wc
+    ? Math.hypot(...[0, 1, 2].map(i => latest.pose_T_wc[i][3] - latest.expected_pose_T_wc![i][3])) : undefined;
+  const quality = !latest ? 'Awaiting data' : tracking?.tracking_ok === false ? 'Tracking lost' : 'Tracking stable';
+  const cards = [
+    { label: 'Processing rate', value: latest?.fps?.toFixed(1) ?? '—', unit: 'fps', note: connected ? 'Including frame pacing' : 'Last received frame' },
+    { label: 'Feature matches', value: tracking?.num_matches?.toLocaleString() ?? '—', unit: '', note: 'Consecutive camera frames' },
+    { label: 'Geometric inliers', value: tracking?.num_inliers?.toLocaleString() ?? '—', unit: '', note: 'Accepted pose correspondences' },
+    { label: 'Inlier ratio', value: ratio == null ? '—' : (ratio * 100).toFixed(1), unit: '%', note: quality, tone: tracking?.tracking_ok === false ? 'warning' : 'positive' },
+    { label: 'Keyframes', value: latest?.map.keyframes.toLocaleString() ?? '—', unit: '', note: 'Retained reference views' },
+    { label: 'Position difference', value: positionError?.toFixed(2) ?? '—', unit: 'm', note: latest?.translation_scale === 'arbitrary' ? 'Metric scale unavailable' : 'Raw distance to ground truth' },
+  ];
+  return <div className="metricStrip">{cards.map(card => <div key={card.label} className={`statCard ${card.tone ?? ''}`}><div className="statLabel">{card.label}</div><div className="statValue">{card.value}<span>{card.unit}</span></div><div className="statNote">{card.note}</div></div>)}</div>;
 }

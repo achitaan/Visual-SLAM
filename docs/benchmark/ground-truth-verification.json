@@ -1,0 +1,119 @@
+{
+  "url": "https://s3.eu-central-1.amazonaws.com/avg-kitti/data_odometry_poses.zip",
+  "archive_bytes": 1309620,
+  "archive_sha256": "a969190799bb3fc4a15f5f0675b1ee6b7067292599b3269bdafc1e5ba883b9e1",
+  "pose_element_tolerance": 1e-10,
+  "passed": true,
+  "results": [
+    {
+      "sequence": "00",
+      "matching_shape": true,
+      "official_frames": 4541,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "90791a4113df979b149fa9e1104e960ea59f525a8318a202dbb6aec1a3d88793",
+      "local_file_sha256": "90791a4113df979b149fa9e1104e960ea59f525a8318a202dbb6aec1a3d88793",
+      "official_member_crc32": "2e4f2dcb"
+    },
+    {
+      "sequence": "01",
+      "matching_shape": true,
+      "official_frames": 1101,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "local_file_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "official_member_crc32": "d3f3d1fa"
+    },
+    {
+      "sequence": "02",
+      "matching_shape": true,
+      "official_frames": 4661,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "8e6c37071db06dfc31db9c2f354bfeb4bb23d1fa2ab28937cb27dae03dc49812",
+      "local_file_sha256": "8e6c37071db06dfc31db9c2f354bfeb4bb23d1fa2ab28937cb27dae03dc49812",
+      "official_member_crc32": "cb65cd94"
+    },
+    {
+      "sequence": "03",
+      "matching_shape": true,
+      "official_frames": 801,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "5475332c7e90cd6b0f9f948efff69e747dbba81d006efed4298f3d31b5773b67",
+      "local_file_sha256": "5475332c7e90cd6b0f9f948efff69e747dbba81d006efed4298f3d31b5773b67",
+      "official_member_crc32": "e034c1aa"
+    },
+    {
+      "sequence": "04",
+      "matching_shape": true,
+      "official_frames": 271,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "local_file_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "official_member_crc32": "e7559ed8"
+    },
+    {
+      "sequence": "05",
+      "matching_shape": true,
+      "official_frames": 2761,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "56420ca617a1eb446b2955d187ba4af2912af54a8b458de0602ab3636b43f297",
+      "local_file_sha256": "56420ca617a1eb446b2955d187ba4af2912af54a8b458de0602ab3636b43f297",
+      "official_member_crc32": "b2c03efc"
+    },
+    {
+      "sequence": "06",
+      "matching_shape": true,
+      "official_frames": 1101,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "823a613b515dbfaaac0ed2942cf866154cc16edf7fbf2edbea57c70828b27a59",
+      "local_file_sha256": "823a613b515dbfaaac0ed2942cf866154cc16edf7fbf2edbea57c70828b27a59",
+      "official_member_crc32": "ca0c7f3c"
+    },
+    {
+      "sequence": "07",
+      "matching_shape": true,
+      "official_frames": 1101,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "7eb020916003a09a6b9c2744748eaadef54b96f6df22ee703a05a1d19bfe913a",
+      "local_file_sha256": "7eb020916003a09a6b9c2744748eaadef54b96f6df22ee703a05a1d19bfe913a",
+      "official_member_crc32": "9d55e89e"
+    },
+    {
+      "sequence": "08",
+      "matching_shape": true,
+      "official_frames": 4071,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "cd7177170c7d7ba98cdbfe9417f97bd9586da5c70cbd5ccefa5db6bf88a5fe88",
+      "local_file_sha256": "cd7177170c7d7ba98cdbfe9417f97bd9586da5c70cbd5ccefa5db6bf88a5fe88",
+      "official_member_crc32": "bd540f6a"
+    },
+    {
+      "sequence": "09",
+      "matching_shape": true,
+      "official_frames": 1591,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "e29c10964d558536e225e052f386723a515ad574b6ce14b91a86c94e5ad94014",
+      "local_file_sha256": "e29c10964d558536e225e052f386723a515ad574b6ce14b91a86c94e5ad94014",
+      "official_member_crc32": "d6695871"
+    },
+    {
+      "sequence": "10",
+      "matching_shape": true,
+      "official_frames": 1201,
+      "max_pose_element_difference": 0.0,
+      "within_tolerance": true,
+      "official_member_sha256": "b29cfbc423220a7bc163ef53d0e0a362f8206f006eb2db690d8b48795327380e",
+      "local_file_sha256": "b29cfbc423220a7bc163ef53d0e0a362f8206f006eb2db690d8b48795327380e",
+      "official_member_crc32": "145b75f6"
+    }
+  ]
+}

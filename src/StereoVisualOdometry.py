@@ -3,6 +3,8 @@ import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt 
 from numpy.typing import NDArray
+from kitti import image_paths, save_poses_txt
+from image_sequence import ImageSequence
 from config import (
     STEREO_MIN_MATCHES,
     STEREO_MIN_VALID_3D,
@@ -34,11 +36,13 @@ class StereoVisualOdometry:
             self.true_poses = self.__load_poses(poses_path)
         else:
             self.true_poses = [np.eye(4)]
-        self.poses = [self.true_poses[0]]
+        self.poses = [np.eye(4)]
 
         # Load left and right images
         self.Images_1 = self.__load(folder_path + "0", max_frames=max_frames)  # Left images
         self.Images_2 = self.__load(folder_path + "1", max_frames=max_frames)  # Right images
+        if [p.name for p in image_paths(folder_path + "0", max_frames)] != [p.name for p in image_paths(folder_path + "1", max_frames)]:
+            raise ValueError("Left/right image filenames must match")
 
         # Compute the Q matrix for reprojectImageTo3D using the correct stereo pair.
         f = float(self.K1[0, 0])
@@ -47,14 +51,16 @@ class StereoVisualOdometry:
         cx_right = float(self.P2[0, 2])
         tx = float(self.P2[0, 3]) / float(self.P2[0, 0])  # Tx = -B
         print((f, cx_left, cy_left))
-        baseline = -tx
+        baseline = float(self.P1[0, 3] / self.P1[0, 0]) - tx
+        if not np.isfinite(baseline) or baseline <= 0:
+            raise ValueError("Stereo calibration requires a positive left-to-right baseline")
         self.baseline = float(baseline)
         self.Q = np.array(
             [
                 [1, 0, 0, -cx_left],
                 [0, 1, 0, -cy_left],
                 [0, 0, 0, f],
-                [0, 0, 1.0 / baseline, (cx_left - cx_right) / baseline],
+                [0, 0, 1.0 / baseline, (cx_right - cx_left) / baseline],
             ],
             dtype=np.float32,
         )
@@ -84,12 +90,7 @@ class StereoVisualOdometry:
 
     def __init_orb(self):
         self.orb = cv.ORB_create(nfeatures=3000)
-        #self.brute_force = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
-
-        FLANN_INDEX_KDTREE = 1
-        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-        search_params = dict(checks=50)
-        self.flann = cv.FlannBasedMatcher(index_params, search_params)
+        self.brute_force = cv.BFMatcher(cv.NORM_HAMMING)
 
     def __init_sift(self):
         self.sift = cv.SIFT_create()
@@ -117,16 +118,11 @@ class StereoVisualOdometry:
         return T
 
     @staticmethod
-    def __load(filepath: str, max_frames: int | None = None) -> list[NDArray]:
-        images = []
-        for filename in sorted(os.listdir(filepath)):
-            path = os.path.join(filepath, filename)
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            if img is not None:
-                images.append(img)
-                if max_frames is not None and len(images) >= max_frames:
-                    break
-        return images
+    def __load(filepath: str, max_frames: int | None = None):
+        return ImageSequence(filepath, max_frames)
+
+    def save_poses(self, filepath: str) -> None:
+        save_poses_txt(filepath, self.poses)
 
     def __save(self, filepath: str) -> None:
         with open(filepath, 'w') as f:
@@ -185,23 +181,24 @@ class StereoVisualOdometry:
 
     def flann_match_features(self, i: int, orb: bool = False):
         # Match features between left image at frame i-1 and frame i using SIFT + FLANN
-        if orb:
+        if hasattr(self, "orb"):
             kp1, desc1 = self.orb.detectAndCompute(self.Images_1[i - 1], None)
             kp2, desc2 = self.orb.detectAndCompute(self.Images_1[i], None)
         else:
             kp1, desc1 = self.sift.detectAndCompute(self.Images_1[i - 1], None)
             kp2, desc2 = self.sift.detectAndCompute(self.Images_1[i], None)
 
-        if desc1 is None or desc2 is None:
+        self._current_descriptors = desc2
+        if desc1 is None or desc2 is None or len(desc2) < 2:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32), kp1, kp2, []
 
-        if desc1.dtype != np.float32:
-            desc1 = desc1.astype(np.float32)
-        if desc2.dtype != np.float32:
-            desc2 = desc2.astype(np.float32)
-        matches = self.flann.knnMatch(desc1, desc2, k=2)
+        matcher = self.brute_force if hasattr(self, "orb") else self.flann
+        matches = matcher.knnMatch(desc1, desc2, k=2)
         thresh, good_matches = 0.7, []
-        for m, n in matches:
+        for pair in matches:
+            if len(pair) != 2:
+                continue
+            m, n = pair
             if m.distance < thresh * n.distance:
                 good_matches.append(m)
         if self.draw_matches:
@@ -216,172 +213,54 @@ class StereoVisualOdometry:
         return depth
 
     def find_transf_pnp(self, i: int):
-        # (1) Compute disparity on frame i-1 using StereoSGBM
-        left_prev = self.Images_1[i - 1]
-        right_prev = self.Images_2[i - 1]
-        disparity = self.stereo.compute(left_prev, right_prev).astype(np.float32) / 16.0
-        valid_disparity = (disparity > MINIMUM_DISPARITY) & (disparity < NUMBER_OF_DISPARITY)
-        valid_ratio = float(valid_disparity.sum()) / float(disparity.size)
-        self.debug_stats = {
-            "baseline": self.baseline,
-            "valid_disparity_ratio": valid_ratio,
-        }
-        
-        # (2) Reproject disparity to a dense 3D point cloud using Q matrix
-        points_3d_dense = cv.reprojectImageTo3D(disparity, self.Q)
-        
-        # (3) Match features between frame i-1 and frame i (left images)
-        if hasattr(self, 'orb'):
-            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i, True)
-        else:
-            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i)
-        if len(matches_2d) < STEREO_MIN_MATCHES:
-            print(f"2D matching insufficient between frames {i-1} and {i}")
-            return np.eye(4)
-        
-        pts_3d_list = []
-        pts_2d_list = []
-        # (4) For each matched feature in the previous left image, get its 3D coordinate
-        for m in matches_2d:
-            pt = old_kp[m.queryIdx].pt  # coordinate in frame i-1
-            u = int(round(pt[0]))
-            v = int(round(pt[1]))
-            # Make sure the keypoint is within the image bounds
-            if u < 0 or u >= points_3d_dense.shape[1] or v < 0 or v >= points_3d_dense.shape[0]:
-                continue
-            X = points_3d_dense[v, u]
-            # Check for valid depth (avoid points with zero, infinite, or NaN depth)
-            if X[2] <= 0 or np.isinf(X[2]) or np.isnan(X[2]):
-                continue
-            pts_3d_list.append(X)
-            pts_2d_list.append(new_kp[m.trainIdx].pt)
-        
-        pts_3d_list = np.array(pts_3d_list, dtype=np.float32)
-        pts_2d_list = np.array(pts_2d_list, dtype=np.float32)
-        
-        if len(pts_3d_list) < STEREO_MIN_VALID_3D:
-            print(f"Not enough valid 3D-2D correspondences at frame {i}")
-            return np.eye(4)
-        
-        # (5) Run PnP with RANSAC using the 3D points from frame i-1 and their 2D correspondences in frame i
-        success, rvec, tvec, inliers = cv.solvePnPRansac(
-            pts_3d_list,
-            pts_2d_list,
-            self.K1,
-            None,
-            iterationsCount=STEREO_PNP_ITER,
-            reprojectionError=STEREO_PNP_REPROJ,
-            confidence=STEREO_PNP_CONF,
-            flags=cv.SOLVEPNP_ITERATIVE
-        )
-        if not success:
-            print(f"PnP failed for frame {i}")
-            return np.eye(4)
-        
-        depth = self.K1[0, 0] * self.P2[0, 3] / disparity
-        R, _ = cv.Rodrigues(rvec)
-
-        self.debug_stats.update({
-            "num_matches": float(len(matches_2d)),
-            "num_valid_3d": float(len(pts_3d_list)),
-            "num_inliers": float(len(inliers)) if inliers is not None else 0.0,
-        })
-        if inliers is not None and len(pts_3d_list) > 0:
-            self.debug_stats["inlier_ratio"] = float(len(inliers)) / float(len(pts_3d_list))
-
-        T = self.__transform(R, tvec)
-        # Return the transformation from frame i-1 to i (inverse if needed by your convention)
-        return np.linalg.inv(T)
+        transform, self.debug_stats = self.find_transf_pnp_debug(i)
+        return transform
 
     def find_transf_pnp_debug(self, i: int):
-        # (1) Compute disparity on frame i-1 using StereoSGBM
-        left_prev = self.Images_1[i - 1]
-        right_prev = self.Images_2[i - 1]
-        disparity = self.stereo.compute(left_prev, right_prev).astype(np.float32) / 16.0
+        left, right = self.Images_1[i - 1], self.Images_2[i - 1]
+        if left.shape != right.shape:
+            raise ValueError("Stereo images must have matching dimensions")
+        disparity = self.stereo.compute(left, right).astype(np.float32) / 16.0
         valid_disparity = (disparity > MINIMUM_DISPARITY) & (disparity < NUMBER_OF_DISPARITY)
-        valid_ratio = float(valid_disparity.sum()) / float(disparity.size)
-
-        # (2) Reproject disparity to a dense 3D point cloud using Q matrix
-        points_3d_dense = cv.reprojectImageTo3D(disparity, self.Q)
-
-        # (3) Match features between frame i-1 and frame i (left images)
-        if hasattr(self, 'orb'):
-            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i, True)
-        else:
-            p1, p2, old_kp, new_kp, matches_2d = self.flann_match_features(i)
-        if len(matches_2d) < STEREO_MIN_MATCHES:
-            return np.eye(4), {
-                "num_matches": len(matches_2d),
-                "num_inliers": 0,
-                "inlier_ratio": 0.0,
-                "keypoints": new_kp,
-                "descriptors": None,
-            }
-
-        pts_3d_list = []
-        pts_2d_list = []
-        for m in matches_2d:
-            pt = old_kp[m.queryIdx].pt
-            u = int(round(pt[0]))
-            v = int(round(pt[1]))
-            if u < 0 or u >= points_3d_dense.shape[1] or v < 0 or v >= points_3d_dense.shape[0]:
+        dense = cv.reprojectImageTo3D(disparity, self.Q)
+        p1, p2, old_kp, new_kp, matches = self.flann_match_features(i)
+        debug = {"num_matches": len(matches), "num_inliers": 0, "inlier_ratio": 0.0,
+                 "keypoints": new_kp, "descriptors": self._current_descriptors,
+                 "valid_disparity_ratio": float(valid_disparity.mean()), "baseline": self.baseline,
+                 "tracking_ok": False, "num_valid_3d": 0, "feature_points": [], "inlier_mask": []}
+        if len(matches) < STEREO_MIN_MATCHES:
+            return np.eye(4), debug
+        points_3d, points_2d = [], []
+        for match in matches:
+            u, v = (int(round(coord)) for coord in old_kp[match.queryIdx].pt)
+            if not (0 <= u < dense.shape[1] and 0 <= v < dense.shape[0]):
                 continue
-            X = points_3d_dense[v, u]
-            if X[2] <= 0 or np.isinf(X[2]) or np.isnan(X[2]):
+            point = dense[v, u]
+            if not valid_disparity[v, u] or not np.isfinite(point).all() or not (0.1 < point[2] < 100.0):
                 continue
-            pts_3d_list.append(X)
-            pts_2d_list.append(new_kp[m.trainIdx].pt)
-
-        pts_3d_list = np.array(pts_3d_list, dtype=np.float32)
-        pts_2d_list = np.array(pts_2d_list, dtype=np.float32)
-        if len(pts_3d_list) < STEREO_MIN_VALID_3D:
-            return np.eye(4), {
-                "num_matches": len(matches_2d),
-                "num_inliers": 0,
-                "inlier_ratio": 0.0,
-                "keypoints": new_kp,
-                "descriptors": None,
-            }
-
+            points_3d.append(point)
+            points_2d.append(new_kp[match.trainIdx].pt)
+        debug["num_valid_3d"] = len(points_3d)
+        debug["feature_points"] = points_2d
+        debug["inlier_mask"] = [False] * len(points_3d)
+        if len(points_3d) < STEREO_MIN_VALID_3D:
+            return np.eye(4), debug
         success, rvec, tvec, inliers = cv.solvePnPRansac(
-            pts_3d_list,
-            pts_2d_list,
-            self.K1,
-            None,
-            iterationsCount=STEREO_PNP_ITER,
-            reprojectionError=STEREO_PNP_REPROJ,
-            confidence=STEREO_PNP_CONF,
-            flags=cv.SOLVEPNP_ITERATIVE
-        )
-        if not success:
-            return np.eye(4), {
-                "num_matches": len(matches_2d),
-                "num_inliers": 0,
-                "inlier_ratio": 0.0,
-                "keypoints": new_kp,
-                "descriptors": None,
-            }
+            np.asarray(points_3d, dtype=np.float32), np.asarray(points_2d, dtype=np.float32),
+            self.K1, None, iterationsCount=STEREO_PNP_ITER, reprojectionError=STEREO_PNP_REPROJ,
+            confidence=STEREO_PNP_CONF, flags=cv.SOLVEPNP_ITERATIVE)
+        if not success or inliers is None or len(inliers) < STEREO_MIN_VALID_3D:
+            return np.eye(4), debug
+        rotation, _ = cv.Rodrigues(rvec)
+        transform = self.__transform(rotation, tvec)
+        if not np.isfinite(transform).all():
+            return np.eye(4), debug
+        for index in inliers.ravel():
+            debug["inlier_mask"][int(index)] = True
+        debug.update({"num_inliers": len(inliers), "inlier_ratio": len(inliers) / len(points_3d),
+                      "tracking_ok": True})
+        return np.linalg.inv(transform), debug
 
-        R, _ = cv.Rodrigues(rvec)
-        T = self.__transform(R, tvec)
-        num_inliers = int(len(inliers)) if inliers is not None else 0
-        num_matches = len(matches_2d)
-        if hasattr(self, "orb"):
-            _, desc = self.orb.detectAndCompute(self.Images_1[i], None)
-        else:
-            _, desc = self.sift.detectAndCompute(self.Images_1[i], None)
-        debug = {
-            "num_matches": num_matches,
-            "num_inliers": num_inliers,
-            "inlier_ratio": (num_inliers / num_matches) if num_matches > 0 else 0.0,
-            "keypoints": new_kp,
-            "descriptors": desc,
-            "valid_disparity_ratio": valid_ratio,
-            "baseline": self.baseline,
-            "num_valid_3d": len(pts_3d_list),
-        }
-        return np.linalg.inv(T), debug
-    
     def run_vo(self):
         """
         Main loop: for each frame, compute the transformation from frame i-1 to i using PnP,

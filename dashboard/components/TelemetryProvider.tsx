@@ -29,19 +29,25 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
     const socket = new TelemetrySocket(url);
     socketRef.current = socket;
 
-    socket.connect();
-    setConnected(true);
+    const unsubStatus = socket.onStatus(setConnected);
 
     const unsub = socket.onFrame((frame) => {
       setLatest(frame);
       setFrames((prev) => {
-        const next = prev.length > 2000 ? prev.slice(-2000) : prev;
-        return [...next, frame];
+        if (frame.run_id && prev.at(-1)?.run_id !== frame.run_id) prev = [];
+        // Control acknowledgements update latest without duplicating poses.
+        if (prev.at(-1)?.frame_index === frame.frame_index) return prev;
+        // Keep heavy image/map payloads only in latest, not trajectory history.
+        const compact = { ...frame, image: null, features: null, map_points: null,
+          pose_graph: frame.pose_graph ? { ...frame.pose_graph, optimized_poses: undefined } : null };
+        return [...prev.slice(-1999), compact];
       });
     });
+    socket.connect();
 
     return () => {
       unsub();
+      unsubStatus();
       socket.close();
       setConnected(false);
     };

@@ -1,0 +1,106 @@
+{
+  "reference": "Unchanged calcSequenceErrors from official KITTI devkit_odometry.zip",
+  "translation_tolerance_percent": 0.0001,
+  "rotation_tolerance_deg_per_m": 0.0001,
+  "results": [
+    {
+      "sequence": "00",
+      "matching_segment_keys": true,
+      "reference_segments": 3283,
+      "observed_segments": 3283,
+      "max_translation_difference_percent": 6.387854654121838e-07,
+      "max_rotation_difference_deg_per_m": 6.9402006041604375e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "01",
+      "matching_segment_keys": true,
+      "reference_segments": 676,
+      "observed_segments": 676,
+      "max_translation_difference_percent": 5.658047555812118e-06,
+      "max_rotation_difference_deg_per_m": 9.95786656239118e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "02",
+      "matching_segment_keys": true,
+      "reference_segments": 3453,
+      "observed_segments": 3453,
+      "max_translation_difference_percent": 6.287790830228346e-07,
+      "max_rotation_difference_deg_per_m": 8.49580243593483e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "03",
+      "matching_segment_keys": true,
+      "reference_segments": 184,
+      "observed_segments": 184,
+      "max_translation_difference_percent": 2.4272039400585754e-07,
+      "max_rotation_difference_deg_per_m": 1.4739634274287764e-05,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "04",
+      "matching_segment_keys": true,
+      "reference_segments": 43,
+      "observed_segments": 43,
+      "max_translation_difference_percent": 1.6786529544177142e-07,
+      "max_rotation_difference_deg_per_m": 3.1179447845860325e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "05",
+      "matching_segment_keys": true,
+      "reference_segments": 1806,
+      "observed_segments": 1806,
+      "max_translation_difference_percent": 5.609161579656075e-07,
+      "max_rotation_difference_deg_per_m": 8.00501967357153e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "06",
+      "matching_segment_keys": true,
+      "reference_segments": 570,
+      "observed_segments": 570,
+      "max_translation_difference_percent": 4.892879772455672e-07,
+      "max_rotation_difference_deg_per_m": 7.809441775512987e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "07",
+      "matching_segment_keys": true,
+      "reference_segments": 317,
+      "observed_segments": 317,
+      "max_translation_difference_percent": 3.001290451720706e-07,
+      "max_rotation_difference_deg_per_m": 6.946784256064466e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "08",
+      "matching_segment_keys": true,
+      "reference_segments": 2813,
+      "observed_segments": 2813,
+      "max_translation_difference_percent": 5.672138581047648e-07,
+      "max_rotation_difference_deg_per_m": 8.916682500115757e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "09",
+      "matching_segment_keys": true,
+      "reference_segments": 958,
+      "observed_segments": 958,
+      "max_translation_difference_percent": 3.510064030542992e-07,
+      "max_rotation_difference_deg_per_m": 6.764014277066757e-06,
+      "within_tolerance": true
+    },
+    {
+      "sequence": "10",
+      "matching_segment_keys": true,
+      "reference_segments": 464,
+      "observed_segments": 464,
+      "max_translation_difference_percent": 2.936703329403656e-07,
+      "max_rotation_difference_deg_per_m": 4.591660870132894e-06,
+      "within_tolerance": true
+    }
+  ]
+}

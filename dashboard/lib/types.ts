@@ -18,6 +18,11 @@ export type TelemetryFrame = {
   frame_index: number;
   timestamp: number;
   mode: "vo" | "slam";
+  translation_scale?: "metric" | "arbitrary" | "unspecified";
+  sequence?: string | null;
+  total_frames?: number | null;
+  run_id?: string | null;
+  overlay_enabled?: boolean;
   stream_enabled: boolean;
   pose_T_wc: TelemetryPose;
   velocity?: number[] | null;
@@ -27,6 +32,7 @@ export type TelemetryFrame = {
     num_inliers?: number | null;
     inlier_ratio?: number | null;
     reprojection_error?: number | null;
+    tracking_ok?: boolean;
   };
   map: {
     keyframes: number;

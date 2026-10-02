@@ -57,10 +57,10 @@ raw stereo geometry. Confidence is moderate that the changed support and keyfram
 chronology trigger this path. The evidence does not identify one disparity or
 photometric parameter as its cause, and no threshold adjustment is selected.
 
-## Unwired preparation
+## Initial preparation
 
-`scripts/stereo_pose_arbitration.py` is a pure scorer; it does not fit poses or enter
-the estimator. Its synthetic test constructs a 1.1 degree roll corruption whose
+The initial pure scorer, now `src/stereo_pose_arbitration.py`, does not fit poses.
+Its synthetic test constructs a 1.1 degree roll corruption whose
 map geometry fits current left and right observations exactly, while immutable
 previous raw stereo geometry rejects that pose. It therefore reproduces how
 current map reprojection checks can miss a coherent local geometry error inside
@@ -75,7 +75,7 @@ Numerical ties, missing provenance, inadequate support, or fit overlap preserve
 the map choice. Nonfinite poses, invalid rotations, and negative depths fail
 closed. Calibration offset is retained.
 
-Future wiring must capture supported measurements before restoration in immutable
+The integration must capture supported measurements before restoration in immutable
 camera-frame records, reserve IDs before either solve, and exclude the reserved
 observations from forward and reverse independent fits/refinements and map
 descriptor/flow fits. Linked flow landmark IDs require exclusion even when no
@@ -84,4 +84,6 @@ flow tracks must be cleared or independently revalidated before keyframe or bund
 insertion. The provenance label is a caller contract, not proof that arbitrary
 input arrays originated in the supported sampler. Existing disagreement gates
 remain unchanged. No production correction or trajectory improvement is claimed
-for this unwired helper.
+for the initial helper alone. Subsequent opt-in integration and its measured
+connectivity regression are documented in
+[stereo arbitration diagnostics](stereo-arbitration-results.md).

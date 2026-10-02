@@ -1,5 +1,15 @@
 [
   {
+    "file": "stereo-arbitration04-comparison.png",
+    "label": "Stereo arbitration: accuracy, keyframes, runtime and memory",
+    "group": "KITTI04 frames0-79: repaired connectivity and matched BA ablation; release gates pending"
+  },
+  {
+    "file": "stereo-arbitration04-overview.png",
+    "label": "Repaired stereo tracking: input, trajectory, error and persistent sparse map",
+    "group": "Frozen53af112: 80frames, no tracking loss, loops off; saved diagnostic"
+  },
+  {
     "file": "verified-depth-metrics.png",
     "label": "KITTI 01 and 04: position, translation and rotation accuracy together",
     "group": "Frozen diagnostic prefixes: lower is better; 01 rotation gate fails"

@@ -227,3 +227,19 @@ tracking outcome. Failed initialization is reusable evidence under exact identit
 checks, never successful tracking. Its overview now labels accuracy unavailable
 instead of attempting a scale fit. A separate plotting regression test covers this
 case. This short runner check is not monocular accuracy validation.
+
+Opt-in stereo arbitration now preserves connections that pass geometric checks
+at the selected pose. The first disconnected version is retained as a rejected
+experiment. [The 04 diagnostic report](benchmark/stereo-arbitration-results.md)
+includes the repair, its matched BA ablation and the remaining translation-drift
+tradeoff. Neither the short prefix nor passing software checks authorizes release.
+
+The official benchmark runner now supervises preparation, data reads, evaluation
+and plotting under one owned process-tree deadline. `--budget-seconds` accepts
+100–3600 seconds, reserving time for export and cleanup. Work estimated to exceed
+the remaining budget is deferred with a resumable manifest; interrupted results
+remain incomplete. Compatible timing history supplies cost estimates only.
+
+The current backend suite passes 279 tests, with four optional GPU skips. A real
+two-frame paired deadline-runner smoke completes stereo and explicitly retains
+monocular initialization failure. These checks do not replace accuracy coverage.

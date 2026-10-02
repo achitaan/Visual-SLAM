@@ -1,5 +1,6 @@
 """Optional exact CUDA L2 search; CPU remains the default and tie arbiter."""
 
+import platform
 from threading import Lock
 from time import perf_counter
 
@@ -23,6 +24,12 @@ class DescriptorMatcher:
         self.requested = backend
         self.torch = None
         self.reason = None
+        self.python_version = platform.python_version()
+        self.pytorch_version = None
+        self.cuda_runtime_version = None
+        self.cuda_device_index = None
+        self.cuda_device_name = None
+        self.cuda_device_capability = None
         self.auto_decisions = {}
         self.cuda_calls = 0
         self.cpu_calls = 0
@@ -32,6 +39,11 @@ class DescriptorMatcher:
             try:
                 import torch
 
+                self.pytorch_version = str(torch.__version__)
+                runtime_version = getattr(torch.version, "cuda", None)
+                self.cuda_runtime_version = (
+                    str(runtime_version) if runtime_version is not None else None
+                )
                 if not torch.cuda.is_available():
                     raise RuntimeError("CUDA is unavailable in this PyTorch environment")
                 # Reduced-precision matrix multiplication can change close L2
@@ -40,6 +52,16 @@ class DescriptorMatcher:
                 self.torch = torch
                 torch.empty(1, device="cuda")
                 torch.cuda.synchronize()
+                try:
+                    device = int(torch.cuda.current_device())
+                    properties = torch.cuda.get_device_properties(device)
+                    capability = torch.cuda.get_device_capability(device)
+                    self.cuda_device_index = device
+                    self.cuda_device_name = str(properties.name)
+                    self.cuda_device_capability = [int(value) for value in capability]
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    # Provenance should not disable an otherwise usable CUDA path.
+                    pass
             except (ImportError, OSError, RuntimeError) as error:
                 self.reason = str(error)
                 if backend == "cuda":
@@ -150,6 +172,12 @@ class DescriptorMatcher:
                 "requested": self.requested,
                 "cuda_available": self.torch is not None,
                 "fallback_reason": self.reason,
+                "python_version": self.python_version,
+                "pytorch_version": self.pytorch_version,
+                "cuda_runtime_version": self.cuda_runtime_version,
+                "cuda_device_index": self.cuda_device_index,
+                "cuda_device_name": self.cuda_device_name,
+                "cuda_device_capability": self.cuda_device_capability,
                 "cuda_calls": self.cuda_calls,
                 "cpu_calls": self.cpu_calls,
                 "ambiguous_rows_on_cpu": self.ambiguous_rows,

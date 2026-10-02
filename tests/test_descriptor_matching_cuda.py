@@ -1,4 +1,7 @@
 """Optional CUDA descriptor matching stays identical to the CPU arbiter."""
+import builtins
+import platform
+
 import numpy as np
 import pytest
 
@@ -86,3 +89,40 @@ def test_cpu_metadata_tracks_fallback_path_and_has_zero_cuda_usage():
     assert metadata["ambiguous_rows_on_cpu"] == 0
     assert metadata["peak_cuda_allocated_mb"] == 0.0
     assert metadata["peak_cuda_reserved_mb"] == 0.0
+    assert metadata["python_version"] == platform.python_version()
+    assert metadata["pytorch_version"] is None
+    assert metadata["cuda_runtime_version"] is None
+    assert metadata["cuda_device_index"] is None
+    assert metadata["cuda_device_name"] is None
+    assert metadata["cuda_device_capability"] is None
+
+
+def test_cpu_metadata_does_not_import_optional_torch(monkeypatch):
+    original_import = builtins.__import__
+
+    def reject_torch(name, *args, **kwargs):
+        if name == "torch":
+            raise AssertionError("the CPU matcher must not import optional torch")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_torch)
+    metadata = DescriptorMatcher("cpu").metadata()
+
+    assert metadata["python_version"] == platform.python_version()
+    assert metadata["pytorch_version"] is None
+    assert metadata["cuda_runtime_version"] is None
+    assert metadata["cuda_device_index"] is None
+    assert metadata["cuda_device_name"] is None
+    assert metadata["cuda_device_capability"] is None
+
+
+def test_cuda_metadata_records_runtime_and_device_provenance(cuda_matcher):
+    metadata = cuda_matcher.metadata()
+    torch = cuda_matcher.torch
+
+    assert metadata["python_version"] == platform.python_version()
+    assert metadata["pytorch_version"] == str(torch.__version__)
+    assert metadata["cuda_runtime_version"] == str(torch.version.cuda)
+    assert metadata["cuda_device_index"] == int(torch.cuda.current_device())
+    assert metadata["cuda_device_name"] == torch.cuda.get_device_name()
+    assert metadata["cuda_device_capability"] == list(torch.cuda.get_device_capability())

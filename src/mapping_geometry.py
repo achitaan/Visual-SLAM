@@ -83,6 +83,73 @@ def coverage(pixels, size):
     )
 
 
+def right_pixel(left_u, depth, focal_length, baseline, disparity_offset=0.0):
+    """Rectified right projection, including differing camera principal points."""
+    return left_u - focal_length*baseline/np.maximum(depth, 1e-9) - disparity_offset
+
+
+def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, baseline,
+                           size, min_inliers=15, disparity_offset=0.0):
+    """Verify a left-image PnP hypothesis against current stereo observations."""
+    from scipy.optimize import least_squares
+
+    pose, ids, _ = solution
+    world, observed, right = points[ids], pixels[ids], measured_right[ids]
+    available = np.isfinite(right)
+    report = {"stereo_observations": int(available.sum()), "stereo_refinement_applied": False}
+    if available.sum() < min_inliers or coverage(observed[available], size) < 3:
+        return solution, {**report, "stereo_verification": "insufficient_current_depth_support"}
+    inverse = np.linalg.inv(pose)
+    initial = np.r_[cv.Rodrigues(inverse[:3, :3])[0].ravel(), inverse[:3, 3]]
+
+    def errors(value):
+        camera = world @ cv.Rodrigues(value[:3])[0].T + value[3:]
+        homogeneous = camera @ matrix.T
+        predicted = homogeneous[:, :2]/np.maximum(homogeneous[:, 2:], 1e-9)
+        left_error = predicted-observed
+        right_error = right_pixel(predicted[:, 0], camera[:, 2], matrix[0, 0],
+                                  baseline, disparity_offset)-right
+        left_error[camera[:, 2] <= 0] = 1e4
+        right_error[camera[:, 2] <= 0] = 1e4
+        return left_error, right_error, camera[:, 2]
+
+    def residual(value):
+        left_error, right_error, _ = errors(value)
+        return np.clip(np.r_[left_error.ravel(), right_error[available]], -1e4, 1e4)
+
+    def objective(value):
+        r = residual(value);a = np.abs(r)
+        return float(np.sum(np.where(a <= 2., .5*r*r, 2.*(a-1.))))
+
+    before = objective(initial)
+    solved = least_squares(residual, initial, loss="huber", f_scale=2., max_nfev=20)
+    if not np.isfinite(solved.x).all():
+        return None, {**report, "pose_rejection_reason": "nonfinite_stereo_refinement"}
+    after = objective(solved.x)
+    value = solved.x if np.isfinite(after) and after < before else initial
+    left_error, right_error, depth = errors(value)
+    left_norm = np.linalg.norm(left_error, axis=1)
+    valid = (depth > 0) & (left_norm <= 2.) & (~available | (np.abs(right_error) <= 2.))
+    stereo_valid = valid & available
+    report.update(
+        stereo_refinement_applied=bool(after < before),
+        stereo_initial_cost=before, stereo_final_cost=objective(value),
+        stereo_consistent_inliers=int(stereo_valid.sum()),
+        stereo_rejected_inliers=int((available & ~valid).sum()),
+    )
+    if (valid.sum() < min_inliers or valid.sum()/len(points) < .25
+            or stereo_valid.sum() < min_inliers
+            or coverage(observed[stereo_valid], size) < 3
+            or np.median(left_norm[valid]) > 1.5
+            or np.median(np.abs(right_error[stereo_valid])) > 1.5):
+        return None, {**report, "pose_rejection_reason": "stereo_map_inconsistency"}
+    refined = np.eye(4)
+    refined[:3, :3] = cv.Rodrigues(value[:3])[0].T
+    refined[:3, 3] = -refined[:3, :3] @ value[3:]
+    return (refined, ids[valid], float(np.median(left_norm[valid]))), {
+        **report, "stereo_verification": "current_right_reprojection"}
+
+
 def initialize_monocular(first, second, matrix, size):
     if len(first) < 50:
         return None

@@ -12,6 +12,7 @@ from mapping_geometry import (
     project,
     coverage,
     estimate_stereo_reference,
+    refine_stereo_map_pose,
 )
 from local_bundle import local_bundle_adjustment
 from live_loops import LiveLoopWorker
@@ -27,6 +28,10 @@ class StereoCamera:
     stereo: object
     Q: np.ndarray
     baseline: float
+
+    @property
+    def disparity_offset(self):
+        return float(-self.Q[3, 3]/self.Q[3, 2]) if self.Q[3, 2] else 0.0
 
     def __post_init__(self):
         if (
@@ -429,6 +434,15 @@ class SharedSlam:
                 initial_pose=seed,
                 diagnostics=diagnostics,
             )
+            if solution is not None and self.stereo is not None:
+                _, measured_right = self._measure_stereo_pixels(observations)
+                solution, stereo_diagnostics = refine_stereo_map_pose(
+                    solution, positions, observations, measured_right, self.K,
+                    self.stereo.baseline, size,
+                    self.config.min_inliers if not relocalize else 20,
+                    self.stereo.disparity_offset,
+                )
+                diagnostics.update(stereo_diagnostics)
             return solution, diagnostics, identifiers, positions, observations
 
         result, pose_diagnostics, ids, world, observed = solve(candidates)
@@ -775,6 +789,7 @@ class SharedSlam:
                     self.K,
                     self.stereo.baseline if self.stereo is not None else 0.0,
                     window=self.config.bundle_window,
+                    disparity_offset=self.stereo.disparity_offset if self.stereo is not None else 0.,
                 ) if self.config.bundle_enabled else {"applied": False, "reason": "diagnostic_ablation"}
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()

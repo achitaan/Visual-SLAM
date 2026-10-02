@@ -25,7 +25,9 @@ pass. Stateful replays always start at frame zero.
 
 `--feature-cache .datasets/feature-cache` optionally reuses SIFT/depth extraction
 in diagnostics. Entries are keyed by image contents, extraction implementation,
-OpenCV version and calibration. The cache is bounded; reports identify hits and
+OpenCV build, extraction parameters and calibration. Tracking-only changes can
+reuse identical extracted features; evaluation results still require the full
+estimator and evaluator fingerprints to match. The cache is bounded; reports identify hits and
 misses. Cached timings must not be presented as official estimator performance.
 Release profiles reject this cache option.
 
@@ -161,3 +163,32 @@ repeated-pattern ambiguity. Recheck stereo 04's first 80 frames and stereo 01's
 first 350 frames before any full-sequence expansion. Preserve the baseline and all
 failed revisions. Full stereo 01/04, 00/07, monocular/TUM and live-loop acceptance
 remain pending. The paired scheduler stays paused and main is unchanged.
+
+### Current stereo observation verification
+
+Map-based PnP now refines a left-image hypothesis against current right-image
+reprojection when enough spatially distributed disparity observations are available.
+The same left-image acceptance checks remain in force, and inconsistent stereo
+observations are excluded. Insufficient depth support is reported explicitly;
+such frames retain geometric tracking without claiming stereo verification.
+Rectified calibration with different principal points is handled in both pose
+refinement and local BA. Learned depth and reference data do not enter either solve.
+
+Synthetic checks reject a wrong-depth map hypothesis that projects perfectly in
+the left image, verify outlier rejection and pose refinement, and cover missing
+depth and principal-point offsets. The complete backend suite passes 109 tests.
+
+The new frozen stereo 04 replay completed all 80 frames with no loss, 0.186 m
+SE(3) ATE and 0.794% translation drift. The matched preserved baseline remains
+0.444 m and 1.673%. Compared with the preceding motion-prior revision, ATE improves
+from 0.281 m but drift worsens from 0.264%; these are short, single-segment
+diagnostics. The full quick cycle took 90 seconds, including checks and plotting.
+Feature-cache metadata is retained, so the timing is not an official uncached
+performance measurement. The narrower cache fingerprint reproduces the same
+trajectory metrics as the preceding extraction-cache identity.
+
+![Current right-image verification diagnostic](benchmark/plots/stereo-rework04-depth.png)
+
+Stereo 01 has not yet been rerun on this revision. Its preceding 350-frame
+regression remains a release blocker. This commit is an experimental snapshot;
+it does not establish a general accuracy improvement or authorize a main merge.

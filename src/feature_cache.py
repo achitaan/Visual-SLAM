@@ -1,13 +1,40 @@
 """Optional bounded diagnostic cache; cache keys include exact extraction and image identity."""
 import hashlib
 import json
+import inspect
+import platform
 from pathlib import Path
 import numpy as np
+
+
+def extraction_signature(slam, opencv):
+    """Fingerprint extraction dependencies without invalidating features for pose changes."""
+    def parameters(algorithm):
+        return {'type': type(algorithm).__module__+'.'+type(algorithm).__qualname__,
+                'parameters': {name: getattr(algorithm, name)() for name in sorted(dir(algorithm))
+                if name.startswith('get') and callable(getattr(algorithm, name))}}
+
+    settings = {
+        'schema': 1, 'opencv': opencv.__version__, 'numpy': np.__version__,
+        'machine': platform.machine(), 'processor': platform.processor(),
+        'detector': parameters(slam.detector),
+        'stereo': parameters(slam.stereo.stereo) if slam.stereo is not None else None,
+    }
+    digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode())
+    digest.update(opencv.getBuildInformation().encode())
+    for method in (type(slam).__init__, type(slam)._extract, type(slam)._measure_stereo_pixels):
+        digest.update(inspect.getsource(method).encode())
+    for value in (slam.K, slam.inverse_K):
+        digest.update(value.dtype.str.encode());digest.update(value.tobytes())
+    if slam.stereo is not None:
+        digest.update(slam.stereo.Q.dtype.str.encode());digest.update(slam.stereo.Q.tobytes())
+    return digest.hexdigest()
 
 
 class FeatureCache:
     def __init__(self, folder, signature, max_bytes=512*1024**2):
         self.root=Path(folder).resolve()
+        self.signature=signature
         self.folder=self.root/signature
         self.folder.mkdir(parents=True,exist_ok=True)
         (self.folder/'owner.json').write_text(json.dumps({'purpose':'shared-slam-diagnostic-feature-cache','signature':signature}),encoding='utf-8')
@@ -49,4 +76,4 @@ class FeatureCache:
             if size<=self.max_bytes:break
             size-=old.stat().st_size;old.unlink()
 
-    def metadata(self):return {'enabled':True,'hits':self.hits,'misses':self.misses,'runtime_is_cached_diagnostic':True}
+    def metadata(self):return {'enabled':True,'signature':self.signature,'hits':self.hits,'misses':self.misses,'runtime_is_cached_diagnostic':True}

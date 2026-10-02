@@ -31,7 +31,7 @@ from reconstruction import export_run
 from metrics import evaluate_trajectory
 from benchmark_telemetry import SnapshotWriter, snapshot_target
 from test_budget import Budget, write_json
-from feature_cache import FeatureCache
+from feature_cache import FeatureCache, extraction_signature
 
 
 def peak_memory_mb():
@@ -246,8 +246,7 @@ def main():
     }
     cache = None
     if args.feature_cache:
-        signature = hashlib.sha256((source_hashes["shared_slam.py"] + source_hashes["mapping_geometry.py"] + source_hashes["StereoVisualOdometry.py"] + str(slam.config.features) + cv.__version__).encode() + matrix.tobytes()
-                                   + (vo.Q.tobytes() if args.stereo else b"mono")).hexdigest()
+        signature = extraction_signature(slam, cv)
         cache = FeatureCache(args.feature_cache, signature)
         extract = slam._extract
         def cached_extract(image, right_image):

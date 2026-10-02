@@ -4,10 +4,10 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from scipy.sparse import lil_matrix
-from mapping_geometry import project
+from mapping_geometry import project, right_pixel
 
 
-def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks=200):
+def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks=200, disparity_offset=0.0):
     with state.lock:
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
@@ -155,8 +155,7 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         values = np.zeros((len(records), 3))
         values[:, :2] = errors
         values[:, 2] = (
-            pixels[:, 0]
-            - matrix[0, 0] * baseline / np.maximum(z, 1e-9)
+            right_pixel(pixels[:, 0], z, matrix[0, 0], baseline, disparity_offset)
             - np.array(
                 [o.right_u if o.right_u is not None else 0.0 for _, _, o in records]
             )
@@ -182,7 +181,7 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         if state.metric:
             for j, (_, _, observation) in enumerate(held_out):
                 if observation.right_u is not None:
-                    error = (pixels[j, 0] - matrix[0, 0]*baseline/max(camera[j, 2], 1e-9)
+                    error = (right_pixel(pixels[j, 0], camera[j, 2], matrix[0, 0], baseline, disparity_offset)
                              - observation.right_u)
                     values.append(error if camera[j, 2] > 0 else 1e4)
         return np.asarray(values)

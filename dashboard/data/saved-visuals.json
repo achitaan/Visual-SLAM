@@ -1,5 +1,10 @@
 [
   {
+    "file": "stereo-rework04-depth.png",
+    "label": "KITTI 04 - 80 frames - current stereo reprojection verification",
+    "group": "Stereo rework - short diagnostic; stereo 01 retest pending"
+  },
+  {
     "file": "stereo-rework01-recovery.png",
     "label": "KITTI 01 \u00b7 350 frames \u00b7 BA, bidirectional refinement and verified motion prior",
     "group": "Stereo rework \u00b7 accuracy gate still failed"

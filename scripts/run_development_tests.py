@@ -18,6 +18,30 @@ VARIANTS = {
     'live': ['--loop-mode', 'live'],
     'offline': ['--loop-mode', 'offline'],
 }
+CLEANUP_RESERVE_SECONDS = 10
+CURATED_TESTS = (
+    'tests/test_shared_slam.py',
+    'tests/test_keyframe_retrieval.py',
+    'tests/test_keyframe_flow_support.py',
+    'tests/test_append_only_corrections.py',
+    'tests/test_local_bundle_landmarks.py',
+    'tests/test_bundle_stereo_motion.py',
+    'tests/test_stereo_subpixel_depth.py',
+    'tests/test_bidirectional_refinement.py',
+    'tests/test_stereo_motion_prior.py',
+    'tests/test_stereo_map_refinement.py',
+    'tests/test_stereo_feature_support.py',
+    'tests/test_descriptor_fallback.py',
+    'tests/test_feature_cache.py',
+    'tests/test_integration_foundations.py',
+    'tests/test_loop_performance_integration.py',
+    'tests/test_tracking_performance_integration.py',
+    'tests/test_bundle_performance_equivalence.py',
+    'tests/test_descriptor_matching_cuda.py',
+    'tests/test_stereo_regression_diagnostics.py',
+    'tests/test_test_budget.py',
+    'tests/test_development_runner.py',
+)
 
 
 def terminate_owned_tree(process):
@@ -72,6 +96,11 @@ def run_owned(command, log, seconds, env, *, on_start=None):
             terminate_owned_tree(process)
             process.wait(timeout=5)
             return {'exit_code': process.returncode, 'elapsed_s': time.monotonic()-started, 'timed_out': True}
+
+
+def child_timeout(budget, maximum, reserve=CLEANUP_RESERVE_SECONDS):
+    """Cap child runtime while leaving time for terminating it and saving results."""
+    return max(0.0, min(float(maximum), budget.remaining - reserve))
 
 
 def reusable(report, identity):
@@ -149,6 +178,7 @@ def source_fingerprint():
         REPO/'scripts'/name for name in ('evaluate_shared_slam.py',
         'evaluate_stereo_baseline.py', 'run_development_tests.py',
         'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py')]
+    sources += sorted((REPO/'tests').glob('test_*.py'))
     digest = hashlib.sha256()
     for path in sources:
         digest.update(str(path.relative_to(REPO)).encode())
@@ -198,7 +228,11 @@ def main():
     manifest.update(profile=args.profile,budget_seconds=seconds,status='running',supervisor_pid=os.getpid())
     write_json(manifest_path,manifest)
     env={**os.environ,'OPENBLAS_NUM_THREADS':'1','OMP_NUM_THREADS':'1','PYTHONIOENCODING':'utf-8','MPLCONFIGDIR':str(REPO/'.mpl-cache')}
-    checks=run_owned([sys.executable,'-m','pytest','tests/test_shared_slam.py','tests/test_keyframe_retrieval.py','tests/test_keyframe_flow_support.py','tests/test_append_only_corrections.py','tests/test_local_bundle_landmarks.py','tests/test_bundle_stereo_motion.py','tests/test_stereo_subpixel_depth.py','tests/test_bidirectional_refinement.py','tests/test_stereo_motion_prior.py','tests/test_stereo_map_refinement.py','tests/test_stereo_feature_support.py','tests/test_descriptor_fallback.py','tests/test_feature_cache.py','tests/test_test_budget.py','-q'],root/'checks.log',min(120,budget.remaining),env)
+    checks_timeout=child_timeout(budget,120)
+    if checks_timeout <= 0:
+        manifest.update(status='deferred_budget',next_case={'phase':'checks','estimated_seconds':1})
+        write_json(manifest_path,manifest);print(json.dumps(manifest['next_case']),flush=True);return 2
+    checks=run_owned([sys.executable,'-m','pytest',*CURATED_TESTS,'-q'],root/'checks.log',checks_timeout,env)
     manifest['checks']=checks;write_json(manifest_path,manifest)
     if checks['exit_code'] != 0:
         manifest['status']='failed_checks';write_json(manifest_path,manifest);return 1
@@ -278,8 +312,9 @@ def main():
             manifest['attempts'].append(row);write_json(manifest_path,manifest)
             if row['status'] not in ('completed','completed_with_tracking_loss') or row.get('frames')!=frames:
                 manifest['status']=row['status'];write_json(manifest_path,manifest);return 1
-            if variant!='baseline' and budget.permits(15):
-                plot=run_owned([sys.executable,str(REPO/'scripts/plot_shared_slam.py'),'--run',str(folder),'--reference',str(args.poses_root/f'{seq}.txt')],folder/'plot.log',min(15,budget.remaining),env)
+            plot_timeout=child_timeout(budget,15)
+            if variant!='baseline' and budget.permits(15,reserve=CLEANUP_RESERVE_SECONDS) and plot_timeout > 0:
+                plot=run_owned([sys.executable,str(REPO/'scripts/plot_shared_slam.py'),'--run',str(folder),'--reference',str(args.poses_root/f'{seq}.txt')],folder/'plot.log',plot_timeout,env)
                 row['plot']=plot;write_json(manifest_path,manifest)
     manifest.update(status='completed_diagnostics',elapsed_s=seconds-budget.remaining)
     manifest.pop('next_case',None)

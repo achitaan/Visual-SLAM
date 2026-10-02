@@ -117,6 +117,21 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
             ),
             np.array([l.position for l in landmarks]).ravel(),
         ]
+        # Huber-weighted Jacobian columns can become almost zero for otherwise
+        # valid large residuals. Using their norms for variable scaling can then
+        # make the trust region stall at a poor pose. Use geometry units instead:
+        # radians for rotation and one baseline for translations/world points.
+        if state.metric and baseline > 0:
+            length_scale = baseline
+        else:
+            separations = np.linalg.norm(np.diff(
+                np.array([base[k][:3, 3] for k in selected]), axis=0), axis=1)
+            positive = separations[separations > 1e-8]
+            length_scale = float(np.median(positive)) if len(positive) else 1.
+        variable_scale = np.r_[
+            np.tile([1., 1., 1., length_scale, length_scale, length_scale], len(free)),
+            np.full(3 * len(landmarks), length_scale),
+        ]
 
     def unpack(x):
         poses = {k: p.copy() for k, p in base.items()}
@@ -177,14 +192,18 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         pixels = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
         errors = np.clip(pixels - np.array([o.pixel for _, _, o in held_out]), -1e4, 1e4)
         errors[camera[:, 2] <= 0] = 1e4
-        values = list(errors.ravel())
-        if state.metric:
-            for j, (_, _, observation) in enumerate(held_out):
-                if observation.right_u is not None:
-                    error = (right_pixel(pixels[j, 0], camera[j, 2], matrix[0, 0], baseline, disparity_offset)
-                             - observation.right_u)
-                    values.append(error if camera[j, 2] > 0 else 1e4)
-        return np.asarray(values)
+        if not state.metric:
+            return errors.ravel()
+        # Match the observation-by-observation row layout of the sparse
+        # Jacobian, including mixed left-only and stereo observations.
+        values = np.zeros((len(held_out), 3))
+        values[:, :2] = errors
+        values[:, 2] = (
+            right_pixel(pixels[:, 0], camera[:, 2], matrix[0, 0], baseline, disparity_offset)
+            - np.array([o.right_u if o.right_u is not None else 0. for _, _, o in held_out])
+        )
+        values[camera[:, 2] <= 0] = 1e4
+        return values[np.array([[True, True, dim == 3] for dim in held_dimensions])]
 
     def residual(x):
         poses, _ = unpack(x)
@@ -199,7 +218,7 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         loss="huber",
         f_scale=2.0,
         max_nfev=30,
-        x_scale="jac",
+        x_scale=variable_scale,
         tr_solver="lsmr",
     )
     after = objective(optimized_residual(result.x))

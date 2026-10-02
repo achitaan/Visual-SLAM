@@ -1,23 +1,43 @@
 [
   {
+    "file": "stereo-rework01-full-matched.png",
+    "label": "KITTI 01 - all 1101 frames - fresh uncached matched comparison",
+    "group": "Current solver revision - full ATE regression; release gate fails"
+  },
+  {
+    "file": "stereo-rework01-full-conditioned-overview.png",
+    "label": "KITTI 01 - full shared run - input, loss intervals, trajectory and sparse map",
+    "group": "Current solver revision - two recovered losses; substantial trajectory drift"
+  },
+  {
+    "file": "stereo-rework01-conditioned-ba.png",
+    "label": "KITTI 01 - 350 frames - geometry-based BA variable scaling",
+    "group": "Current solver revision - fewer lost frames; rotation regression remains"
+  },
+  {
+    "file": "stereo-rework01-jacobian.png",
+    "label": "KITTI 01 - 350 frames - correct held-out residual rows",
+    "group": "Retained intermediate revision - ATE regression versus descriptor-retry revision"
+  },
+  {
     "file": "stereo-rework01-descriptor-fallback.png",
     "label": "KITTI 01 - 350 frames - descriptor fallback versus preserved stereo",
-    "group": "Current stereo rework - improved prefix accuracy and recovered loss intervals"
+    "group": "Retained stereo revision before BA solver fixes - improved prefix accuracy and recovered loss intervals"
   },
   {
     "file": "stereo-rework01-descriptor-overview.png",
     "label": "KITTI 01 - descriptor fallback - input, tracking loss, trajectory and sparse map",
-    "group": "Current stereo rework - saved 350-frame diagnostic"
+    "group": "Retained stereo revision before BA solver fixes - saved 350-frame diagnostic"
   },
   {
     "file": "stereo-rework04-full.png",
     "label": "KITTI 04 - all 271 frames - fresh uncached matched stereo comparison",
-    "group": "Current stereo rework - full04 evidence; broader validation pending"
+    "group": "Retained stereo revision before BA solver fixes - full04 evidence; broader validation pending"
   },
   {
     "file": "stereo-rework01-ba-ablation.png",
     "label": "KITTI 01 - 350 frames - identical-source BA on/off comparison",
-    "group": "Current stereo rework - BA disabled fails; loops off in both runs"
+    "group": "Retained stereo revision before BA solver fixes - BA disabled fails; loops off in both runs"
   },
   {
     "file": "stereo-rework01-feature-support-result.png",

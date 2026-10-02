@@ -1,0 +1,3 @@
+# Install only into a separate environment; CPU installation needs none of these.
+--index-url https://download.pytorch.org/whl/cu126
+torch==2.7.1

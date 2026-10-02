@@ -33,6 +33,8 @@ from slam_backend import SlamBackend
 from telemetry import TelemetryServer, TelemetryState, encode_image, make_frame_message, now
 from shared_slam import SharedSlam, StereoCamera
 from reconstruction import export_run
+from performance import PerformanceConfig
+import json
 
 def plot(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     def get_coords(poses):
@@ -98,6 +100,10 @@ def main() -> None:
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
+    parser.add_argument("--retrieval", choices=["indexed", "exhaustive"], default="indexed")
+    parser.add_argument("--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu")
+    parser.add_argument("--no-cpu-optimizations", action="store_true")
+    parser.add_argument("--profile", type=Path)
     parser.add_argument("--no-telemetry", action="store_true")
     parser.add_argument("--telemetry-port", type=int, default=TELEMETRY.port)
     parser.add_argument("--frame-delay-ms", type=float, default=TELEMETRY.frame_delay_ms)
@@ -174,7 +180,8 @@ def main() -> None:
     shared_events_sent = 0
     last_payload = None
     stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
-    shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera) if args.slam else None
+    performance = PerformanceConfig(args.retrieval, args.matching_backend, not args.no_cpu_optimizations, args.profile is not None)
+    shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera, performance=performance) if args.slam else None
     if shared is not None:
         shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
         vo.poses = shared.map.poses
@@ -358,6 +365,9 @@ def main() -> None:
     if shared is not None:
         inputs = vo.Images_1.paths if use_stereo else vo.Images.paths
         export_run(shared, args.output.parent / (args.output.stem + '-map'), inputs)
+        if args.profile:
+            args.profile.parent.mkdir(parents=True, exist_ok=True)
+            args.profile.write_text(json.dumps(shared.profiler.report(), indent=2), encoding="utf-8")
     print(f"Saved {len(vo.poses)} KITTI poses to {args.output}")
     if args.plot:
         plot(vo.poses, gt_poses)

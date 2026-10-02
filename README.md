@@ -191,3 +191,75 @@ the shared pipeline does not embed or depend on the ORB-SLAM implementation,
 DBoW2, g2o or Pangolin. Depth Anything V2 is a separately obtained third-party
 model for optional offline reconstruction, with checkpoint provenance recorded
 in the reconstruction manifest.
+
+## Performance branch
+
+`codex/slam-performance` adds indexed keyframe retrieval, map/solver allocation
+optimizations and optional CUDA descriptor matching. CPU matching remains the
+default. Accuracy thresholds, feature counts, optimization schedules and the
+300-keyframe live graph guard are unchanged. See the
+[small pilot report](docs/performance/REPORT.md) for speed, memory and quality results.
+
+Both the live `--slam` entrypoint and shared evaluator accept `--retrieval indexed`
+or `--retrieval exhaustive`, `--matching-backend cpu|cuda|auto`,
+`--no-cpu-optimizations`, `--opencv-threads` and `--profile <output.json>`.
+Profiling reports nested wall times and separate background work; do not sum
+these stages as if they were serial. The evaluator records input loading,
+exports, frame latency, source hashes and GPU memory statistics separately.
+
+```powershell
+.\.venv\Scripts\python scripts/evaluate_shared_slam.py --data-root $data --poses-root "$data/poses" --sequence 04 --stereo --output results/performance/cpu04 --profile results/performance/cpu04/profile.json
+```
+
+CUDA matching requires a separate CUDA-enabled PyTorch environment. Standard
+OpenCV wheels need no CUDA build for this backend. Create a new environment,
+install the normal requirements, then install `requirements-performance-gpu.txt`
+following the [PyTorch installation instructions](https://pytorch.org/get-started/locally/).
+Do not change an environment being used by a frozen benchmark.
+
+```powershell
+python -m venv .venv-performance-gpu
+.\.venv-performance-gpu\Scripts\python -m pip install -r requirements-lock.txt
+.\.venv-performance-gpu\Scripts\python -m pip install -r requirements-performance-gpu.txt
+.\.venv-performance-gpu\Scripts\python scripts/evaluate_shared_slam.py --data-root $data --poses-root "$data/poses" --sequence 04 --stereo --matching-backend cuda --output results/performance/gpu04
+```
+
+Explicit `cuda` fails clearly when unavailable; `auto` falls back to CPU and
+retains GPU matching only when workload calibration finds a speed benefit and
+matching agreement. CUDA processes have additional runtime memory overhead.
+OpenCV defaults to one worker; larger worker counts are an explicit experiment,
+recorded in evaluator reports.
+
+The pilot tools use a separate frozen source snapshot and candidate snapshot
+under `results/performance`, with read-only input datasets. Create them using
+`scripts/prepare_performance_pilot.py --baseline-ref 63454a0 --output results/performance`;
+existing snapshots are never overwritten. The controller expects KITTI 04 in
+this worktree's `.datasets/performance-kitti`, and KITTI 01, TUM desk and reference
+poses under the supplied `--development-root` (see controller paths). Run
+`scripts/run_performance_pilot.py --help` for the small serial comparison controller
+and use `--final-only` to repeat the five cases on the current implementation.
+Use `scripts/summarize_performance_pilot.py` to regenerate Markdown/JSON/CSV reports.
+`scripts/check_performance_retrieval.py` audits known loop candidates using saved
+input images and replays saved loop measurements against exported keyframe poses;
+that replay does not reproduce the original pre-correction optimization snapshot.
+
+The performance acceptance target is 2.5× processing throughput across the pilot
+and promoted full case, with at least 20% lower whole-process elapsed time as
+worthwhile evidence. `scripts/check_performance_end_to_end.py` measures interpreter
+startup through exports and reference evaluation on full KITTI04. It records an
+explicit candidate OpenCV worker count and can reuse a checksum-verified frozen
+baseline. Single-run shared-host timings remain provisional.
+
+Loop appearance retrieval now uses a stable view of detected SIFT descriptors;
+appended optical-flow descriptors stay in the tracking map. Exact loop matching
+and geometric verification retain their finite-depth feature checks. To audit
+known pairs with stereo measurement evidence, pass `--stereo-right-root` to
+`scripts/check_performance_retrieval.py`; only right images for the known query
+frames are needed. `scripts/download_kitti_sequence.py --frames ... --cameras 1`
+downloads selected official images into a separate output root.
+
+After a retrieval change, `scripts/repeat_performance_validation.py` repeats the
+same five cases and the already-promoted KITTI01 stereo case against frozen
+baselines. `scripts/audit_performance_acceptance.py` checks current source hashes,
+quality, known-pair recall, whole-process improvement, aggregate processing
+throughput and the memory investigation. Its default speed target is 2.5×.

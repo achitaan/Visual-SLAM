@@ -9,6 +9,8 @@ from mapping_geometry import match_descriptors, coverage
 from metrics import umeyama_alignment
 from loop_geometry import StereoLoopFrame, verify_loop
 from pose_graph import optimize
+from performance import StageProfiler, profiled
+from keyframe_index import KeyframeIndex
 
 
 def similarity(source, target):
@@ -155,7 +157,11 @@ def optimize_similarities(poses, edges, max_evaluations=200):
 
 
 class LiveLoopWorker:
-    def __init__(self, matrix, metric):
+    def __init__(self, matrix, metric, profiler=None, retrieval="indexed", cpu_optimizations=True, matcher=None):
+        self.profiler = profiler or StageProfiler()
+        self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
+        self.cpu_optimizations = cpu_optimizations
+        self.matcher = matcher or match_descriptors
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
@@ -174,7 +180,24 @@ class LiveLoopWorker:
         if self.future is not None or len(state.keyframes) < 3:
             return
         with state.lock:
-            snapshot = copy.deepcopy(state.keyframes)
+            if self.cpu_optimizations:
+                current = max(state.keyframes)
+                if state.keyframes[current].frame - state.keyframes[0].frame < 150:
+                    return
+                if len(state.keyframes) > 300:
+                    self.events.append({"type": "loop_skipped", "reason": "graph_size_not_validated"})
+                    return
+                # Descriptors/pixels are immutable after keyframe creation. Geometry
+                # changes during BA/corrections, so snapshot those arrays separately.
+                snapshot = {}
+                for ident, frame in state.keyframes.items():
+                    saved = copy.copy(frame)
+                    saved.pose = frame.pose.copy()
+                    saved.landmark_ids = frame.landmark_ids.copy()
+                    saved.depth_points = frame.depth_points.copy() if frame.depth_points is not None else None
+                    snapshot[ident] = saved
+            else:
+                snapshot = copy.deepcopy(state.keyframes)
             revision = state.revision
         current = max(snapshot)
         if snapshot[current].frame - snapshot[0].frame < 150:
@@ -195,6 +218,7 @@ class LiveLoopWorker:
             set(self.pending_pairs),
         )
 
+    @profiled("background_loops")
     def _solve(self, keyframes, revision, loops, force=False, pending_pairs=None):
         current = max(keyframes)
         last = keyframes[current]
@@ -206,10 +230,21 @@ class LiveLoopWorker:
             return frame.descriptors[valid]
 
         query = measured_descriptors(last)
+        def appearance_descriptors(frame):
+            detected = getattr(frame, "retrieval_descriptors", None)
+            return frame.descriptors if detected is None else detected
+        eligible = [i for i, k in keyframes.items() if last.frame - k.frame >= 150]
+        if self.retrieval_index is not None:
+            with self.profiler.measure("loop_retrieval_index"):
+                for ident, frame in keyframes.items():
+                    self.retrieval_index.upsert(ident, frame.frame, appearance_descriptors(frame))
+                shortlist = self.retrieval_index.query(appearance_descriptors(last), eligible)
+            if shortlist is not None:
+                eligible = shortlist
+        self.profiler.count("loop_keyframes_matched", len(eligible))
         candidates = [
-            (len(match_descriptors(measured_descriptors(k), query)), i)
-            for i, k in keyframes.items()
-            if last.frame - k.frame >= 150
+            (len(self.profiler.call("loop_matching", self.matcher, measured_descriptors(keyframes[i]), query)), i)
+            for i in eligible
         ]
         newly_verified = []
         attempts = []
@@ -241,9 +276,9 @@ class LiveLoopWorker:
                         or (int(self.matrix[0, 2] * 2), int(self.matrix[1, 2] * 2)),
                     )
 
-                result = verify_loop(frame(first), frame(query_frame), self.matrix)
+                result = self.profiler.call("loop_verification", verify_loop, frame(first), frame(query_frame), self.matrix)
             else:
-                result = verify_similarity(first, query_frame, self.matrix)
+                result = self.profiler.call("loop_verification", verify_similarity, first, query_frame, self.matrix)
             attempts.append(
                 {
                     "first_keyframe": i,
@@ -285,7 +320,7 @@ class LiveLoopWorker:
                         "loop",
                     )
                 )
-            corrected = optimize(poses, edges, max_evaluations=500)
+            corrected = self.profiler.call("graph_optimization", optimize, poses, edges, max_evaluations=500)
             scales = np.ones(len(poses))
         else:
             edges = []
@@ -303,7 +338,7 @@ class LiveLoopWorker:
                         2.0,
                     )
                 )
-            corrected, scales = optimize_similarities(poses, edges)
+            corrected, scales = self.profiler.call("graph_optimization", optimize_similarities, poses, edges)
         return {
             "revision": revision,
             "loops": loops,

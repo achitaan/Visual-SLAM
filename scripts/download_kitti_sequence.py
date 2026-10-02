@@ -109,14 +109,24 @@ def main():
     parser.add_argument('--sequence', required=True)
     parser.add_argument('--output-root', type=Path, default=Path('.datasets/kitti'))
     parser.add_argument('--inspect', action='store_true')
+    parser.add_argument('--frames', type=int, nargs='+', help='Download only these frame numbers (metadata always included)')
+    parser.add_argument('--cameras', choices=['0', '1'], nargs='+', default=['0', '1'])
     args = parser.parse_args()
     if not re.fullmatch(r'(0[0-9]|1[0-9]|2[01])', args.sequence):
         parser.error('Sequence must be 00–21')
+    if args.frames and any(frame < 0 for frame in args.frames):
+        parser.error('Frame numbers must be nonnegative')
     root = args.output_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     pattern = re.compile(rf'dataset/sequences/{args.sequence}/(image_[01]/[0-9]{{6}}\.png|calib\.txt|times\.txt)')
     with zipfile.ZipFile(RangeFile(URL)) as archive:
         entries = sorted((entry for entry in archive.infolist() if pattern.fullmatch(entry.filename)), key=lambda entry: entry.header_offset)
+        selected_frames = set(args.frames) if args.frames is not None else None
+        entries = [entry for entry in entries if not entry.filename.endswith('.png') or
+                   (Path(entry.filename).parent.name[-1] in args.cameras and
+                    (selected_frames is None or int(Path(entry.filename).stem) in selected_frames))]
+        if selected_frames is not None and sum(entry.filename.endswith('.png') for entry in entries) != len(selected_frames) * len(set(args.cameras)):
+            raise ValueError('Archive is missing a requested image')
         if not entries:
             raise ValueError('No selected sequence entries found')
         required = sum(entry.file_size for entry in entries)
@@ -140,7 +150,7 @@ def main():
             pending.replace(target)
             if (i + 1) % 100 == 0 or i + 1 == len(entries):
                 print(f'Downloaded {i + 1}/{len(entries)} files', flush=True)
-    (root / f'source-{args.sequence}.json').write_text(json.dumps({'url': URL, 'sequence': args.sequence, 'files': len(entries), 'uncompressed_bytes': required}, indent=2))
+    (root / f'source-{args.sequence}.json').write_text(json.dumps({'url': URL, 'sequence': args.sequence, 'files': len(entries), 'uncompressed_bytes': required, 'frames': args.frames, 'cameras': args.cameras}, indent=2))
 
 
 if __name__ == '__main__':

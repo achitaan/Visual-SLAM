@@ -527,8 +527,10 @@ class SharedSlam:
                 }
         return best, stats
 
-    def _rank_keyframes(self, desc, exhaustive=False):
+    def _rank_keyframes(self, desc, exhaustive=False, cached=None):
         eligible = list(self.map.keyframes)
+        cached = cached or []
+        measured = {ident for _, ident in cached}
         if self.retrieval_index is not None and not exhaustive:
             with self.profiler.measure("retrieval_index"):
                 for ident, frame in self.map.keyframes.items():
@@ -536,12 +538,13 @@ class SharedSlam:
                 shortlist = self.retrieval_index.query(desc, eligible)
             if shortlist is not None:
                 eligible = shortlist
+        eligible = [ident for ident in eligible if ident not in measured]
         self.profiler.count("recovery_keyframes_matched", len(eligible))
         return sorted(
-            (
+            cached + [
                 (len(self._match(k.descriptors, desc)), k.id)
                 for k in (self.map.keyframes[i] for i in eligible)
-            ),
+            ],
             reverse=True,
         )
 
@@ -552,7 +555,7 @@ class SharedSlam:
         result, stats = self._recover_ranked(pixels, desc, size, points, ranked)
         if result is None and self.retrieval_index is not None and len(ranked) < len(self.map.keyframes):
             self.profiler.count("recovery_exhaustive_fallbacks")
-            result, stats = self._recover_ranked(pixels, desc, size, points, self._rank_keyframes(desc, exhaustive=True))
+            result, stats = self._recover_ranked(pixels, desc, size, points, self._rank_keyframes(desc, exhaustive=True, cached=ranked))
         return result, stats
 
     def _recover_ranked(self, pixels, desc, size, points, ranked):

@@ -49,13 +49,29 @@ def test_recovery_uses_exhaustive_fallback_and_does_not_accept_appearance(monkey
     slam = SharedSlam(np.diag([250., 250., 1.]))
     slam.map.keyframes = {i: None for i in range(30)}
     calls = []
-    monkeypatch.setattr(slam, "_rank_keyframes", lambda desc, exhaustive=False: [(30, i) for i in range(30 if exhaustive else 20)])
+    monkeypatch.setattr(slam, "_rank_keyframes", lambda desc, exhaustive=False, cached=None: [(30, i) for i in range(30 if exhaustive else 20)])
     def recover(pixels, desc, size, points, ranked):
         calls.append(len(ranked))
         return (np.eye(4), {}) if len(ranked) == 30 else (None, {})
     monkeypatch.setattr(slam, "_recover_ranked", recover)
     assert slam._relocalize([], [], (640, 480))[0] is not None
     assert calls == [20, 30]
+    slam.loop_worker.executor.shutdown()
+
+
+def test_exhaustive_fallback_reuses_exact_shortlist_scores(monkeypatch):
+    from types import SimpleNamespace
+    from shared_slam import SharedSlam
+    slam = SharedSlam(np.diag([250., 250., 1.]), performance=PerformanceConfig(retrieval="exhaustive"))
+    slam.map.keyframes = {i: SimpleNamespace(id=i, frame=i*10, descriptors=np.full((2,128), i, np.float32)) for i in range(4)}
+    calls = []
+    def match(first, second):
+        ident = int(first[0, 0]); calls.append(ident)
+        return np.zeros((ident, 2), int)
+    monkeypatch.setattr(slam, "_match", match)
+    ranked = slam._rank_keyframes([], exhaustive=True, cached=[(42, 2)])
+    assert calls == [0, 1, 3]
+    assert ranked == [(42, 2), (3, 3), (1, 1), (0, 0)]
     slam.loop_worker.executor.shutdown()
 
 

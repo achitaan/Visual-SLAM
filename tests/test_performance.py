@@ -103,3 +103,35 @@ def test_bundle_reference_and_optimized_residuals_agree():
     assert np.isclose(reference["final_cost"], fast["final_cost"], atol=1e-9)
     for ident in state.landmarks:
         assert np.allclose(state.landmarks[ident].position, other.landmarks[ident].position, atol=1e-7)
+
+
+def test_gpu_unavailability_and_cpu_matching(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from descriptor_matching import DescriptorMatcher
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)))
+    fallback = DescriptorMatcher("auto")
+    assert fallback.torch is None and "unavailable" in fallback.reason
+    with pytest.raises(RuntimeError, match="unavailable"):
+        DescriptorMatcher("cuda")
+    desc = np.eye(8, dtype=np.float32)
+    expected = np.column_stack([np.arange(8), np.arange(8)])
+    assert np.array_equal(fallback(desc, desc), expected)
+
+
+def test_cuda_matches_cpu_including_ties_ratio_boundaries_and_binary():
+    from descriptor_matching import DescriptorMatcher
+    from mapping_geometry import match_descriptors
+    try:
+        gpu = DescriptorMatcher("cuda")
+    except RuntimeError:
+        pytest.skip("CUDA matching environment unavailable")
+    rng = np.random.default_rng(44)
+    for size in [30, 1100]:
+        desc = rng.uniform(0, 255, (size, 128)).astype(np.float32)
+        query = desc.copy() + rng.normal(0, .5, desc.shape).astype(np.float32)
+        query[0] = query[1]
+        query[2] = .7 * desc[2] + .3 * desc[3]
+        assert np.array_equal(gpu(desc, query), match_descriptors(desc, query))
+    binary = rng.integers(0, 255, (40, 32), dtype=np.uint8)
+    assert np.array_equal(gpu(binary, binary), match_descriptors(binary, binary))

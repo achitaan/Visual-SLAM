@@ -157,10 +157,11 @@ def optimize_similarities(poses, edges, max_evaluations=200):
 
 
 class LiveLoopWorker:
-    def __init__(self, matrix, metric, profiler=None, retrieval="indexed", cpu_optimizations=True):
+    def __init__(self, matrix, metric, profiler=None, retrieval="indexed", cpu_optimizations=True, matcher=None):
         self.profiler = profiler or StageProfiler()
         self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
         self.cpu_optimizations = cpu_optimizations
+        self.matcher = matcher or match_descriptors
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
@@ -239,7 +240,7 @@ class LiveLoopWorker:
                 eligible = shortlist
         self.profiler.count("loop_keyframes_matched", len(eligible))
         candidates = [
-            (len(self.profiler.call("loop_matching", match_descriptors, measured_descriptors(keyframes[i]), query)), i)
+            (len(self.profiler.call("loop_matching", self.matcher, measured_descriptors(keyframes[i]), query)), i)
             for i in eligible
         ]
         newly_verified = []

@@ -252,7 +252,7 @@ def _estimate_pose_hypothesis(
 
 
 def estimate_stereo_reference(
-    source, target, matrix, min_inliers=15, initial_pose=None
+    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None
 ):
     """Frame tracking with the map tracker's PnP checks, never a loop constraint.
 
@@ -260,7 +260,7 @@ def estimate_stereo_reference(
     target stereo also yields an accepted reverse pose, contradictory estimates
     are rejected. Loop verification has its own stricter mandatory reverse checks.
     """
-    pairs = match_descriptors(source.descriptors, target.descriptors)
+    pairs = (matcher or match_descriptors)(source.descriptors, target.descriptors)
     if not len(pairs):
         return None
     a, b = pairs.T

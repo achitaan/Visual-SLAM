@@ -230,7 +230,9 @@ def main():
         right = None
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
     performance = PerformanceConfig(args.retrieval, args.matching_backend, not args.no_cpu_optimizations, args.profile is not None)
+    setup_started = time.perf_counter()
     slam = SharedSlam(matrix, stereo=camera, performance=performance)
+    setup_elapsed = time.perf_counter() - setup_started
     profiler = getattr(slam, "profiler", StageProfiler())
     frame_times, input_times = [], []
     source_snapshot = {
@@ -325,6 +327,8 @@ def main():
         "frame_latency": latency_stats(frame_times),
         "input_loading": latency_stats(input_times),
         "export_elapsed_s": export_elapsed,
+        "estimator_setup_elapsed_s": setup_elapsed,
+        "matching": slam.matcher.metadata() if hasattr(slam, "matcher") else {},
     }
     report["source_sha256"] = source_hashes
     report["evaluator_sha256"] = hashlib.sha256(evaluator_source).hexdigest()

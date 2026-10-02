@@ -18,6 +18,7 @@ from live_loops import LiveLoopWorker
 from loop_geometry import StereoLoopFrame, verify_loop
 from performance import PerformanceConfig, StageProfiler, profiled
 from keyframe_index import KeyframeIndex
+from descriptor_matching import DescriptorMatcher
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class SharedSlam:
     def __init__(self, matrix, stereo=None, config=None, performance=None):
         self.performance = performance or PerformanceConfig()
         self.profiler = StageProfiler(self.performance.profile)
+        self.matcher = DescriptorMatcher(self.performance.matching_backend)
         self.retrieval_index = KeyframeIndex() if self.performance.retrieval == "indexed" else None
         self._landmark_cache = None
         self.K = np.asarray(matrix, float).copy()
@@ -77,7 +79,7 @@ class SharedSlam:
         self.last_keyframe = None
         self.diagnostics = []
         self.bundle_reports = []
-        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, profiler=self.profiler, retrieval=self.performance.retrieval, cpu_optimizations=self.performance.cpu_optimizations)
+        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, profiler=self.profiler, retrieval=self.performance.retrieval, cpu_optimizations=self.performance.cpu_optimizations, matcher=self.matcher)
         self.previous_gray = None
         self.previous_tracks = []
         self.accepted_tracks = []
@@ -137,7 +139,7 @@ class SharedSlam:
 
     def _match(self, first, second):
         self.profiler.count("descriptor_pairs", len(first) * len(second))
-        return self.profiler.call("matching", match_descriptors, first, second)
+        return self.profiler.call("matching", self.matcher, first, second)
 
     def _cached_landmarks(self):
         structure = (len(self.map.landmarks), self.map.next_landmark)
@@ -711,6 +713,7 @@ class SharedSlam:
                         self.K,
                         min_inliers=self.config.min_inliers,
                         initial_pose=prior,
+                        matcher=self._match,
                     )
                     if verified is not None:
                         reference_pose = (

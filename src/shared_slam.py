@@ -1,6 +1,7 @@
 """Persistent stereo/monocular image-only tracking and local mapping."""
 
 from dataclasses import dataclass
+import hashlib
 import cv2 as cv
 import numpy as np
 from slam_state import MapState, MappingKeyframe, Observation
@@ -23,6 +24,7 @@ from keyframe_index import KeyframeIndex
 from descriptor_matching import DescriptorMatcher
 from performance import PerformanceConfig
 from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
+from stereo_pose_arbitration import SupportedStereoFrame, SupportedStereoHoldout, arbitrate_stereo_pose
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class MappingConfig:
     retrieval_candidates: int = 8
     stereo_feature_contrast_threshold: float = 0.02
     stereo_depth_policy: str = "supported"
+    stereo_pose_arbitration: bool = False
 
 
 class SharedSlam:
@@ -88,6 +91,18 @@ class SharedSlam:
             raise ValueError('Invalid stereo depth policy')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
             raise ValueError('Verified stereo depth requires two calibrated cameras')
+        if stereo is None and self.config.stereo_pose_arbitration:
+            raise ValueError('Stereo pose arbitration requires two calibrated cameras')
+        self.previous_supported_stereo = None
+        self.current_supported_stereo = None
+        self._supported_extraction = None
+        self._arbitration_context = None
+        identity = hashlib.sha256()
+        for value in (self.K, self.stereo.Q if self.stereo is not None else np.empty(0)):
+            identity.update(value.dtype.str.encode()); identity.update(value.tobytes())
+        if self.stereo is not None:
+            identity.update(np.float64(self.stereo.baseline).tobytes())
+        self.stereo_calibration_identity = identity.hexdigest()
         self.stereo_search_config = StereoSearchConfig()
         self.current_left_gray = self.current_right_gray = None
         self.stereo_depth_verification = {}
@@ -136,7 +151,10 @@ class SharedSlam:
                 cache[1] = self.map.revision
             return cache
 
-    def _measure_stereo_pixels(self, pixels):
+    def _measure_supported_stereo_pixels(self, pixels):
+        return self._measure_stereo_pixels(pixels, supported_only=True)
+
+    def _measure_stereo_pixels(self, pixels, supported_only=False, capture_supported=False):
         """Sample metric depth at the actual left observations, including flow tracks."""
         points = np.full((len(pixels), 3), np.nan)
         right_u = np.full(len(pixels), np.nan)
@@ -179,7 +197,9 @@ class SharedSlam:
         rays = np.c_[pixels[ids], np.ones(len(ids))] @ self.inverse_K.T
         points[ids] = rays * depth[:, None]
         right_u[ids] = pixels[ids, 0] - disparity
-        if self.config.stereo_depth_policy == 'verified_fallback':
+        if capture_supported:
+            self._supported_extraction = (points.copy(), right_u.copy())
+        if self.config.stereo_depth_policy == 'verified_fallback' and not supported_only:
             candidates = np.flatnonzero(inside & ~np.isfinite(points).all(axis=1))
             if len(candidates):
                 nearest = np.rint(pixels[candidates]).astype(int)
@@ -232,7 +252,8 @@ class SharedSlam:
                 self.stereo.stereo.compute(gray, right_gray).astype(np.float32) / 16.0
             )
             self.current_disparity = disparity
-            points, right_u = self._measure_stereo_pixels(pixels)
+            points, right_u = self._measure_stereo_pixels(
+                pixels, capture_supported=self.config.stereo_pose_arbitration)
         return pixels, desc, points, right_u
 
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations):
@@ -453,13 +474,25 @@ class SharedSlam:
         # even though tracking truncates the active list to max_landmarks above.
         descriptors = np.array([l.descriptor for l in landmarks])
         pairs = self._match(descriptors, desc)
+        arbitration = self._arbitration_context if self.config.stereo_pose_arbitration else None
+        if arbitration is not None:
+            # A held detector observation may map to a different older landmark
+            # than the source snapshot. Exclude every linked descriptor/flow ID.
+            arbitration['excluded_landmarks'].update(
+                landmarks[a].id for a, b in pairs if b in arbitration['excluded_targets'])
+            pairs = np.asarray([(a, b) for a, b in pairs
+                                if b not in arbitration['excluded_targets']
+                                and landmarks[a].id not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
         candidates = {landmarks[a].id: (pixels[b], int(b)) for a, b in pairs}
         descriptor_candidates = candidates.copy()
         flow_conflicts = 0
         flow_visibility_rejections = 0
-        if not relocalize and self.previous_gray is not None and self.previous_tracks:
+        previous_tracks = (self.previous_tracks if arbitration is None else
+                           [(lid, p) for lid, p in self.previous_tracks
+                            if lid not in arbitration['excluded_landmarks']])
+        if not relocalize and self.previous_gray is not None and previous_tracks:
             old_pixels = np.array(
-                [p for _, p in self.previous_tracks], np.float32
+                [p for _, p in previous_tracks], np.float32
             ).reshape(-1, 1, 2)
             # Seed flow using map geometry and the same motion prediction as PnP.
             # Starting at the previous pixel can lock onto an adjacent repeat at
@@ -468,13 +501,13 @@ class SharedSlam:
             flow_visible = np.zeros(len(old_pixels), bool)
             tracked_ids = [
                 j
-                for j, (lid, _) in enumerate(self.previous_tracks)
+                for j, (lid, _) in enumerate(previous_tracks)
                 if lid in self.map.landmarks
             ]
             if tracked_ids:
                 world = np.array(
                     [
-                        self.map.landmarks[self.previous_tracks[j][0]].position
+                        self.map.landmarks[previous_tracks[j][0]].position
                         for j in tracked_ids
                     ]
                 )
@@ -503,7 +536,7 @@ class SharedSlam:
                     winSize=(21, 21),
                     maxLevel=3,
                 )
-                for j, (lid, _) in enumerate(self.previous_tracks):
+                for j, (lid, _) in enumerate(previous_tracks):
                     p = flowed[j, 0]
                     if (
                         lid in self.map.landmarks
@@ -529,6 +562,10 @@ class SharedSlam:
                         feature = int(np.argmin(distances)) if len(distances) else -1
                         if feature >= 0 and distances[feature] > 3:
                             feature = -1
+                        if arbitration is not None and (
+                                feature in arbitration['excluded_targets']
+                                or self._physical_pixel_key(p) in arbitration['excluded_target_pixels']):
+                            continue
                         candidates[lid] = (p, feature)
         if len(candidates) < self.config.min_inliers:
             return None, {
@@ -542,6 +579,10 @@ class SharedSlam:
 
         def solve(measurements):
             identifiers = list(measurements)
+            if arbitration is not None:
+                arbitration['map_fit_landmarks'].update(identifiers)
+                arbitration['map_fit_targets'].update(
+                    measurements[lid][1] for lid in identifiers if measurements[lid][1] >= 0)
             positions = np.array([self.map.landmarks[i].position for i in identifiers])
             observations = np.array([measurements[i][0] for i in identifiers], float)
             diagnostics = {}
@@ -725,6 +766,127 @@ class SharedSlam:
             self.current_right_gray = (None if right is None else np.asarray(
                 cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right, np.float32))
 
+    @staticmethod
+    def _physical_pixel_key(pixel):
+        return tuple(np.asarray(pixel, np.float32).tolist())
+
+    def _capture_supported_stereo(self, index, pixels, desc, size):
+        # Native extraction copies the supported surface before restoration.
+        # A cache hit skips that producer, so derive it from raw disparity only.
+        raw = self._supported_extraction
+        if raw is None:
+            raw = self._measure_supported_stereo_pixels(pixels)
+        return SupportedStereoFrame(pixels, desc, raw[0], raw[1],
+                                    np.full(len(pixels), -1, int), index, size,
+                                    self.stereo_calibration_identity)
+
+    def _prepare_stereo_arbitration(self, index, current):
+        report = {'choice': 'map', 'reason': 'missing_previous_supported_frame'}
+        previous = self.previous_supported_stereo
+        if (previous is None or self.previous_stereo_geometry is None
+                or previous.frame != self.previous_stereo_geometry[1]
+                or not 0 < index-previous.frame <= 3
+                or previous.frame >= len(self.map.poses)
+                or self.map.statuses[previous.frame] not in ('tracking', 'relocalized')
+                or previous.calibration_identity != current.calibration_identity):
+            return None, report
+        pairs = self._match(previous.descriptors, current.descriptors)
+        if not len(pairs):
+            report['reason'] = 'insufficient_supported_pool'
+            return None, report
+        # Multiple SIFT orientations can describe one physical pixel. Drop every
+        # duplicate in either full extraction before splitting the matching pool.
+        _, previous_inverse, previous_counts = np.unique(
+            np.asarray(previous.pixels, np.float32), axis=0, return_inverse=True, return_counts=True)
+        _, current_inverse, current_counts = np.unique(
+            np.asarray(current.pixels, np.float32), axis=0, return_inverse=True, return_counts=True)
+        a, b = pairs.T
+        valid = (np.isfinite(previous.points[a]).all(axis=1)
+                 & np.isfinite(current.points[b]).all(axis=1)
+                 & np.isfinite(previous.right_u[a]) & np.isfinite(current.right_u[b])
+                 & (previous.right_u[a] >= 0) & (previous.right_u[a] < previous.image_size[0])
+                 & (current.right_u[b] >= 0) & (current.right_u[b] < current.image_size[0])
+                 & (previous_counts[previous_inverse[a]] == 1)
+                 & (current_counts[current_inverse[b]] == 1))
+        pool = pairs[valid]
+        fit = pool[pool[:, 0] % 2 == 0]
+        held = pool[pool[:, 0] % 2 == 1]
+        minimum = self.config.min_inliers
+        report.update(supported_pool=len(pool), fit_count=len(fit), holdout_count=len(held),
+                      dropped_duplicate_matches=int(np.sum(
+                          (previous_counts[previous_inverse[a]] > 1)
+                          | (current_counts[current_inverse[b]] > 1))),
+                      source_frame=previous.frame, target_frame=index)
+        if (min(len(fit), len(held)) < minimum
+                or any(coverage(frame.pixels[subset[:, column]], frame.image_size) < 3
+                       for subset in (fit, held)
+                       for frame, column in ((previous, 0), (current, 1)))):
+            report['reason'] = 'insufficient_reserved_support'
+            return None, report
+        source, target = held.T
+        source_pixels = {self._physical_pixel_key(p) for p in previous.pixels[source]}
+        target_pixels = {self._physical_pixel_key(p) for p in current.pixels[target]}
+        excluded_targets = {j for j, p in enumerate(current.pixels)
+                            if self._physical_pixel_key(p) in target_pixels}
+        excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
+        excluded_landmarks.update(lid for lid, p in self.previous_tracks
+                                  if self._physical_pixel_key(p) in source_pixels)
+        evidence = SupportedStereoHoldout(previous.points[source], current.pixels[target],
+                                         current.right_u[target], source, target,
+                                         previous.landmark_ids[source],
+                                         'immutable_supported_extraction', previous.frame,
+                                         previous.calibration_identity)
+        context = {'previous': previous, 'current': current, 'fit': fit, 'evidence': evidence,
+                   'excluded_targets': excluded_targets, 'excluded_landmarks': excluded_landmarks,
+                   'excluded_target_pixels': target_pixels,
+                   'map_fit_targets': set(), 'map_fit_landmarks': set(), 'report': report}
+        source_frame = StereoLoopFrame(previous.pixels, previous.points, previous.descriptors, previous.image_size)
+        target_frame = StereoLoopFrame(current.pixels, current.points, current.descriptors, current.image_size)
+        verified = self.profile.call(
+            'stereo_pose_arbitration_fit', estimate_stereo_reference,
+            source_frame, target_frame, self.K, min_inliers=minimum,
+            initial_pose=None, matcher=lambda first, second: fit.copy())
+        if verified is None or not verified['reverse_checked']:
+            report['reason'] = 'independent_training_failed'
+            return None, report
+        context['verified'] = verified
+        report['reason'] = 'reserved_supported_evidence'
+        return context, report
+
+    def _arbitrate_supported_pose(self, context, map_pose, measurement):
+        previous = context['previous']
+        with self.map.lock:
+            relative = np.linalg.inv(self.map.poses[previous.frame]) @ map_pose
+        report = arbitrate_stereo_pose(
+            relative, measurement, context['evidence'], self.K, self.stereo.baseline,
+            context['current'].image_size, disparity_offset=self.stereo.disparity_offset,
+            minimum_inliers=self.config.min_inliers,
+            calibration_identity=self.stereo_calibration_identity,
+            independent_training_verified=True, map_holdout_excluded=True,
+            independent_fit_source_ids=context['fit'][:, 0],
+            independent_fit_target_ids=context['fit'][:, 1],
+            map_fit_target_ids=list(context['map_fit_targets']),
+            map_fit_landmark_ids=list(context['map_fit_landmarks']))
+        return {**context['report'], **report,
+                'independent_fit_sha256': hashlib.sha256(
+                    np.ascontiguousarray(context['fit'], dtype='<i8').tobytes()).hexdigest(),
+                'map_fit_landmarks': len(context['map_fit_landmarks']),
+                'map_fit_target_features': len(context['map_fit_targets']),
+                'physical_identity': 'exact_float32_pixels_duplicates_dropped'}
+
+    def _supported_stereo_after_acceptance(self, record, associations):
+        linked = np.full(len(record.pixels), -1, int)
+        last = self.map.keyframes.get(self.last_keyframe)
+        if last is not None and last.frame == record.frame:
+            linked[:] = last.landmark_ids[:len(linked)]
+        else:
+            for feature, lid in associations.items():
+                if 0 <= feature < len(linked):
+                    linked[feature] = lid
+        return SupportedStereoFrame(record.pixels, record.descriptors, record.points,
+                                    record.right_u, linked, record.frame, record.image_size,
+                                    record.calibration_identity)
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
@@ -732,8 +894,17 @@ class SharedSlam:
             )
         self.loop_worker.poll(self.map)
         self._prepare_frame_images(image, right)
+        if self.config.stereo_pose_arbitration:
+            self._supported_extraction = None
+            self._arbitration_context = None
         pixels, desc, points, right_u = self._extract(image, right)
         size = (image.shape[1], image.shape[0])
+        arbitration_report = None
+        arbitration_measurement = None
+        if self.config.stereo_pose_arbitration:
+            self.current_supported_stereo = self._capture_supported_stereo(index, pixels, desc, size)
+            self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
+                index, self.current_supported_stereo)
         info = {
             "frame": index,
             "features": len(pixels),
@@ -746,6 +917,7 @@ class SharedSlam:
         anchor = self.last_keyframe
         inlier_features = set()
         verified_motion = None
+        associations = {}
         status = "initializing" if not self.map.landmarks else "lost"
         if not self.map.keyframes:
             if self.stereo is not None:
@@ -842,19 +1014,34 @@ class SharedSlam:
                 previous_frame, previous_index = self.previous_stereo_geometry
                 if index - previous_index <= 3:
                     measured = StereoLoopFrame(pixels, points, desc, size)
+                    arbitration = self._arbitration_context
+                    reference_matcher = self._match
                     prior = (
                         np.linalg.inv(self.map.poses[previous_index])
                         @ self._motion_prediction()
                     )
-                    verified = estimate_stereo_reference(
+                    if arbitration is not None:
+                        raw_previous = arbitration['previous']
+                        raw_current = arbitration['current']
+                        previous_frame = StereoLoopFrame(raw_previous.pixels, raw_previous.points,
+                                                         raw_previous.descriptors, raw_previous.image_size)
+                        measured = StereoLoopFrame(raw_current.pixels, raw_current.points,
+                                                   raw_current.descriptors, raw_current.image_size)
+                        # All forward/reverse/refinement rows derive from this
+                        # pre-reserved fitting pool. No holdout row enters PnP.
+                        reference_matcher = lambda first, second: arbitration['fit'].copy()
+                        prior = None
+                    verified = (arbitration['verified'] if arbitration is not None else estimate_stereo_reference(
                         previous_frame,
                         measured,
                         self.K,
                         min_inliers=self.config.min_inliers,
                         initial_pose=prior,
-                        matcher=self._match,
-                    )
+                        matcher=reference_matcher,
+                    ))
                     if verified is not None:
+                        if arbitration is not None:
+                            arbitration_measurement = verified['measurement'].copy()
                         if verified["reverse_checked"] and index-previous_index == 1:
                             self.verified_stereo_motion = (verified["measurement"].copy(), index)
                         if verified["reverse_checked"]:
@@ -870,6 +1057,7 @@ class SharedSlam:
                             else "source_depth_pnp"
                         )
                         conflict = False
+                        arbitration_selected = False
                         if result is not None:
                             difference = np.linalg.inv(reference_pose) @ result[0]
                             translation_error = float(np.linalg.norm(difference[:3, 3]))
@@ -886,7 +1074,15 @@ class SharedSlam:
                             # stereo verification. A low left reprojection error
                             # cannot justify contradicting independent metric motion.
                             conflict = translation_error > 0.5 or rotation_error > 1.5
-                        if result is None or conflict:
+                            if arbitration is not None and verified['reverse_checked'] and not conflict:
+                                arbitration_report = self._arbitrate_supported_pose(
+                                    arbitration, result[0], verified['measurement'])
+                                arbitration_selected = arbitration_report['choice'] == 'independent'
+                        if result is None or conflict or arbitration_selected:
+                            if arbitration is not None and not arbitration_selected:
+                                arbitration_report = {**arbitration['report'], 'choice': 'existing_reference',
+                                                      'reason': ('hard_disagreement_fallback' if conflict
+                                                                 else 'missing_map_hypothesis')}
                             result = (reference_pose, {})
                             self.accepted_tracks = []
                             info.update(
@@ -898,6 +1094,8 @@ class SharedSlam:
                                 reference_inlier_features=verified["target_features"],
                                 map_pose_rejected_for_stereo_conflict=conflict,
                             )
+                            if arbitration_selected:
+                                info['pose_source'] = 'reserved_stereo_arbitration'
                             stereo_reference = True
             if self.stereo is not None and result is None:
                 reference, reference_stats = self._keyframe_stereo_reference(
@@ -955,6 +1153,15 @@ class SharedSlam:
             tracks.update({lid: p for lid, p in self.accepted_tracks})
             self.previous_tracks = list(tracks.items())
         self.map.record(pose, status, anchor)
+        if arbitration_report is not None:
+            info['stereo_pose_arbitration'] = arbitration_report
+        if arbitration_measurement is not None and info['tracking_ok']:
+            # This diagnostic does not withhold rows from later BA or protect
+            # against subsequent corrections. Sample the two poses atomically.
+            with self.map.lock:
+                before_bundle = self._arbitrate_supported_pose(
+                    self._arbitration_context, self.map.poses[-1], arbitration_measurement)
+            info['stereo_pose_arbitration_before_bundle'] = before_bundle['map']
         if info["tracking_ok"] and verified_motion is not None:
             previous_index, measurement = verified_motion
             self.map.add_stereo_motion(previous_index, index, measurement)
@@ -976,11 +1183,19 @@ class SharedSlam:
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
             self.loop_worker.schedule(self.map)
+        if arbitration_measurement is not None and info['tracking_ok']:
+            with self.map.lock:
+                after_bundle = self._arbitrate_supported_pose(
+                    self._arbitration_context, self.map.poses[-1], arbitration_measurement)
+            info['stereo_pose_arbitration_after_bundle'] = after_bundle['map']
         if info["tracking_ok"] and self.stereo is not None:
             self.previous_stereo_geometry = (
                 StereoLoopFrame(pixels.copy(), points.copy(), desc.copy(), size),
                 index,
             )
+            if self.config.stereo_pose_arbitration:
+                self.previous_supported_stereo = self._supported_stereo_after_acceptance(
+                    self.current_supported_stereo, associations)
         # Bound the tracking working set, not the persistent map. Old, valid
         # landmarks remain available to geometric relocalization and loop correction.
         dropped = {i:l for i,l in self.map.landmarks.items() if l.misses >= 5}

@@ -1,4 +1,4 @@
-"""Unwired preparation: compare stereo pose hypotheses on reserved raw evidence.
+"""Compare stereo pose hypotheses on reserved raw evidence.
 
 The caller must reserve evidence before either solve and certify the independent
 hypothesis passed existing training gates. This module never fits a pose, changes
@@ -7,6 +7,25 @@ tracking thresholds, or reads reference trajectories.
 from dataclasses import dataclass
 import hashlib
 import numpy as np
+
+
+@dataclass(frozen=True)
+class SupportedStereoFrame:
+    """Original supported extraction in camera coordinates, never map geometry."""
+    pixels: np.ndarray
+    descriptors: np.ndarray
+    points: np.ndarray
+    right_u: np.ndarray
+    landmark_ids: np.ndarray
+    frame: int
+    image_size: tuple
+    calibration_identity: str
+
+    def __post_init__(self):
+        for name in ('pixels', 'descriptors', 'points', 'right_u', 'landmark_ids'):
+            array = np.array(getattr(self, name), copy=True)
+            array.setflags(write=False)
+            object.__setattr__(self, name, array)
 
 
 @dataclass(frozen=True)

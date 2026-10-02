@@ -1,0 +1,724 @@
+{
+  "schema_version": 1,
+  "tested_commit": "7cc61919d0df068c55248848e7f643f048063954",
+  "development_fingerprint": "07c1859401a30da93574a44631051f1cac8846f6ef3676d111d72543dd16da54",
+  "input_fingerprints": [
+    {
+      "sequence": "04",
+      "frames": 80,
+      "elapsed_s": 0.6410000000032596,
+      "input": {
+        "sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+        "frames": 80,
+        "cameras": [
+          0,
+          1
+        ],
+        "shape": [
+          370,
+          1226
+        ]
+      }
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "elapsed_s": 2.8909999999887077,
+      "input": {
+        "sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+        "frames": 350,
+        "cameras": [
+          0,
+          1
+        ],
+        "shape": [
+          376,
+          1241
+        ]
+      }
+    },
+    {
+      "sequence": "04",
+      "frames": 80,
+      "elapsed_s": 0.5939999999973224,
+      "input": {
+        "sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+        "frames": 80,
+        "cameras": [
+          0,
+          1
+        ],
+        "shape": [
+          370,
+          1226
+        ]
+      }
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "elapsed_s": 2.5469999999913853,
+      "input": {
+        "sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+        "frames": 350,
+        "cameras": [
+          0,
+          1
+        ],
+        "shape": [
+          376,
+          1241
+        ]
+      }
+    }
+  ],
+  "rows": [
+    {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "prefix",
+      "label": "integration_cpu",
+      "status": "completed",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.307855459182441,
+        "raw_ate_rmse_m": 0.5149993899166173,
+        "segment_count": 1,
+        "translation_percent": 0.6052043436788435,
+        "rotation_deg_per_m": 0.015096157858161435
+      },
+      "lost_frames": 0,
+      "lost_intervals": [],
+      "initialization_frame": 0,
+      "median_tracking_reprojection_px": 0.8493286341188384,
+      "bundle_adjustments_applied": 6,
+      "elapsed_s": 44.59456850000424,
+      "total_wall_seconds": 45.38696230000642,
+      "peak_memory_mb": 260.375,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02
+      },
+      "performance_configuration": {
+        "retrieval": "current",
+        "matching_backend": "cpu",
+        "cpu_optimizations": true,
+        "profile": false
+      },
+      "feature_cache": {
+        "enabled": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "descriptor_matching.py": "77ee99792e7eb9f5e1490e1a30b360a178548bde7ac2fdfc579e72d72044351c",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+        "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "main.py": "c00605fa07e8099a035b8246caf4cd4100ab0b58d40d8137c23029c5c0498348",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+        "shared_slam.py": "796fdd05b28a117197a3454abd641904bf2c4663202e444d8156c7a9df5358a7",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+        "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+      },
+      "evaluator_sha256": "b4a565110f9f1dd26bd11fa9892541b3daaa7d4dd1229d30cc0fe4db7d1908d8",
+      "poses_sha256": "0243c21f6a488ec1cc9f07a9fea34db31ecbf6f321ea0d20f22050cc0d5f8e1f"
+    },
+    {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "prefix",
+      "label": "reliability_uncached",
+      "status": "completed",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.307855459182441,
+        "raw_ate_rmse_m": 0.5149993899166173,
+        "segment_count": 1,
+        "translation_percent": 0.6052043436788435,
+        "rotation_deg_per_m": 0.015096157858161435
+      },
+      "lost_frames": 0,
+      "lost_intervals": [],
+      "initialization_frame": 0,
+      "median_tracking_reprojection_px": 0.8493286341188384,
+      "bundle_adjustments_applied": 6,
+      "elapsed_s": 43.86369850000483,
+      "total_wall_seconds": 44.500625999993645,
+      "peak_memory_mb": 254.00390625,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02
+      },
+      "feature_cache": {
+        "enabled": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "fa4192aca2570553f1a1362c66d2a3b38d86d5f716743c6032813eb1dfa08ccb",
+        "local_bundle.py": "6b7cbf99a13f075f46a91a9d2e8e732745db0b7453b32f044940f43860d2205f",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "e597578a777598d0bbf421d42b3212b051fa51a52e90fc063273a6b9a7b4bd70",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "8a12b382ed9703b8563476a5661cc6452bdea5d735880649c43b88041c44fec1",
+        "shared_slam.py": "b09b243313259922e39551a7e2d502f25fd1dc6bdc5dfdf2d2c981d24849fe09",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+        "stage_profile.py": "67e27fe4b655efb6bf85b3a7e067217452ce6e819d74e8ce1db4b92231e9a62e",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+      },
+      "evaluator_sha256": "6d97a9b210d6708197133ce9d688e0724f0a051b7d1981ae3a7887f5ba813d00",
+      "poses_sha256": "0243c21f6a488ec1cc9f07a9fea34db31ecbf6f321ea0d20f22050cc0d5f8e1f"
+    },
+    {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "prefix",
+      "label": "preserved_stereo_vo",
+      "status": "completed",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.44351523342332017,
+        "raw_ate_rmse_m": 0.9714209957357379,
+        "segment_count": 1,
+        "translation_percent": 1.672844352606981,
+        "rotation_deg_per_m": 0.012411752586322973
+      },
+      "lost_frames": 0,
+      "elapsed_s": 40.534244900001795,
+      "peak_memory_mb": 229.859375,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478",
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "2111e2556290834370edebda278281c53faf9b1565842b7d7f60f29cec6301aa",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "fa4192aca2570553f1a1362c66d2a3b38d86d5f716743c6032813eb1dfa08ccb",
+        "local_bundle.py": "57313b84fde3b0b2abdc7388cf6387d08c779db25b632fee659127e21df4a52f",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "faedc2973027be3b6980e6aaf31736a9c0df255c0a48365b5c2ad2b48af318b1",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "1c9ef2c35c3c19892eaa7ec5c465c3c5420bf139462e6dabb46c81135ad8acaa",
+        "shared_slam.py": "d08f28bceb5555d17da201c1cec7d199dc0b29493dca99ccf4964f5da5d9f7fb",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "e081349d6194abdb815f0a63e0437015c8f26a89297e89152378c5c86a90a51b",
+        "stage_profile.py": "67e27fe4b655efb6bf85b3a7e067217452ce6e819d74e8ce1db4b92231e9a62e",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739"
+      },
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "poses_sha256": "98a4a0ddce38577d6f1143bfa31cbfeeb36fd3d582beef19ea7b63e94206af3a"
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "coverage": "prefix",
+      "label": "integration_cpu",
+      "status": "completed_with_tracking_loss",
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 9.291662697180701,
+        "raw_ate_rmse_m": 20.77695514308531,
+        "segment_count": 140,
+        "translation_percent": 5.051622359847349,
+        "rotation_deg_per_m": 0.010592359792947061
+      },
+      "lost_frames": 1,
+      "lost_intervals": [
+        {
+          "first_frame": 334,
+          "last_frame": 334,
+          "recovered": true
+        }
+      ],
+      "initialization_frame": 0,
+      "median_tracking_reprojection_px": 0.7421345614237329,
+      "bundle_adjustments_applied": 37,
+      "elapsed_s": 240.94400519999908,
+      "total_wall_seconds": 246.49453599999833,
+      "peak_memory_mb": 672.41796875,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02
+      },
+      "performance_configuration": {
+        "retrieval": "current",
+        "matching_backend": "cpu",
+        "cpu_optimizations": true,
+        "profile": false
+      },
+      "feature_cache": {
+        "enabled": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "descriptor_matching.py": "77ee99792e7eb9f5e1490e1a30b360a178548bde7ac2fdfc579e72d72044351c",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+        "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "main.py": "c00605fa07e8099a035b8246caf4cd4100ab0b58d40d8137c23029c5c0498348",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+        "shared_slam.py": "796fdd05b28a117197a3454abd641904bf2c4663202e444d8156c7a9df5358a7",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+        "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+      },
+      "evaluator_sha256": "b4a565110f9f1dd26bd11fa9892541b3daaa7d4dd1229d30cc0fe4db7d1908d8",
+      "poses_sha256": "94a72779a8d35e64933a6d51b6b3643b4a547d7e0b1663b9e0176c7ed46597fc"
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "coverage": "prefix",
+      "label": "reliability_uncached",
+      "status": "completed_with_tracking_loss",
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 9.291662697180701,
+        "raw_ate_rmse_m": 20.77695514308531,
+        "segment_count": 140,
+        "translation_percent": 5.051622359847349,
+        "rotation_deg_per_m": 0.010592359792947061
+      },
+      "lost_frames": 1,
+      "lost_intervals": [
+        {
+          "first_frame": 334,
+          "last_frame": 334,
+          "recovered": true
+        }
+      ],
+      "initialization_frame": 0,
+      "median_tracking_reprojection_px": 0.7421345614237329,
+      "bundle_adjustments_applied": 37,
+      "elapsed_s": 229.9507917999872,
+      "total_wall_seconds": 235.4080246999947,
+      "peak_memory_mb": 607.5703125,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02
+      },
+      "feature_cache": {
+        "enabled": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "fa4192aca2570553f1a1362c66d2a3b38d86d5f716743c6032813eb1dfa08ccb",
+        "local_bundle.py": "6b7cbf99a13f075f46a91a9d2e8e732745db0b7453b32f044940f43860d2205f",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "e597578a777598d0bbf421d42b3212b051fa51a52e90fc063273a6b9a7b4bd70",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "8a12b382ed9703b8563476a5661cc6452bdea5d735880649c43b88041c44fec1",
+        "shared_slam.py": "b09b243313259922e39551a7e2d502f25fd1dc6bdc5dfdf2d2c981d24849fe09",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+        "stage_profile.py": "67e27fe4b655efb6bf85b3a7e067217452ce6e819d74e8ce1db4b92231e9a62e",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+      },
+      "evaluator_sha256": "6d97a9b210d6708197133ce9d688e0724f0a051b7d1981ae3a7887f5ba813d00",
+      "poses_sha256": "94a72779a8d35e64933a6d51b6b3643b4a547d7e0b1663b9e0176c7ed46597fc"
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "coverage": "prefix",
+      "label": "preserved_stereo_vo",
+      "status": "completed_with_tracking_loss",
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 21.509820274725715,
+        "raw_ate_rmse_m": 30.30073194617916,
+        "segment_count": 140,
+        "translation_percent": 8.357438736977558,
+        "rotation_deg_per_m": 0.01086073153383467
+      },
+      "lost_frames": 18,
+      "elapsed_s": 141.25090470000578,
+      "peak_memory_mb": 235.44921875,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_sha256": {
+        "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478",
+        "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+        "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+        "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+        "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+        "feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+        "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+        "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+        "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+        "live_loops.py": "fa4192aca2570553f1a1362c66d2a3b38d86d5f716743c6032813eb1dfa08ccb",
+        "local_bundle.py": "6b7cbf99a13f075f46a91a9d2e8e732745db0b7453b32f044940f43860d2205f",
+        "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+        "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+        "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+        "mapping_geometry.py": "e597578a777598d0bbf421d42b3212b051fa51a52e90fc063273a6b9a7b4bd70",
+        "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+        "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+        "reconstruction.py": "8a12b382ed9703b8563476a5661cc6452bdea5d735880649c43b88041c44fec1",
+        "shared_slam.py": "b09b243313259922e39551a7e2d502f25fd1dc6bdc5dfdf2d2c981d24849fe09",
+        "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+        "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+        "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+        "stage_profile.py": "67e27fe4b655efb6bf85b3a7e067217452ce6e819d74e8ce1db4b92231e9a62e",
+        "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+        "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+        "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739"
+      },
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "poses_sha256": "9cd077f0e56be1507616e46aab7e0bff34ebd4486f9bd1b7e724d1d07fbdb141"
+    }
+  ],
+  "sampling_ablations": [
+    {
+      "label": "sampler-ablation04-80",
+      "sequence": "04",
+      "frames": 80,
+      "diagnostic_only": true,
+      "production_selected": false,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.36086013056539745,
+        "raw_ate_rmse_m": 0.702004923877775,
+        "segment_count": 1,
+        "translation_percent": 1.1042650809436712,
+        "rotation_deg_per_m": 0.00685663310882306
+      },
+      "lost_frames": 0,
+      "helper_sha256": "81b694de80b434dc1709faa2bae1e5135de8a1961bdc71c31e6a8644458e9056"
+    },
+    {
+      "label": "sampler-fallback04-80",
+      "sequence": "04",
+      "frames": 80,
+      "diagnostic_only": true,
+      "production_selected": false,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.18876401963651043,
+        "raw_ate_rmse_m": 0.45655410455094275,
+        "segment_count": 1,
+        "translation_percent": 0.5137731012368332,
+        "rotation_deg_per_m": 0.008796277387564742
+      },
+      "lost_frames": 0,
+      "helper_sha256": "34ded2a859052821609e0507829b005be6b78537fbc347c4dee8a9a78721d313"
+    }
+  ],
+  "release_ready": false,
+  "timing_interpretation": "Serial uncached prefix diagnostics on a shared development host; not full-sequence acceptance or isolated repeated performance measurements.",
+  "pending": [
+    "Full current-source 01/04 accuracy and runtime gates",
+    "KITTI04 rotation regression and independently verified depth support",
+    "Official full-batch resume contract and full-input validation",
+    "Held-out indexed/GPU tracking and live/offline correction evidence",
+    "Full00/07, wider paired KITTI, RGB-only TUM and dense reconstruction"
+  ],
+  "optional_cuda_smoke": {
+    "purpose": "optional hardware diagnostic, not release evidence",
+    "revision": "b4effd790f146dec77d2c95a1c7499cd46b7e5de08b09bdb938aaeaaab8785d7",
+    "input": {
+      "sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "frames": 80,
+      "cameras": [
+        0,
+        1
+      ],
+      "shape": [
+        370,
+        1226
+      ]
+    },
+    "source_sha256": {
+      "scripts\\benchmark_dashboard.py": "596fc588223011522a7883bb2bf120595a33db7705d91898ef73f7328a138a0c",
+      "scripts\\benchmark_telemetry.py": "41f1c2bd516ad24f5cd114e882a4665df9c79daee28f0f540c49634a053289e9",
+      "scripts\\check_kitti_data.py": "f938dad84ceffe67ba355effc45bb7d8c0e526628fbc0bdcdcaadbe49175c29f",
+      "scripts\\check_kitti_devkit.py": "ece37e6e1cd46231dd04e3106b4854dbb04684eb62b3b2711152a951da7574e7",
+      "scripts\\check_large_graph.py": "1faffb6d92d33eaab1ddd956651f5dbb27477df9a97a3938a534dcc72612235f",
+      "scripts\\data_preflight.py": "700e4519b31ba0060cb12d1b8416e46d2759a58e89e20961b865c87684b4a747",
+      "scripts\\diagnose_kitti_pair.py": "c2eb3fc1f3f58a1de3cdfdc98e2d485fc7929336e753bac7efa548a15c86feab",
+      "scripts\\diagnose_motion_tracking.py": "2f725e1e1d5181356d0182022575f7d6c2b61c2f5444d1c8f9338edf91a3c477",
+      "scripts\\diagnose_shared_tracking.py": "043cd278a0079ad83ca2e43b36678758fcb2e8331f7da8e2963b138e34136d76",
+      "scripts\\diagnose_stereo_pairs.py": "dfa19ed004efd3cbe8554cb7e3b21754acaf6877adb37cae130c24e05f0ccb9f",
+      "scripts\\diagnose_stereo_regression.py": "91f383e87eb2df929c0d280bc29cae6673848c940ef45cbfe99180bfb224d45c",
+      "scripts\\download_kitti_sequence.py": "5b81e9b72827ffe044a849488729815f2e81d1e9b7e0fcfb7c533123015cafcb",
+      "scripts\\evaluate_dense_depth.py": "3e8e4c7ba6b7fa9b7802c8cb5543925631f7726a39d53e3ec7e6070d8b11200e",
+      "scripts\\evaluate_shared_slam.py": "b4a565110f9f1dd26bd11fa9892541b3daaa7d4dd1229d30cc0fe4db7d1908d8",
+      "scripts\\evaluate_stereo_baseline.py": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "scripts\\json_output.py": "57e0f1976bd3494835fa267b70f66ed2cf7c894cf32e07bef770e7a2e41fbd57",
+      "scripts\\plot_kitti_batch.py": "e34cc375ce2ecc0393c0af26b905db1d8368e7f260f9d815e73cc7196a1d32ff",
+      "scripts\\plot_sensor_comparison.py": "f8a19a59b575d26de00c981f58b0fde65b8147bb7290c574c35accf632455128",
+      "scripts\\plot_shared_slam.py": "afe0dc29b36a26b32789575ccf816a1c4f3e29815136ca3ddff642e1390cacf8",
+      "scripts\\plot_stereo_diagnostics.py": "d3732dc403de5a2700c03092d4160f36d33dcad1563cf3ee3a1c7fed5cccd37a",
+      "scripts\\plot_tracking_diagnosis.py": "dade68998688ba330e6817b30fc26c80e7de62e2d75d3739e81cb2a0b81b91d7",
+      "scripts\\recompute_kitti_metrics.py": "965d4eceea1820a55be14af7ff2f47bba97e1020aa61c0a2629599af9c2a0140",
+      "scripts\\reconstruct_run.py": "c837e59b8d135efc6d5dcea8a66fa54975056db4333c5c704e47539b7847607c",
+      "scripts\\run_development_tests.py": "d27d9c14bda1a120cdb4f5bbf20bfee001ee1019aef68e6c7f837d0e97d9cc82",
+      "scripts\\run_kitti_stream.py": "129d978bd436f11c55bb6d4a4724a862cb061e86258124937b95e10b909b46c3",
+      "scripts\\run_shared_benchmark.py": "325159e5491516201741b75e7269ced8e8653a558bdb2afead49cc99ce94c9b6",
+      "scripts\\summarize_kitti_batch.py": "e9f0f12a7d0e7fd4aac516e6514f2b55af6be056d6b95392b1d51351322e0bf1",
+      "scripts\\test_budget.py": "aff7c2c5db48aa2dc4f4fa344d3e9ac592a569a9d37244363f72fc1e1c0ccc73",
+      "scripts\\update_dashboard_benchmarks.py": "2bf27f4d993f759162d877d1d61c416c64e0ac27dc36d6a3435e14fa34a4c039",
+      "scripts\\update_shared_benchmarks.py": "6805497d095465b513e2060bf5fd04a931b70ab0e1be6e67c7c96b8ce19aa1b9",
+      "scripts\\verify_graph_replay.py": "e4d45c4b104e3df65030597dfeb5bb782da90fcb507eb78ff60f9110d3667b11",
+      "scripts\\verify_kitti_batch.py": "64640a63b6914fa9513b07f892acd1a7fefc9cd7d9a0eea4b03589f7f09ca334",
+      "scripts\\verify_kitti_ground_truth.py": "3f9408ecf3650347b77fe800d58dbb13f37f8be4e107385e1b8ef6fefcf9263a",
+      "scripts\\verify_saved_stereo_motion.py": "3885025ee9475dfa6efb420409289cee873b4b9c6bf38cd53eb61a9b37aa9a05",
+      "src\\CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+      "src\\config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+      "src\\descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+      "src\\eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+      "src\\eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+      "src\\feature_cache.py": "b4bc12764a5bd56eb227be83578c5e700b747d171b86d55d568a6c67e43efdc1",
+      "src\\image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+      "src\\keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+      "src\\keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+      "src\\kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+      "src\\live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+      "src\\local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+      "src\\LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "src\\loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+      "src\\main.py": "c00605fa07e8099a035b8246caf4cd4100ab0b58d40d8137c23029c5c0498348",
+      "src\\map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+      "src\\mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+      "src\\metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+      "src\\performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+      "src\\pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+      "src\\reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+      "src\\shared_slam.py": "796fdd05b28a117197a3454abd641904bf2c4663202e444d8156c7a9df5358a7",
+      "src\\SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+      "src\\slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+      "src\\slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+      "src\\stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+      "src\\StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+      "src\\telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+      "src\\VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+      "src\\__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+    },
+    "attempts": [
+      {
+        "backend": "cpu",
+        "status": "completed",
+        "exit_code": 0,
+        "elapsed_s": 42.24273529999482,
+        "timed_out": false,
+        "frames": 80,
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.307855459182441,
+          "raw_ate_rmse_m": 0.5149993899166173,
+          "segment_count": 1,
+          "translation_percent": 0.6052043436788435,
+          "rotation_deg_per_m": 0.015096157858161435
+        },
+        "lost_frames": 0,
+        "total_wall_seconds": 42.901846099994145,
+        "peak_memory_mb": 261.26171875,
+        "matching_backend": {
+          "requested": "cpu",
+          "cuda_available": false,
+          "fallback_reason": null,
+          "python_version": "3.12.14",
+          "pytorch_version": null,
+          "cuda_runtime_version": null,
+          "cuda_device_index": null,
+          "cuda_device_name": null,
+          "cuda_device_capability": null,
+          "cuda_calls": 0,
+          "cpu_calls": 158,
+          "ambiguous_rows_on_cpu": 0,
+          "auto_decisions": {},
+          "peak_cuda_allocated_mb": 0.0,
+          "peak_cuda_reserved_mb": 0.0
+        }
+      },
+      {
+        "backend": "cuda",
+        "status": "completed",
+        "exit_code": 0,
+        "elapsed_s": 28.327729700002237,
+        "timed_out": false,
+        "frames": 80,
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.307855459182441,
+          "raw_ate_rmse_m": 0.5149993899166173,
+          "segment_count": 1,
+          "translation_percent": 0.6052043436788435,
+          "rotation_deg_per_m": 0.015096157858161435
+        },
+        "lost_frames": 0,
+        "total_wall_seconds": 30.946625899989158,
+        "peak_memory_mb": 956.08203125,
+        "matching_backend": {
+          "requested": "cuda",
+          "cuda_available": true,
+          "fallback_reason": null,
+          "python_version": "3.12.14",
+          "pytorch_version": "2.7.1+cu126",
+          "cuda_runtime_version": "12.6",
+          "cuda_device_index": 0,
+          "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+          "cuda_device_capability": [
+            7,
+            5
+          ],
+          "cuda_calls": 158,
+          "cpu_calls": 0,
+          "ambiguous_rows_on_cpu": 6245,
+          "auto_decisions": {},
+          "peak_cuda_allocated_mb": 22.4384765625,
+          "peak_cuda_reserved_mb": 44.0
+        }
+      }
+    ],
+    "elapsed_s": 77.67199999999139,
+    "poses_exactly_equal": true,
+    "environment": {
+      "python": "3.12.14",
+      "opencv": "5.0.0",
+      "numpy": "2.5.3",
+      "torch": "2.7.1+cu126",
+      "cuda_runtime": "12.6"
+    }
+  }
+}

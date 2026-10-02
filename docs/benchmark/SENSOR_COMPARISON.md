@@ -1,14 +1,15 @@
 # Stereo and monocular KITTI coverage
 
-The current shared SLAM revision has complete paired results for KITTI 01 and 04.
-Its full 00–10 batch requests 22 sensor runs and is still in progress. Missing
+This retained shared SLAM revision has complete paired results for KITTI 01 and 04.
+Its full 00–10 batch requested 22 sensor runs and is paused. Missing
 results are not zeros. The older all-sequence benchmark covers stereo VO with
 offline pose graph correction; it is a separate implementation and comparison
 baseline, not evidence that the new shared pipeline has completed those runs.
 
 [Current paired coverage CSV](kitti-shared-paired-status.csv) and
 [JSON snapshot](kitti-shared-paired-status.json) distinguish completed and pending
-results. The local batch status records subsequent progress. The current CSV/JSON
+results. These are historical results, not validation of the reliability integration
+branch; see [integration status](../SLAM_INTEGRATION.md). The retained CSV/JSON
 coverage snapshot was written with 7 of 22 sensor runs completed.
 
 | Sequence | Expected frames | Current stereo | Current monocular |

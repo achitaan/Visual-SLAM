@@ -14,7 +14,12 @@ Full runs on KITTI 00–10 cover 23,201 frames and 61 verified loops. Segment-we
 - [Machine-readable results](docs/benchmark/results.json)
 - [Development roadmap](docs/ROADMAP.md)
 
-Live SLAM is incomplete: persistent landmarks, local bundle adjustment, relocalization and optimized-pose feedback into tracking and mapping remain development priorities. Monocular translation has arbitrary scale. Sequence 01 has 23 repeatable tracking failures; sequence 09's translation drift worsens after graph correction.
+The original pipeline lacks persistent mapping and optimized-pose feedback. The
+experimental shared pipeline below implements persistent landmarks, local bundle
+adjustment, relocalization and live correction, but wider reliability validation
+remains incomplete. Monocular translation has arbitrary scale. In the original
+benchmark, sequence 01 has 23 tracking failures and sequence 09's translation
+drift worsens after graph correction.
 
 ## Setup
 
@@ -122,6 +127,12 @@ Telemetry schema v1 publishes `pose_T_wc`, frame index, timestamp, mode, matches
 Original mathematical notes are available in [VisualOdometry.tex](VisualOdometry.tex). They describe the early project background rather than the current stereo implementation.
 
 ## Shared mapping pipeline (experimental)
+
+Performance integration and bounded stereo diagnostics are documented in
+[the integration report](docs/SLAM_INTEGRATION.md), including actual graphs,
+runtime regressions and remaining release blockers. CPU matching and current
+retrieval remain the defaults; optional CUDA matching and indexed retrieval need
+separate validation. The original benchmark above is retained historical evidence.
 
 This development branch is an experimental snapshot, not a validated replacement for the original pipeline. Full paired validation is paused for stereo reliability rework; retained failures and coverage are documented in [the sensor comparison](docs/benchmark/SENSOR_COMPARISON.md).
 

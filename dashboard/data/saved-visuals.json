@@ -1,5 +1,30 @@
 [
   {
+    "file": "integration-runtime.png",
+    "label": "Uncached CPU comparison and optional CUDA runtime/memory smoke test",
+    "group": "Integration draft: CPU target unmet; CUDA04 prefix is27.9% faster with higher memory"
+  },
+  {
+    "file": "integration01-comparison.png",
+    "label": "KITTI01: 350-frame CPU integration versus uncached reliability and preserved VO",
+    "group": "Integration draft: identical accuracy; full validation pending"
+  },
+  {
+    "file": "integration04-sampling.png",
+    "label": "KITTI04: 80-frame depth-sampling ablations; fallback candidate is not production",
+    "group": "Integration draft: diagnostic accuracy improvement; unsafe depth outliers remain"
+  },
+  {
+    "file": "integration01-overview.png",
+    "label": "KITTI01: current prefix input, trajectory, recovered loss and sparse map",
+    "group": "Frozen integration7cc6191: loops off; metric stereo"
+  },
+  {
+    "file": "integration04-overview.png",
+    "label": "KITTI04: current prefix input, trajectory and sparse map",
+    "group": "Frozen integration7cc6191: loops off; metric stereo"
+  },
+  {
     "file": "stereo-rework01-motion-depth.png",
     "label": "KITTI01 - 350 frames - fresh baseline, motion guard and subpixel depth",
     "group": "Paused current revision - improved prefix; full validation pending"

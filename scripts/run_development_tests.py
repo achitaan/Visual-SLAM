@@ -36,6 +36,7 @@ CURATED_TESTS = (
     'tests/test_integration_foundations.py',
     'tests/test_loop_performance_integration.py',
     'tests/test_tracking_performance_integration.py',
+    'tests/test_dropout_cleanup_equivalence.py',
     'tests/test_bundle_performance_equivalence.py',
     'tests/test_descriptor_matching_cuda.py',
     'tests/test_stereo_regression_diagnostics.py',

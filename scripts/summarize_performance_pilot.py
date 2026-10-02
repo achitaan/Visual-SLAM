@@ -59,7 +59,7 @@ def main():
         original = json.loads(manifest.read_text(encoding="utf-8"))
         machine["pilot"] = {k:v for k,v in original.items() if k != "runs"}
         machine["pilot"]["runs"] = [{"name": r["name"], "status": r["status"]} for r in original["runs"]]
-    for key, file in [("retrieval", "retrieval-final.json"), ("matching_microbenchmark", "matching-microbenchmark-final.json"), ("environment", "environment.json")]:
+    for key, file in [("retrieval", "retrieval-final.json"), ("matching_microbenchmark", "matching-microbenchmark-final.json"), ("environment", "environment.json"), ("full_baseline_provenance", "full-baseline-provenance.json")]:
         if (args.results / file).exists():
             machine[key] = json.loads((args.results / file).read_text(encoding="utf-8"))
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +73,9 @@ def main():
     for r in rows:
         ate = f'{r["ate_m"]:.4f}' if r["ate_m"] is not None else "unavailable"
         lines.append(f'| {r["case"]} | {r["stage"]} | {r["backend"]} | {r["baseline_s"]:.1f} | {r["elapsed_s"]:.1f} | {r["speedup"]:.2f}× | {r["fps"]:.2f} | {r["peak_ram_mb"]:.1f} | {r["torch_peak_vram_mb"]:.1f} | {ate} | {r["lost_frames"]} | {r["loops"]} | {"pass" if r["quality_passed"] else "FAIL"} |')
+    if "environment" in machine:
+        e = machine["environment"]
+        lines[3:3] = [f'Host: Windows, {e.get("logical_processors", "unknown")} logical CPU processors, {e.get("total_system_ram_mb", 0)/1024:.1f} GiB RAM; {e["gpu"]} ({e["cuda_total_vram_mb"]/1024:.1f} GiB). Python {e["python"]}, OpenCV {e["opencv"]}, SciPy {e["scipy"]}, NumPy {e["numpy"]}; isolated PyTorch {e["torch"]}/CUDA {e["cuda_runtime"]}. OpenCV/BLAS use one worker unless explicitly stated.', ""]
     lines += ["", "## Latency, recovery and drift", "", "Final repeats and promotion only. RAM is process peak working set; GPU values are peak Torch allocation, not total device usage.", "", "| Case | Median / p95 ms | Input / export s | RAM change | Lost intervals | Recoveries | Translation % | Rotation deg/m |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
     def number(value, decimals=2):
         return f"{value:.{decimals}f}" if value is not None else "unavailable"
@@ -92,7 +95,7 @@ def main():
         lines += ["", "The initial histogram-only index recalled 11/15 known pairs; residual summaries improved this to 13/15, and reserving neighboring views reached 15/15 within the 20-candidate budget. These choices were tuned on this audit; held-out long-sequence loop validation remains necessary before merging."]
     lines += ["", "## Separate profiling and component checks", "", "| Profile | Stage | Calls | Total s | Median ms | p95 ms |", "|---|---|---:|---:|---:|---:|"]
     machine["profiles"] = {}
-    for label in ["profile-final01-stereo", "profile-recovery-tum"]:
+    for label in ["profile-final01-stereo", "profile-background01-stereo", "profile-recovery-tum"]:
         path = args.results / label / "profile.json"
         if path.exists():
             profile = json.loads(path.read_text(encoding="utf-8"))
@@ -112,7 +115,26 @@ def main():
             machine["ablations"][label] = {"elapsed_s": r["elapsed_s"], "speedup": b["elapsed_s"]/r["elapsed_s"], "quality_passed": quality_passed(b,r), "source_sha256": r["source_sha256"]}
     lines += ["", "Early full KITTI04 ablations: histogram indexing alone took 302.5 s (0.92× frozen); adding CPU allocation optimizations took 227.4 s (1.22×). The final index uses SciPy instead of importing scikit-learn, avoiding roughly 40 MiB of unnecessary runtime overhead. These early runs used earlier index revisions and uncontrolled host load; they do not isolate an additive contribution. The initial monocular/indoor regression led to the separate fallback-score reuse fix; both earlier and final measurements remain above.", "", "## Acceptance and review", "", "Quality gate requires identical frame counts, no additional lost frame indices or lost intervals, no fewer verified loops, no additional initialization failures, and ATE ≤ frozen×1.05+0.05 m. The pilot does not prove improved accuracy. CPU matching remains default; GPU requires opt-in.", "", "GPU RAM increases exceed the 10% investigation threshold. Setup peak working set and Torch allocated/reserved VRAM are retained in JSON: the CUDA runtime alone raises setup RAM to roughly 581 MiB on this host, before map growth. Total driver/context VRAM was unavailable to this collector. The memory cost remains a tradeoff; no memory gate is waived silently.", "", "Backend validation: 93 tests passed in the isolated CUDA environment, covering index startup/update/removal, temporal eligibility, exhaustive fallback and score reuse, correction cache refresh, bundle equivalence, matching ties/ratio/cancellation, and unavailable CUDA. Graph solver, accuracy configuration, feature counts, budgets, schedules and the 300-keyframe guard were preserved. Optimization commits are separate from accuracy work.", "", "Review only: leave shared-SLAM and main unchanged. Repeat promising cases without competing workloads and validate held-out live loop closure before merging. The original frozen benchmark checkout, environment, datasets/caches and results were read only; experiment outputs and CUDA installation are isolated in this worktree."]
     args.report.with_suffix(".json").write_text(json.dumps(machine, indent=2), encoding="utf-8")
-    args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    full = next((r for r in rows if r["stage"] == "promoted"), None)
+    if full:
+        accuracy = "identical" if abs(full["ate_m"] - full["baseline_ate_m"]) <= 1e-9 else f'changed from {full["baseline_ate_m"]:.6f} m'
+        lines[3:3] = ["", f'Full KITTI01 stereo completed in **{full["elapsed_s"]/60:.1f} minutes versus {full["baseline_s"]/60:.1f} minutes frozen ({full["speedup"]:.2f}×)**. ATE is {accuracy} at {full["ate_m"]:.6f} m; lost frames are {full["lost_frames"]} versus {full["baseline_lost_frames"]} frozen. Peak RAM rises from {full["baseline_ram_mb"]/1024:.2f} to {full["peak_ram_mb"]/1024:.2f} GiB ({full["ram_change_percent"]:+.1f}%). This combined CPU/index/CUDA result does not attribute the full gain to indexing alone.', ""]
+    regressions = [r for r in rows if r["stage"] == "final" and r["backend"] == "cpu" and r["speedup"] < 1]
+    if regressions:
+        lines += ["", "CPU performance gains are not uniform. Final CPU regressions: " + "; ".join(f'{r["case"]} {r["speedup"]:.2f}× frozen throughput' for r in regressions) + ". These cases preserve accuracy but do not meet the 20% improvement target."]
+    lines += ["", "The persistent cache retains float32 SIFT descriptors (512 bytes per landmark), float64 positions (24 bytes) and IDs (8 bytes). At 264,925 landmarks this is about 137 MiB of array payload. CPU setup was about 110 MiB in the final monocular case versus 583 MiB for the full CUDA stereo run. Runtime initialization plus the retained cache broadly explains the 562 MiB full-run process RAM increase; these working-set peaks are not additive allocation accounting. The cache estimate excludes Python containers."]
+    machine["acceptance"] = {"final_cases_completed": sum(r["stage"] == "final" for r in rows),
+                             "quality_passed_for_all_completed_cases": all(r["quality_passed"] for r in rows),
+                             "two_times_processing_cases": [r["case"] for r in rows if r["stage"] != "initial" and r["speedup"] >= 2],
+                             "twenty_percent_elapsed_improvement_cases": [r["case"] for r in rows if r["stage"] != "initial" and r["elapsed_s"] <= .8 * r["baseline_s"]],
+                             "memory_increases_above_10_percent": [r["case"] for r in rows if r["stage"] != "initial" and r["ram_change_percent"] > 10],
+                             "tests_passed": 93, "merge_ready": False,
+                             "limits": "Provisional timings, GPU RAM tradeoff, loop index tuned on saved image proxy; held-out live validation needed before merge"}
+    args.report.with_suffix(".json").write_text(json.dumps(machine, indent=2), encoding="utf-8")
+    content = "\n".join(lines) + "\n"
+    while "\n\n\n" in content:
+        content = content.replace("\n\n\n", "\n\n")
+    args.report.write_text(content, encoding="utf-8")
     print(args.report)
 
 

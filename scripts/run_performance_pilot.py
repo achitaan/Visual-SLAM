@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,9 +57,16 @@ def main():
         manifest["runs"].append(row)
         save()
         if (target / "evaluation.json").exists():
+            existing = json.loads((target / "evaluation.json").read_text(encoding="utf-8"))
+            hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (root / "src").glob("*.py")}
+            if (existing.get("source_sha256") != hashes or existing.get("dataset") != dataset or
+                    existing.get("sequence") != sequence or existing.get("stereo") != stereo or
+                    (limit is not None and existing.get("frames") != limit) or
+                    (root != frozen and existing.get("performance_configuration", {}).get("matching_backend") != ("cuda" if gpu else "cpu"))):
+                raise RuntimeError(f"Existing {name} belongs to different inputs/source/options; use a fresh output directory")
             row["status"] = "existing_report"
             save()
-            return json.loads((target / "evaluation.json").read_text(encoding="utf-8"))
+            return existing
         interpreter = str(args.gpu_python.resolve()) if gpu else sys.executable
         command = [interpreter]
         if root == frozen:
@@ -109,11 +117,11 @@ def main():
             reports[label + "-gpu"] = (baseline, gpu)
     run("profile-final01-stereo", candidate, "kitti", kitti01, "01", True, 100, profile=True)
     gpu_checks = [reports.get(label + "-gpu") for label in ("04-stereo", "01-stereo")]
-    if args.gpu_python and all(pair and quality_passed(*pair) and pair[0]["elapsed_s"] / pair[1]["elapsed_s"] >= 1.2 for pair in gpu_checks):
+    if args.gpu_python and all(pair and quality_passed(*pair) and pair[1]["elapsed_s"] <= .8 * pair[0]["elapsed_s"] for pair in gpu_checks):
         run("promoted01-stereo", candidate, "kitti", kitti01, "01", True, gpu=True)
-        manifest["promotion"] = "Full KITTI 01 stereo after two passing GPU pilots with >=20% speed gains"
+        manifest["promotion"] = "Full KITTI 01 stereo after two passing GPU pilots with >=20% lower processing elapsed time"
     else:
-        manifest["promotion"] = "Not promoted: two passing stereo pilots with >=20% speed gains required"
+        manifest["promotion"] = "Not promoted: two passing stereo pilots with >=20% lower processing elapsed time required"
     manifest["finished_utc"] = datetime.now(timezone.utc).isoformat()
     save()
 

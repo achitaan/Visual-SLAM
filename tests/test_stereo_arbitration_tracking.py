@@ -207,9 +207,198 @@ def test_process_selects_independent_roll_clears_tracks_and_records_provenance(m
         assert len(calls) == 1
         np.testing.assert_array_equal(slam.map.stereo_motion[(0, 1)], correct)
         assert info['stereo_pose_arbitration']['measurement_provenance'] == 'immutable_supported_extraction'
+        assert not info['stereo_pose_arbitration']['association_validation']['eligible']
+        assert info['stereo_pose_arbitration']['association_validation']['reason'] == 'insufficient_inliers'
         assert info['stereo_pose_arbitration_before_bundle']['cost'] < 1e-10
         assert info['stereo_pose_arbitration_after_bundle']['cost'] < 1e-10
         assert slam.previous_supported_stereo.frame == 1
+    finally:
+        slam.close()
+
+
+def validation_scene(slam, pose=None):
+    pixels, points, _ = scene()
+    pose = np.eye(4) if pose is None else pose
+    projected, depth = geometry.project(points, pose, K)
+    disparity = K[0, 0] * BASELINE / depth + OFFSET
+    slam.current_disparity = np.full((376, 1241), disparity[0], np.float32)
+    identifiers = [slam.map.add_landmark(
+        point, np.zeros(128, np.float32), 0, {}) for point in points]
+    tracks = [(ident, pixel.copy()) for ident, pixel in zip(identifiers, projected)]
+    associations = {feature: ident for feature, ident in enumerate(identifiers)}
+    return points, projected, identifiers, tracks, associations
+
+
+def test_selected_pose_keeps_only_stereo_consistent_map_links_and_flow_pixels():
+    slam = camera()
+    pose = np.eye(4)
+    pose[2, 3] = 2.1
+    try:
+        world, observed, identifiers, tracks, associations = validation_scene(slam, pose)
+        # Simulate old map depths that project to the same left ray but disagree
+        # with current metric stereo. A left-only check would incorrectly keep them.
+        wrong = set(identifiers[::5])
+        for ident in wrong:
+            camera_point = (slam.map.landmarks[ident].position - pose[:3, 3]) @ pose[:3, :3]
+            slam.map.landmarks[ident].position = (camera_point * 1.5) @ pose[:3, :3].T + pose[:3, 3]
+        # One accepted flow point has no detector feature and must retain its
+        # original subpixel coordinate through keyframe materialization.
+        flow_id = identifiers[3]
+        flow_pixel = observed[3] + np.array([0.17, -0.12])
+        tracks = [(ident, flow_pixel.copy() if ident == flow_id else pixel)
+                  for ident, pixel in tracks]
+        associations.pop(3)
+        selected_pose = pose.copy()
+        before = selected_pose.tobytes()
+        kept_associations, kept_tracks, diagnostic = slam._validate_stereo_associations_at_pose(
+            selected_pose, associations, tracks, observed, (1241, 376), len(identifiers))
+        assert diagnostic['eligible']
+        assert diagnostic['retained_landmarks'] >= 15
+        assert diagnostic['retained_ratio'] >= .25
+        assert diagnostic['spatial_coverage'] >= 3
+        assert diagnostic['median_left_residual_px'] <= 1.5
+        # This checks the nonzero principal-point offset sign in right projection.
+        assert diagnostic['median_right_residual_px'] < 1e-5
+        assert diagnostic['rejected']['right_residual'] == len(wrong)
+        assert wrong.isdisjoint({lid for _, lid in kept_associations.items()})
+        assert selected_pose.tobytes() == before
+        assert any(lid == flow_id and np.array_equal(pixel, flow_pixel)
+                   for lid, pixel in kept_tracks)
+
+        slam.accepted_tracks = kept_tracks
+        slam.current_gray = np.zeros((376, 1241), np.uint8)
+        blank_points = np.full((len(observed), 3), np.nan)
+        blank_right = np.full(len(observed), np.nan)
+        keyframe_id = slam._keyframe(1, selected_pose, observed, np.zeros((len(observed), 128), np.float32),
+                                     blank_points, blank_right, kept_associations)
+        keyframe = slam.map.keyframes[keyframe_id]
+        flow_row = int(np.flatnonzero(keyframe.landmark_ids == flow_id)[0])
+        np.testing.assert_array_equal(keyframe.pixels[flow_row], flow_pixel)
+        assert keyframe_id in slam.map.landmarks[flow_id].observations
+        np.testing.assert_array_equal(slam.map.landmarks[flow_id].observations[keyframe_id].pixel, flow_pixel)
+    finally:
+        slam.close()
+
+
+def test_fixed_pose_association_gate_rejects_bad_left_domain_and_missing_stereo():
+    slam = camera()
+    try:
+        _, observed, identifiers, tracks, associations = validation_scene(slam)
+        # Deliberately make exactly three rows invalid in different ways.
+        tracks = list(tracks)
+        tracks[0] = (identifiers[0], observed[0] + [5., 0.])
+        tracks[1] = (identifiers[1], np.array([-1., observed[1, 1]]))
+        x, y = np.rint(observed[2]).astype(int)
+        slam.current_disparity[y, x] = np.nan
+        kept_associations, kept_tracks, diagnostic = slam._validate_stereo_associations_at_pose(
+            np.eye(4), associations, tracks, observed, (1241, 376), len(identifiers))
+        assert diagnostic['eligible']
+        assert identifiers[0] not in {lid for lid, _ in kept_tracks}
+        assert identifiers[1] not in {lid for lid, _ in kept_tracks}
+        assert identifiers[2] not in {lid for lid, _ in kept_tracks}
+        assert diagnostic['rejected']['left_residual'] == 1
+        assert diagnostic['rejected']['invalid_observation'] == 1
+        assert diagnostic['rejected']['invalid_stereo_measurement'] == 1
+        assert identifiers[0] not in kept_associations.values()
+        assert identifiers[1] not in kept_associations.values()
+        assert identifiers[2] not in kept_associations.values()
+    finally:
+        slam.close()
+
+
+def test_fixed_pose_gate_clears_all_links_when_surviving_support_is_too_small():
+    slam = camera()
+    try:
+        _, observed, identifiers, tracks, associations = validation_scene(slam)
+        # Make all but twelve current stereo measurements unavailable. The
+        # independent pose remains valid, but old links cannot carry a KF.
+        for pixel in observed[12:]:
+            x, y = np.rint(pixel).astype(int)
+            slam.current_disparity[y, x] = np.nan
+        kept_associations, kept_tracks, diagnostic = slam._validate_stereo_associations_at_pose(
+            np.eye(4), associations, tracks, observed, (1241, 376), len(identifiers))
+        assert not diagnostic['eligible']
+        assert diagnostic['reason'] == 'insufficient_inliers'
+        assert diagnostic['retained_landmarks'] < 15
+        assert not kept_associations and not kept_tracks
+        assert all(slam.map.landmarks[lid].misses >= 1 for lid in identifiers)
+    finally:
+        slam.close()
+
+
+def test_selected_pose_keeps_detector_landmarks_until_normal_keyframe_cadence(monkeypatch):
+    slam = camera()
+    pixels, world_points, desc = scene()
+    increment = np.eye(4)
+    increment[2, 3] = .5
+    associations = {feature: feature for feature in range(0, len(pixels), 2)}
+    even_features = np.asarray(list(associations), int)
+
+    def extract(image, right):
+        frame = len(slam.map.poses)
+        truth = np.eye(4)
+        truth[2, 3] = increment[2, 3] * frame
+        current_pixels, depth = geometry.project(world_points, truth, K)
+        disparity = K[0, 0] * BASELINE / depth + OFFSET
+        slam.current_disparity = np.full(image.shape, disparity[0], np.float32)
+        camera_points = (world_points - truth[:3, 3]) @ truth[:3, :3]
+        return current_pixels, desc.copy(), camera_points, current_pixels[:, 0]-disparity
+
+    def fit(source, target, matrix, **kwargs):
+        pairs = kwargs['matcher'](source.descriptors, target.descriptors)
+        return verified(increment.copy(), pairs)
+
+    def track(image_pixels, image_desc, size):
+        frame = len(slam.map.poses)
+        truth = np.eye(4)
+        truth[2, 3] = increment[2, 3] * frame
+        wrong_map_pose = truth.copy()
+        angle = np.radians(.05)
+        wrong_map_pose[:3, :3] = [[np.cos(angle), -np.sin(angle), 0],
+                                  [np.sin(angle), np.cos(angle), 0], [0, 0, 1]]
+        tracks = [(int(feature), image_pixels[feature].copy()) for feature in even_features]
+        context = slam._arbitration_context
+        context['map_fit_landmarks'].update(associations.values())
+        context['map_fit_targets'].update(associations.keys())
+        slam.accepted_tracks = tracks
+        return (wrong_map_pose, associations.copy()), {
+            'num_matches': len(even_features), 'valid_3d': len(even_features),
+            'num_inliers': len(even_features), 'inlier_ratio': 1.0,
+            'tracking_ok': True,
+        }
+
+    slam._extract = extract
+    slam._track = track
+    slam._arbitrate_supported_pose = lambda context, map_pose, measurement: {
+        'choice': 'independent', 'reason': 'synthetic_selected',
+        'measurement_provenance': 'immutable_supported_extraction', 'cost': 0.0,
+        'map': {'cost': 0.0},
+    }
+    monkeypatch.setattr(module, 'estimate_stereo_reference', fit)
+    image = np.zeros((376, 1241), np.uint8)
+    try:
+        slam.process(0, image, image)
+        first_pose, first_info = slam.process(1, image, image)
+        expected_first = np.eye(4)
+        expected_first[2, 3] = .5
+        np.testing.assert_allclose(first_pose, expected_first, atol=1e-12)
+        assert first_info['stereo_pose_arbitration']['association_validation']['eligible']
+        assert first_info['tracked_landmarks'] == len(even_features)
+        assert len(slam.map.keyframes) == 1  # no forced KF on an eligible arbitration win
+        for feature in even_features:
+            assert slam.previous_supported_stereo.landmark_ids[feature] == feature
+
+        second_pose, second_info = slam.process(2, image, image)
+        expected_second = np.eye(4)
+        expected_second[2, 3] = 1.0
+        np.testing.assert_allclose(second_pose, expected_second, atol=1e-12)
+        assert second_info['stereo_pose_arbitration']['association_validation']['eligible']
+        assert len(slam.map.keyframes) == 2  # ordinary <80-track cadence creates it
+        current_kf = slam.map.keyframes[slam.last_keyframe]
+        assert current_kf.frame == 2
+        for feature in even_features:
+            assert current_kf.landmark_ids[feature] == feature
+            assert slam.last_keyframe in slam.map.landmarks[feature].observations
     finally:
         slam.close()
 

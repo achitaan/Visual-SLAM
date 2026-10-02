@@ -874,6 +874,153 @@ class SharedSlam:
                 'map_fit_target_features': len(context['map_fit_targets']),
                 'physical_identity': 'exact_float32_pixels_duplicates_dropped'}
 
+    def _validate_stereo_associations_at_pose(
+        self, pose, associations, accepted_tracks, pixels, size, final_solve_positions
+    ):
+        """Keep only existing map links that fit a selected fixed stereo pose.
+
+        This is deliberately a validation pass: it never estimates or changes the
+        selected pose. Current right-image measurements are sampled at each
+        accepted observation, including subpixel flow coordinates.
+        """
+        track_pixels = {}
+        for landmark_id, pixel in accepted_tracks:
+            track_pixels.setdefault(int(landmark_id), np.asarray(pixel, float).copy())
+        feature_for_landmark = {}
+        for feature, landmark_id in associations.items():
+            feature_for_landmark.setdefault(int(landmark_id), int(feature))
+        candidate_ids = list(dict.fromkeys(
+            [int(lid) for lid, _ in accepted_tracks]
+            + [int(lid) for lid in associations.values()]
+        ))
+        rejected = {
+            'missing_landmark': 0, 'invalid_observation': 0,
+            'invalid_stereo_measurement': 0, 'behind_camera': 0,
+            'outside_image': 0, 'left_residual': 0, 'right_residual': 0,
+        }
+        left_errors = []
+        right_errors = []
+        retained_pixels = []
+        retained_ids = []
+        valid_ids = []
+        observed_pixels = []
+        predicted_left = []
+        predicted_right = []
+        with self.map.lock:
+            for landmark_id in candidate_ids:
+                landmark = self.map.landmarks.get(landmark_id)
+                if landmark is None:
+                    rejected['missing_landmark'] += 1
+                    continue
+                if landmark_id in track_pixels:
+                    observed = track_pixels[landmark_id]
+                else:
+                    feature = feature_for_landmark.get(landmark_id, -1)
+                    if feature < 0 or feature >= len(pixels):
+                        rejected['invalid_observation'] += 1
+                        continue
+                    observed = np.asarray(pixels[feature], float)
+                world = np.asarray(landmark.position, float)
+                if (observed.shape != (2,) or not np.isfinite(observed).all()
+                        or world.shape != (3,) or not np.isfinite(world).all()
+                        or observed[0] < 0 or observed[0] >= size[0]
+                        or observed[1] < 0 or observed[1] >= size[1]):
+                    rejected['invalid_observation'] += 1
+                    continue
+                camera = (world - pose[:3, 3]) @ pose[:3, :3]
+                if not np.isfinite(camera).all() or camera[2] <= 0:
+                    rejected['behind_camera'] += 1
+                    continue
+                homogeneous = self.K @ camera
+                projected = homogeneous[:2] / homogeneous[2]
+                right = (projected[0] - self.K[0, 0] * self.stereo.baseline / camera[2]
+                         - self.stereo.disparity_offset)
+                if (not np.isfinite(projected).all() or not np.isfinite(right)
+                        or projected[0] < 0 or projected[0] >= size[0]
+                        or projected[1] < 0 or projected[1] >= size[1]
+                        or right < 0 or right >= size[0]):
+                    rejected['outside_image'] += 1
+                    continue
+                valid_ids.append(landmark_id)
+                observed_pixels.append(observed)
+                predicted_left.append(projected)
+                predicted_right.append(right)
+
+        if observed_pixels:
+            observed_array = np.asarray(observed_pixels, float)
+            sampled_points, sampled_right = self._measure_supported_stereo_pixels(observed_array)
+            for i, landmark_id in enumerate(valid_ids):
+                if (not np.isfinite(sampled_points[i]).all()
+                        or not np.isfinite(sampled_right[i])
+                        or sampled_right[i] < 0 or sampled_right[i] >= size[0]):
+                    rejected['invalid_stereo_measurement'] += 1
+                    continue
+                left_error = float(np.linalg.norm(predicted_left[i] - observed_array[i]))
+                right_error = float(abs(predicted_right[i] - sampled_right[i]))
+                if left_error > 2.0:
+                    rejected['left_residual'] += 1
+                    continue
+                if right_error > 2.0:
+                    rejected['right_residual'] += 1
+                    continue
+                retained_ids.append(landmark_id)
+                retained_pixels.append(observed_array[i])
+                left_errors.append(left_error)
+                right_errors.append(right_error)
+
+        retained_ids = set(retained_ids)
+        retained_pixels = np.asarray(retained_pixels, float).reshape(-1, 2)
+        left_errors = np.asarray(left_errors, float)
+        right_errors = np.asarray(right_errors, float)
+        count = len(retained_ids)
+        denominator = int(final_solve_positions) if final_solve_positions is not None else 0
+        ratio = count / denominator if denominator > 0 else 0.0
+        spatial_coverage = coverage(retained_pixels, size)
+        med_left = float(np.median(left_errors)) if len(left_errors) else None
+        med_right = float(np.median(right_errors)) if len(right_errors) else None
+        failed_gates = []
+        if count < self.config.min_inliers:
+            failed_gates.append('insufficient_inliers')
+        if denominator <= 0:
+            failed_gates.append('missing_final_solve_positions')
+        if ratio < 0.25:
+            failed_gates.append('insufficient_retention_ratio')
+        if spatial_coverage < 3:
+            failed_gates.append('insufficient_spatial_coverage')
+        if med_left is None or med_left > 1.5:
+            failed_gates.append('median_left_residual')
+        if med_right is None or med_right > 1.5:
+            failed_gates.append('median_right_residual')
+        eligible = not failed_gates
+        reason = 'retained' if eligible else failed_gates[0]
+        with self.map.lock:
+            for landmark_id in candidate_ids:
+                landmark = self.map.landmarks.get(landmark_id)
+                if landmark is not None:
+                    landmark.misses = 0 if eligible and landmark_id in retained_ids else max(landmark.misses, 1)
+        if eligible:
+            kept_associations = {
+                feature: landmark_id for feature, landmark_id in associations.items()
+                if int(landmark_id) in retained_ids
+            }
+            kept_tracks = [
+                (int(landmark_id), np.asarray(pixel).copy())
+                for landmark_id, pixel in accepted_tracks
+                if int(landmark_id) in retained_ids
+            ]
+        else:
+            kept_associations, kept_tracks = {}, []
+        diagnostics = {
+            'eligible': bool(eligible), 'reason': reason,
+            'candidate_landmarks': len(candidate_ids), 'retained_landmarks': count,
+            'retained_ratio': float(ratio), 'final_solve_positions': denominator,
+            'spatial_coverage': int(spatial_coverage),
+            'median_left_residual_px': med_left,
+            'median_right_residual_px': med_right,
+            'rejected': rejected,
+        }
+        return kept_associations, kept_tracks, diagnostics
+
     def _supported_stereo_after_acceptance(self, record, associations):
         linked = np.full(len(record.pixels), -1, int)
         last = self.map.keyframes.get(self.last_keyframe)
@@ -1083,8 +1230,30 @@ class SharedSlam:
                                 arbitration_report = {**arbitration['report'], 'choice': 'existing_reference',
                                                       'reason': ('hard_disagreement_fallback' if conflict
                                                                  else 'missing_map_hypothesis')}
-                            result = (reference_pose, {})
-                            self.accepted_tracks = []
+                            if arbitration_selected:
+                                # `associations` is assigned from `result` only
+                                # after this arbitration block. Snapshot the map
+                                # solve output before replacing its pose.
+                                map_associations = dict(result[1])
+                                map_tracks = list(self.accepted_tracks)
+                                associations, retained_tracks, association_validation = (
+                                    self._validate_stereo_associations_at_pose(
+                                        reference_pose, map_associations, map_tracks,
+                                        pixels, size, info.get('valid_3d', 0)))
+                                self.accepted_tracks = retained_tracks
+                                arbitration_report = {
+                                    **arbitration_report,
+                                    'association_validation': association_validation,
+                                }
+                                if not association_validation['eligible']:
+                                    # With no connected map support, preserve the
+                                    # established reference-keyframe recovery path.
+                                    stereo_reference = True
+                            else:
+                                associations = {}
+                                self.accepted_tracks = []
+                                stereo_reference = True
+                            result = (reference_pose, associations)
                             info.update(
                                 num_matches=verified["matches"],
                                 num_inliers=verified["inliers"],
@@ -1096,7 +1265,6 @@ class SharedSlam:
                             )
                             if arbitration_selected:
                                 info['pose_source'] = 'reserved_stereo_arbitration'
-                            stereo_reference = True
             if self.stereo is not None and result is None:
                 reference, reference_stats = self._keyframe_stereo_reference(
                     pixels, desc, points, size

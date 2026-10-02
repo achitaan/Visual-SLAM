@@ -25,7 +25,7 @@ def test_release_gate_fingerprint_includes_test_provenance(tmp_path, monkeypatch
     (repo / 'src' / 'module.py').write_text('value = 1\n', encoding='utf-8')
     for name in ('evaluate_shared_slam.py', 'evaluate_stereo_baseline.py',
                  'run_development_tests.py', 'test_budget.py', 'data_preflight.py',
-                 'benchmark_telemetry.py'):
+                 'benchmark_telemetry.py', 'stereo_pose_arbitration.py'):
         (repo / 'scripts' / name).write_text('# stable harness input\n', encoding='utf-8')
     test_file = repo / 'tests' / 'test_gate.py'
     test_file.write_text('def test_gate(): pass\n', encoding='utf-8')

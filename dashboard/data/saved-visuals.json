@@ -1,5 +1,10 @@
 [
   {
+    "file": "verified-depth-metrics.png",
+    "label": "KITTI 01 and 04: position, translation and rotation accuracy together",
+    "group": "Frozen diagnostic prefixes: lower is better; 01 rotation gate fails"
+  },
+  {
     "file": "verified-depth01-comparison.png",
     "label": "KITTI 01: verified depth improves position error but worsens rotation drift",
     "group": "Experimental a275cef: 350 frames; failed accuracy gate; loops off"

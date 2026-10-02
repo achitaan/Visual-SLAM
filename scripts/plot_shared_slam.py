@@ -46,7 +46,7 @@ def main():
         ylabel=f"Z ({units})",
     )
     axes[0, 0].set_aspect("equal", adjustable="datalim")
-    if args.reference:
+    if args.reference and any(d.get("tracking_ok") for d in diagnostics):
         indices = np.arange(len(trajectory))
         if args.reference.is_file():
             truth = np.array([p[:3, 3] for p in load_poses_txt(args.reference)])[
@@ -98,6 +98,15 @@ def main():
             plt.imread(args.run / run["keyframes"][0]["image"]), cmap="gray"
         )
         axes[2, 1].set_title("Estimator input · first keyframe")
+        axes[2, 1].axis("off")
+    elif args.reference:
+        # Held initialization poses cannot define a monocular alignment scale.
+        axes[0, 0].set_title("Uninitialized trajectory · held poses only")
+        axes[2, 0].text(.5, .5, "Accuracy unavailable: initialization failed",
+                        ha="center", va="center", transform=axes[2, 0].transAxes)
+        axes[2, 0].axis("off")
+        axes[2, 1].text(.5, .5, "No initialized keyframe image",
+                        ha="center", va="center", transform=axes[2, 1].transAxes)
         axes[2, 1].axis("off")
     frames = [d["frame"] for d in diagnostics]
     axes[0, 1].plot(

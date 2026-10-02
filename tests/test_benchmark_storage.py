@@ -221,8 +221,9 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
         first_report = json.loads(first_output.read_text())
         assert first_report["status"] == "interrupted_low_disk_space"
         assert first_report["benchmark_identity"]["sequence"] == "04"
-        # Model a process that exited between the retained partial report and resume.
-        first_batch["owner"]["pid"] = 2**31 - 1
+        # A caught interruption persists an explicit failed status and releases ownership.
+        assert first_batch["status"] == "failed"
+        assert "owner" not in first_batch
         batch_path.write_text(json.dumps(first_batch), encoding="utf-8")
         run_state["interrupted"] = False
         monkeypatch.setattr(module.sys, "argv", [*argv, "--resume"])

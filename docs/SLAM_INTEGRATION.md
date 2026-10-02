@@ -76,13 +76,15 @@ timings and incomplete held-out loop validation.
 
 ## Remaining release blockers
 
-The official paired runner (`run_shared_benchmark.py`) needs a versioned resume
-contract before it can restart. Require exact named code, evaluator, input,
-calibration, timestamp, reference and resolved configuration identities; verified
-frame counts and finite artifacts; and active-owner checks. Refuse legacy
-manifests, cached diagnostic timings and mismatched reports. Reject frame limits
-below two and verify a complete dataset catalog before labeling coverage full.
-The development runner is separate and now includes tests in its gate fingerprint.
+The official paired runner (`run_shared_benchmark.py`) now uses a versioned resume
+contract with named code/dependency hashes, ordered input/calibration/timestamp/
+reference identities, resolved configuration, exact frame coverage and finite
+artifact checks. An OS lock and owner-liveness checks prevent concurrent resume;
+incomplete attempts are retained in separate retry directories. Legacy manifests,
+diagnostic caches and mismatched completed reports cannot be reused. This runner
+still needs independent evaluator deadlines before scheduled full validation can
+restart. Use the bounded development runner, which includes tests in its gate
+fingerprint, for current diagnostic work.
 
 Next, repair the demonstrated depth-support regression using independently
 verified geometry, profile extraction and descriptor matching, and repeat the
@@ -119,9 +121,31 @@ guarantee correct depth: an image-only temporal-flow audit of 04 finds useful
 restored geometry and residual outliers. Temporal consistency and the cause of
 01's orientation regression require further investigation before promotion.
 
-Actual plots: [01 comparison](benchmark/plots/verified-depth01-comparison.png)
+The [image-only diagnosis](benchmark/verified-depth-orientation-diagnosis.md)
+finds roll-biased map increments even when fresh supported stereo observations
+favor the independent motion estimate. This appears before bundle adjustment and
+with loops disabled. A pure reserved-evidence scorer and synthetic counterexample
+are included as **unwired preparation**. The next implementation must reserve
+observations before both fits and clear rejected map associations; this scorer
+does not yet correct tracking or validate a new trajectory.
+
+Actual plots: [accuracy measures](benchmark/plots/verified-depth-metrics.png),
+[01 comparison](benchmark/plots/verified-depth01-comparison.png)
 and [04 comparison](benchmark/plots/verified-depth04-comparison.png).
 Saved results and source fingerprints remain separate from the earlier revision.
+
+### Bounded descriptor cache
+
+Tracking now materializes descriptors only for the selected landmark set rather
+than retaining a duplicate matrix and ID index for the entire map. The supported
+04/80 and 01/350 replays export exactly the same poses as the earlier integration,
+with unchanged loss intervals. On 01, peak process memory decreases from 672.42
+to 611.70 MiB and total wall time from 246.49 to 221.28 s (10.2%). Compared with
+the fresh uncached reliability revision, this run is 6.0% faster with 0.7% more
+peak memory. These single shared-host diagnostics do not meet the 20% CPU speed
+target. The 01 replay used a 600-second supervisor budget and finished in
+222.61 seconds. [Exact evidence](benchmark/BOUNDED_CACHE_RESULTS.json) records
+the independently frozen revisions; new code does not inherit old validation.
 
 Frozen commit `7cc6191` was replayed from frame zero with CPU matching, current
 retrieval, bundle adjustment and loops off. Ground truth was read only after
@@ -171,7 +195,7 @@ with 6,245 ambiguous rows verified on CPU. This is a single short diagnostic, no
 the required full 01/04 performance gate or validation of indexed retrieval/live
 loops. Its separate source fingerprint and environment are in the evidence JSON.
 
-Repository checks: 170 backend tests passed, with four optional CUDA skips in the
+Repository checks: 245 backend tests passed, with four optional CUDA skips in the
 CPU environment. All seven focused matcher/cleanup tests passed in the GPU
 environment. Four frontend tests, type checking, production build and diff checks
 passed. Passing software checks does not remove the accuracy/release blockers.
@@ -188,3 +212,18 @@ comparison in that same environment. Input preparation, checks, replay and repor
 share the budget. Do not restart full paired validation while release blockers
 remain. [Runtime/memory plots](benchmark/plots/integration-runtime.png) distinguish
 the uncached CPU comparison from the separate GPU diagnostic.
+
+`--timing-history path/to/evaluation.json` accepts explicitly selected completed
+reports only as scheduling evidence. Sensor, coverage, input/reference hashes,
+configuration, depth policy, backend, threads and cache/profiling category must
+match. The slowest compatible rate gets a 1.25 safety factor; rejected evidence
+uses conservative defaults. A different source revision can inform cost but
+cannot supply accuracy or satisfy a validation gate. Estimates and evidence
+hashes are retained in the cycle manifest.
+
+A real two-frame paired runner smoke test completed stereo tracking and retained
+monocular initialization failure as a completed experiment with an explicit failed
+tracking outcome. Failed initialization is reusable evidence under exact identity
+checks, never successful tracking. Its overview now labels accuracy unavailable
+instead of attempting a scale fit. A separate plotting regression test covers this
+case. This short runner check is not monocular accuracy validation.

@@ -46,6 +46,7 @@ CURATED_TESTS = (
     'tests/test_test_budget.py',
     'tests/test_development_runner.py',
     'tests/test_development_timing_history.py',
+    'tests/test_stereo_pose_arbitration.py',
 )
 
 
@@ -322,7 +323,8 @@ def source_fingerprint():
     sources = sorted((REPO/'src').glob('*.py')) + [
         REPO/'scripts'/name for name in ('evaluate_shared_slam.py',
         'evaluate_stereo_baseline.py', 'run_development_tests.py',
-        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py')]
+        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py',
+        'stereo_pose_arbitration.py')]
     sources += sorted((REPO/'tests').glob('test_*.py'))
     digest = hashlib.sha256()
     for path in sources:

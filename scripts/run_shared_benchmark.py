@@ -19,7 +19,9 @@ import zipfile
 
 from benchmark_identity import (
     CONTRACT_VERSION,
+    COMPLETE_EXPERIMENT_STATUSES,
     FULL_FRAMES,
+    REUSABLE_STATUSES,
     artifact_hashes,
     artifacts_complete,
     hash_sequence_inputs,
@@ -145,6 +147,23 @@ def _report_source_hashes(contract):
     }
 
 
+def _tracking_outcome_fields(evaluation):
+    outcome = evaluation.get("status")
+    initialized = (outcome in REUSABLE_STATUSES
+                   or evaluation.get("initialization_elapsed_s") is not None)
+    tracking_outcome = {
+        "completed": "tracking_success",
+        "completed_with_tracking_loss": "tracking_with_loss",
+        "initialization_failed": "initialization_failed",
+    }.get(outcome, outcome)
+    return {
+        "evaluation_status": outcome,
+        "experiment_complete": outcome in COMPLETE_EXPERIMENT_STATUSES,
+        "initialized": initialized,
+        "tracking_outcome": tracking_outcome,
+    }
+
+
 def _prepare_archive(archive, cache, sequence, frames, budget):
     prefix = f"dataset/sequences/{sequence}/"
     entries = [
@@ -189,14 +208,14 @@ def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
         return "incomplete"
     stored_identity = candidate.get("benchmark_identity")
     if not isinstance(stored_identity, dict) or stored_identity.get("version") != CONTRACT_VERSION:
-        is_partial = (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
+        is_partial = (candidate.get("status") not in COMPLETE_EXPERIMENT_STATUSES
                       or candidate.get("frames") != frames
                       or candidate.get("coverage") != coverage)
         if is_partial and manifest_identity is not None and same_run_identity(
                 manifest_identity, expected_identity):
             return "incomplete"
         raise ValueError(f"Existing {sequence}-{mode} report is legacy and cannot be resumed")
-    if (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
+    if (candidate.get("status") not in COMPLETE_EXPERIMENT_STATUSES
             or candidate.get("frames") != frames or candidate.get("coverage") != coverage):
         return "incomplete"
     if not same_run_identity(stored_identity, expected_identity):
@@ -247,13 +266,16 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
                           coverage=coverage, mapping=mapping, performance=performance,
                           contract=contract, manifest_identity=manifest_identity)
     if decision == "reusable":
+        evaluation = _load_finite_json(base / "evaluation.json")
         status["runs"].append({
             "sequence": sequence, "mode": mode, "status": "completed",
             "reused": True, "output": base.name, "frames": frames,
             "coverage": coverage, "identity": run_identity,
+            **_tracking_outcome_fields(evaluation),
         })
         save()
-        print(f"{sequence} {mode}: reused exact completed report", flush=True)
+        print(f"{sequence} {mode}: reused exact completed experiment "
+              f"({evaluation.get('status')})", flush=True)
         return
 
     if base.exists():
@@ -265,10 +287,12 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
                                   performance=performance, contract=contract,
                                   manifest_identity=manifest_identity)
             if decision == "reusable":
+                evaluation = _load_finite_json(candidate / "evaluation.json")
                 status["runs"].append({
                     "sequence": sequence, "mode": mode, "status": "completed",
                     "reused": True, "output": candidate.name, "frames": frames,
                     "coverage": coverage, "identity": run_identity,
+                    **_tracking_outcome_fields(evaluation),
                 })
                 save()
                 return
@@ -323,6 +347,9 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
 
     evaluation_path = output / "evaluation.json"
     evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    tracking_fields = _tracking_outcome_fields(evaluation)
+    evaluation.update({key: value for key, value in tracking_fields.items()
+                       if key != "experiment_complete"})
     run_identity["artifacts"] = artifact_hashes(output)
     evaluation["benchmark_identity"] = run_identity
     _write_json(evaluation_path, evaluation)
@@ -341,10 +368,10 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
     row.update(
         status="completed",
         frames=frames,
-        evaluation_status=evaluation["status"],
+        **tracking_fields,
     )
     save()
-    print(f"{sequence} {mode}: completed", flush=True)
+    print(f"{sequence} {mode}: completed experiment ({evaluation['status']})", flush=True)
     subprocess.run(
         [sys.executable, str(repo / "scripts/plot_shared_slam.py"),
          "--run", str(output), "--reference", str(reference)],

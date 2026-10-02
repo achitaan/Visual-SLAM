@@ -27,6 +27,7 @@ FULL_FRAMES = {
     "10": 1201,
 }
 REUSABLE_STATUSES = {"completed", "completed_with_tracking_loss"}
+COMPLETE_EXPERIMENT_STATUSES = REUSABLE_STATUSES | {"initialization_failed"}
 
 
 class _FramedHasher:
@@ -332,8 +333,13 @@ def report_reusable(output, expected_identity, *, sequence, mode, frames, covera
         if (report.get("sequence") != sequence or report.get("dataset") != "kitti"
                 or report.get("stereo") is not (mode == "stereo")
                 or report.get("frames") != frames or report.get("coverage") != coverage
-                or report.get("status") not in REUSABLE_STATUSES
+                or report.get("status") not in COMPLETE_EXPERIMENT_STATUSES
                 or report.get("ground_truth_used_for_estimation") is not False):
+            return False
+        if (report.get("status") == "initialization_failed"
+                and (report.get("initialized") is not False
+                     or report.get("tracking_outcome") != "initialization_failed"
+                     or report.get("initialization_elapsed_s") is not None)):
             return False
         if report.get("configuration") != configuration:
             return False

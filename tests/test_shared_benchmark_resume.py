@@ -195,6 +195,48 @@ def test_non_object_json_report_is_classified_as_incomplete(tmp_path, monkeypatc
     ) == "incomplete"
 
 
+def test_complete_initialization_failure_resumes_and_allows_next_mode(tmp_path, monkeypatch):
+    runner = _load_runner(monkeypatch, "shared_benchmark_init_failure_under_test")
+    monkeypatch.setattr(runner, "artifacts_complete", lambda *args, **kwargs: True)
+    monkeypatch.setattr(runner, "report_reusable", lambda *args, **kwargs: True)
+    contract = {"contract_sha256": "contract", "sources": {
+        "scripts/evaluate_shared_slam.py": "evaluator-hash",
+    }}
+    status = {"runs": []}
+    identity_by_mode = {}
+    for mode in ("stereo", "mono"):
+        identity = runner._run_identity({}, contract, {}, "04", mode, 2, "partial",
+                                        {}, {}, {}, "local_images")
+        identity_by_mode[mode] = identity
+        output = runner._report_path(tmp_path, "04", mode)
+        output.mkdir()
+        (output / "evaluation.json").write_text(json.dumps({
+            "benchmark_identity": identity, "status": "initialization_failed",
+            "frames": 2, "coverage": "partial", "initialization_elapsed_s": None,
+            "initialized": False, "tracking_outcome": "initialization_failed",
+        }), encoding="utf-8")
+        runner._run_mode(
+            tmp_path, tmp_path, status, lambda: None, {}, tmp_path, True,
+            "04", mode, 2, "partial", tmp_path / "04.txt", contract, {}, {}, {}, {}, {},
+        )
+
+    assert [row["mode"] for row in status["runs"]] == ["stereo", "mono"]
+    for row in status["runs"]:
+        assert row["status"] == "completed"
+        assert row["evaluation_status"] == "initialization_failed"
+        assert row["experiment_complete"] is True
+        assert row["initialized"] is False
+        assert row["tracking_outcome"] == "initialization_failed"
+
+    changed = {**identity_by_mode["stereo"], "inputs": {"changed": True}}
+    with pytest.raises(ValueError, match="different exact identity"):
+        runner._try_reuse(
+            runner._report_path(tmp_path, "04", "stereo"), changed,
+            sequence="04", mode="stereo", frames=2, coverage="partial",
+            mapping={}, performance={}, contract=contract,
+        )
+
+
 def test_source_change_after_evaluator_return_invalidates_attempt(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

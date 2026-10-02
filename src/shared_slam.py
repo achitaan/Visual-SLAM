@@ -22,6 +22,7 @@ from keyframe_retrieval import KeyframeRetrieval
 from keyframe_index import KeyframeIndex
 from descriptor_matching import DescriptorMatcher
 from performance import PerformanceConfig
+from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class MappingConfig:
     loop_mode: str = "live"
     retrieval_candidates: int = 8
     stereo_feature_contrast_threshold: float = 0.02
+    stereo_depth_policy: str = "supported"
 
 
 class SharedSlam:
@@ -82,6 +84,13 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        if self.config.stereo_depth_policy not in ('supported', 'verified_fallback'):
+            raise ValueError('Invalid stereo depth policy')
+        if stereo is None and self.config.stereo_depth_policy != 'supported':
+            raise ValueError('Verified stereo depth requires two calibrated cameras')
+        self.stereo_search_config = StereoSearchConfig()
+        self.current_left_gray = self.current_right_gray = None
+        self.stereo_depth_verification = {}
         self.map = MapState(metric=stereo is not None)
         # Low-contrast road and surface texture can supply spatial support that
         # high-contrast repeated edges lack. Pose acceptance remains unchanged.
@@ -172,6 +181,38 @@ class SharedSlam:
         rays = np.c_[pixels[ids], np.ones(len(ids))] @ self.inverse_K.T
         points[ids] = rays * depth[:, None]
         right_u[ids] = pixels[ids, 0] - disparity
+        if self.config.stereo_depth_policy == 'verified_fallback':
+            candidates = np.flatnonzero(inside & ~np.isfinite(points).all(axis=1))
+            if len(candidates):
+                nearest = np.rint(pixels[candidates]).astype(int)
+                raw = self.current_disparity[nearest[:, 1], nearest[:, 0]]
+                den = self.stereo.Q[3, 2]*raw + self.stereo.Q[3, 3]
+                z = np.divide(self.stereo.Q[2, 3], den,
+                              out=np.full(len(raw), np.nan), where=den > 0)
+                eligible = np.isfinite(raw) & (raw > 0) & (raw < 96)
+                eligible &= np.isfinite(z) & (z > .1) & (z < 100)
+                candidates = candidates[eligible]
+                # Nearest disparity decides eligibility only. Independent full
+                # image searches supply the returned correspondence and depth.
+                q = self.stereo.Q
+                if len(candidates) and q[3, 2] > 0 and q[2, 3] > 0:
+                    bf, offset = q[2, 3]/q[3, 2], -q[3, 3]/q[3, 2]
+                    bounds = (max(0., offset+bf/100), min(96., offset+bf/.1))
+                    if bounds[0] < bounds[1]:
+                        measured, counters = self.profile.call(
+                            'stereo_depth_verification', verify_stereo_depth_candidates,
+                            self.current_left_gray, self.current_right_gray,
+                            pixels[candidates], self.stereo_search_config, bounds)
+                        for key, value in counters.items():
+                            self.stereo_depth_verification[key] = self.stereo_depth_verification.get(key, 0)+value
+                        d = pixels[candidates, 0]-measured
+                        den = q[3, 2]*d+q[3, 3]
+                        z = np.divide(q[2, 3], den, out=np.full(len(d), np.nan), where=den > 0)
+                        good = np.isfinite(z) & (d > 0) & (d < 96) & (z > .1) & (z < 100)
+                        accepted = candidates[good]
+                        rays = np.c_[pixels[accepted], np.ones(len(accepted))] @ self.inverse_K.T
+                        points[accepted] = rays*z[good, None]
+                        right_u[accepted] = measured[good]
         return points, right_u
 
     def _extract(self, image, right):
@@ -673,15 +714,24 @@ class SharedSlam:
             self.accepted_tracks = best_tracks
         return best, best_stats
 
+    def _prepare_frame_images(self, image, right):
+        if image is None:
+            raise ValueError('Missing image')
+        self.current_gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        self.stereo_depth_verification = {}
+        if self.config.stereo_depth_policy == 'verified_fallback' and self.stereo is not None:
+            # Refresh before extraction, including diagnostic cache hits.
+            self.current_left_gray = np.asarray(self.current_gray, np.float32)
+            self.current_right_gray = (None if right is None else np.asarray(
+                cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right, np.float32))
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
                 "Frames must arrive in consecutive order, starting at zero"
             )
         self.loop_worker.poll(self.map)
-        self.current_gray = (
-            cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
-        )
+        self._prepare_frame_images(image, right)
         pixels, desc, points, right_u = self._extract(image, right)
         size = (image.shape[1], image.shape[0])
         info = {
@@ -961,6 +1011,8 @@ class SharedSlam:
             feature_points=pixels.tolist(),
             inlier_mask=[j in inlier_features for j in range(len(pixels))],
         )
+        if self.config.stereo_depth_policy == 'verified_fallback':
+            info['stereo_depth_verification'] = dict(self.stereo_depth_verification)
         self.diagnostics.append(
             {
                 k: v

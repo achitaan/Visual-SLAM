@@ -3,6 +3,8 @@ import hashlib
 import json
 import inspect
 import platform
+from dataclasses import asdict
+import stereo_depth
 from pathlib import Path
 import numpy as np
 
@@ -19,10 +21,14 @@ def extraction_signature(slam, opencv):
         'machine': platform.machine(), 'processor': platform.processor(),
         'detector': parameters(slam.detector),
         'stereo': parameters(slam.stereo.stereo) if slam.stereo is not None else None,
+        'stereo_depth_policy': slam.config.stereo_depth_policy,
+        'stereo_search_config': asdict(slam.stereo_search_config),
     }
     digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode())
     digest.update(opencv.getBuildInformation().encode())
-    for method in (type(slam).__init__, type(slam)._extract, type(slam)._measure_stereo_pixels):
+    digest.update(Path(stereo_depth.__file__).read_bytes())
+    for method in (type(slam).__init__, type(slam)._extract, type(slam)._measure_stereo_pixels,
+                   type(slam)._prepare_frame_images):
         digest.update(inspect.getsource(method).encode())
     for value in (slam.K, slam.inverse_K):
         digest.update(value.dtype.str.encode());digest.update(value.tobytes())

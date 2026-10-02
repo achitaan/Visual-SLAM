@@ -101,6 +101,7 @@ def main():
     parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
@@ -118,6 +119,8 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if not args.stereo and args.stereo_depth_policy != 'supported':
+        parser.error('--stereo-depth-policy verified_fallback requires --stereo')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -247,7 +250,7 @@ def main():
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
-                     loop_mode=args.loop_mode), performance=performance)
+                     loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy), performance=performance)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")

@@ -27,6 +27,7 @@ CURATED_TESTS = (
     'tests/test_local_bundle_landmarks.py',
     'tests/test_bundle_stereo_motion.py',
     'tests/test_stereo_subpixel_depth.py',
+    'tests/test_verified_stereo_depth.py',
     'tests/test_bidirectional_refinement.py',
     'tests/test_stereo_motion_prior.py',
     'tests/test_stereo_map_refinement.py',
@@ -199,6 +200,7 @@ def main():
     parser.add_argument('--release-ready', type=Path, help='Exact-revision focused gate assessment required for full runs')
     parser.add_argument('--feature-cache',type=Path,help='Bounded cached diagnostics; unavailable for release performance runs')
     parser.add_argument('--matching-backend',choices=['cpu','cuda','auto'],default='cpu')
+    parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback'],default='supported')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
@@ -218,6 +220,7 @@ def main():
     requested={'variants': args.variants, 'data_root': str(args.data_root.resolve()),
                'poses_root': str(args.poses_root.resolve()),
                'feature_cache': str(args.feature_cache.resolve()) if args.feature_cache else None,
+               'stereo_depth_policy': args.stereo_depth_policy,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
                                'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
     try:
@@ -257,6 +260,7 @@ def main():
                 manifest['status']='interrupted_requested_stop';write_json(manifest_path,manifest);return 1
             identity={'revision':fingerprint,'sequence':seq,'frames':frames,'input':inputs['sha256'],'variant':variant,
                       'cached':args.feature_cache is not None and variant!='baseline',
+                      'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
@@ -293,7 +297,8 @@ def main():
                 command[2]=str(REPO/'scripts/evaluate_stereo_baseline.py');command.remove('--stereo')
             else:
                 command.extend(['--matching-backend',args.matching_backend,'--retrieval',args.retrieval,
-                                '--opencv-threads',str(args.opencv_threads)])
+                                '--opencv-threads',str(args.opencv_threads),
+                                '--stereo-depth-policy',args.stereo_depth_policy])
                 if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
                 if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])

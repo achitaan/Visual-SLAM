@@ -75,6 +75,51 @@ def test_exhaustive_fallback_reuses_exact_shortlist_scores(monkeypatch):
     slam.loop_worker.executor.shutdown()
 
 
+def test_keyframe_appearance_view_preserves_flow_descriptors_without_copying():
+    from shared_slam import SharedSlam
+    slam = SharedSlam(np.diag([250., 250., 1.]))
+    lid = slam.map.add_landmark([0, 0, 5], np.full(128, 7, np.float32), 0, {})
+    slam.accepted_tracks = [(lid, np.array([20., 20.]))]
+    slam.current_gray = np.zeros((100, 100), np.uint8)
+    desc = np.ones((2, 128), np.float32)
+    slam._keyframe(0, np.eye(4), np.array([[1., 1.], [2., 2.]], np.float32), desc,
+                   np.full((2, 3), np.nan), np.full(2, np.nan), {})
+    frame = slam.map.keyframes[0]
+    assert len(frame.descriptors) == 3
+    assert np.array_equal(frame.retrieval_descriptors, desc)
+    assert np.shares_memory(frame.retrieval_descriptors, frame.descriptors)
+    assert frame.landmark_ids[2] == lid
+    assert np.array_equal(frame.descriptors[2], slam.map.landmarks[lid].descriptor)
+    slam.close()
+
+
+def test_loop_proposals_use_sift_appearance_and_exact_matching_uses_depth(monkeypatch):
+    from live_loops import LiveLoopWorker
+    from slam_state import MappingKeyframe
+    frames = {}
+    for i in range(2):
+        desc = np.full((3, 128), i, np.float32)
+        frames[i] = MappingKeyframe(i, i * 200, np.eye(4), np.zeros((3, 2)), desc, np.arange(3),
+                                    depth_points=np.array([[0, 0, 5], [np.nan] * 3, [np.nan] * 3]))
+        frames[i].retrieval_descriptors = desc[:2]
+    calls = []
+    class Index:
+        def upsert(self, ident, frame, desc):
+            assert desc is frames[ident].retrieval_descriptors
+        def query(self, desc, eligible):
+            assert desc is frames[1].retrieval_descriptors and eligible == [0]
+            return [0]
+    def match(first, second):
+        calls.append((len(first), len(second)))
+        return np.empty((0, 2), int)
+    worker = LiveLoopWorker(np.diag([250., 250., 1.]), True, matcher=match)
+    worker.retrieval_index = Index()
+    monkeypatch.setattr("live_loops.verify_loop", lambda *args: None)
+    result = worker._solve(frames, 0, {})
+    assert calls == [(1, 1)] and result["correction"] is None
+    worker.executor.shutdown()
+
+
 def test_landmark_cache_refreshes_after_atomic_pose_corrections():
     from shared_slam import SharedSlam
     from slam_state import MappingKeyframe, Observation

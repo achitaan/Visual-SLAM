@@ -230,12 +230,15 @@ class LiveLoopWorker:
             return frame.descriptors[valid]
 
         query = measured_descriptors(last)
+        def appearance_descriptors(frame):
+            detected = getattr(frame, "retrieval_descriptors", None)
+            return frame.descriptors if detected is None else detected
         eligible = [i for i, k in keyframes.items() if last.frame - k.frame >= 150]
         if self.retrieval_index is not None:
             with self.profiler.measure("loop_retrieval_index"):
                 for ident, frame in keyframes.items():
-                    self.retrieval_index.upsert(ident, frame.frame, frame.descriptors)
-                shortlist = self.retrieval_index.query(query, eligible)
+                    self.retrieval_index.upsert(ident, frame.frame, appearance_descriptors(frame))
+                shortlist = self.retrieval_index.query(appearance_descriptors(last), eligible)
             if shortlist is not None:
                 eligible = shortlist
         self.profiler.count("loop_keyframes_matched", len(eligible))

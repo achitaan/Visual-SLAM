@@ -163,6 +163,7 @@ class SharedSlam:
         )
         # A valid tracked landmark need not coincide with a freshly detected SIFT keypoint.
         # Preserve its actual image observation rather than dropping it from bundle adjustment.
+        detected_features = len(desc)
         observed = set(associations.values())
         appended_pixels, appended_desc = [], []
         for lid, pixel in self.accepted_tracks:
@@ -192,6 +193,9 @@ class SharedSlam:
             if hasattr(self, "current_gray")
             else None
         )
+        # Keep a stable, allocation-free appearance view. Depth validity and
+        # flow descriptors belong to exact matching/geometric verification.
+        frame.retrieval_descriptors = frame.descriptors[:detected_features]
         self.map.keyframes[ident] = frame
         tracked_pixels = {lid: pixel for lid, pixel in self.accepted_tracks}
         measured_rights = {}

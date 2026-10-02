@@ -33,6 +33,9 @@ class MappingKeyframe:
     image: np.ndarray | None = None
     depth_points: np.ndarray | None = None
     image_size: tuple[int, int] | None = None
+    # Stable view of detected SIFT features for appearance retrieval. Optical
+    # flow observations retain their descriptors in the main feature array.
+    retrieval_descriptors: np.ndarray | None = None
 
 
 class MapState:

@@ -82,6 +82,25 @@ def _write_json(path, value):
     temporary.replace(path)
 
 
+def _annotate_partial_report(path, run_identity):
+    """Record the attempted identity on any parseable report, even after failure."""
+    path = Path(path)
+    if not path.is_file():
+        return False
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(report, dict):
+        return False
+    report["benchmark_identity"] = run_identity
+    temporary = path.with_suffix(path.suffix + ".identity-part")
+    # Preserve parseable NaN diagnostics if present; resume will reject them as incomplete.
+    temporary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return True
+
+
 def _configuration(repo):
     source_path = str(repo / "src")
     if source_path not in sys.path:
@@ -159,7 +178,7 @@ def _report_path(root, sequence, mode, attempt=0):
 
 
 def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
-               mapping, performance, contract):
+               mapping, performance, contract, manifest_identity=None):
     if not (output / "evaluation.json").exists():
         return "missing"
     try:
@@ -168,6 +187,12 @@ def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
         return "incomplete"
     stored_identity = candidate.get("benchmark_identity")
     if not isinstance(stored_identity, dict) or stored_identity.get("version") != CONTRACT_VERSION:
+        is_partial = (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
+                      or candidate.get("frames") != frames
+                      or candidate.get("coverage") != coverage)
+        if is_partial and manifest_identity is not None and same_run_identity(
+                manifest_identity, expected_identity):
+            return "incomplete"
         raise ValueError(f"Existing {sequence}-{mode} report is legacy and cannot be resumed")
     if (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
             or candidate.get("frames") != frames or candidate.get("coverage") != coverage):
@@ -213,11 +238,12 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
         if row.get("identity") is not None and not same_run_identity(
                 row["identity"], run_identity):
             raise ValueError(f"Cannot resume changed inputs for {sequence}-{mode}")
+    manifest_identity = previous[-1].get("identity") if previous else None
 
     base = _report_path(root, sequence, mode)
     decision = _try_reuse(base, run_identity, sequence=sequence, mode=mode, frames=frames,
                           coverage=coverage, mapping=mapping, performance=performance,
-                          contract=contract)
+                          contract=contract, manifest_identity=manifest_identity)
     if decision == "reusable":
         status["runs"].append({
             "sequence": sequence, "mode": mode, "status": "completed",
@@ -234,7 +260,8 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
             candidate = _report_path(root, sequence, mode, attempts)
             decision = _try_reuse(candidate, run_identity, sequence=sequence, mode=mode,
                                   frames=frames, coverage=coverage, mapping=mapping,
-                                  performance=performance, contract=contract)
+                                  performance=performance, contract=contract,
+                                  manifest_identity=manifest_identity)
             if decision == "reusable":
                 status["runs"].append({
                     "sequence": sequence, "mode": mode, "status": "completed",
@@ -277,6 +304,7 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
                                 stderr=subprocess.STDOUT, check=False)
     row["exit_code"] = result.returncode
     if result.returncode != 0:
+        _annotate_partial_report(output / "evaluation.json", run_identity)
         row["status"] = "failed"
         save()
         raise RuntimeError(f"{sequence} {mode}: evaluator exited {result.returncode}")

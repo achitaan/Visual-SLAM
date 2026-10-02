@@ -148,6 +148,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
     )
 
     def run(command, **_):
+        exit_code = 0
         if Path(command[1]).name == "evaluate_shared_slam.py":
             assert command[command.index("--data-root") + 1] == str(data.resolve())
             run_output = Path(command[command.index("--output") + 1])
@@ -189,7 +190,8 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
                     }
                 )
             )
-        return SimpleNamespace(returncode=0)
+            exit_code = 3 if run_state["interrupted"] else 0
+        return SimpleNamespace(returncode=exit_code)
 
     monkeypatch.setattr(module.subprocess, "run", run)
     argv = [
@@ -211,13 +213,14 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
         ]
     monkeypatch.setattr(module.sys, "argv", argv)
     if interrupted:
-        with pytest.raises(RuntimeError, match="failed exact reuse validation"):
+        with pytest.raises(RuntimeError, match="evaluator exited 3"):
             module.main()
         batch_path = next(output.rglob("batch.json"))
         first_batch = json.loads(batch_path.read_text())
         first_output = next(output.rglob("kitti04-stereo/evaluation.json"))
         first_report = json.loads(first_output.read_text())
         assert first_report["status"] == "interrupted_low_disk_space"
+        assert first_report["benchmark_identity"]["sequence"] == "04"
         # Model a process that exited between the retained partial report and resume.
         first_batch["owner"]["pid"] = 2**31 - 1
         batch_path.write_text(json.dumps(first_batch), encoding="utf-8")
@@ -227,7 +230,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
     else:
         module.main()
     batch = json.loads(next(output.rglob("batch.json")).read_text())
-    assert batch["runs"][0]["status"] == ("invalid_report" if interrupted else "completed")
+    assert batch["runs"][0]["status"] == ("failed" if interrupted else "completed")
     assert batch["runs"][0]["coverage"] == "partial"
     assert batch["runs"][0]["frames_expected"] == 2
     if interrupted:

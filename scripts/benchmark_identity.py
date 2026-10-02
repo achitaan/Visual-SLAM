@@ -370,10 +370,7 @@ def report_reusable(output, expected_identity, *, sequence, mode, frames, covera
             return False
         if not _finite_numeric_file(output / "poses.txt", pose_rows=frames):
             return False
-        ply = (output / "sparse.ply").read_text(encoding="ascii")
-        header, marker, points = ply.partition("end_header\n")
-        if not marker or "format ascii" not in header or any(
-                not _finite_numeric_file_from_line(line) for line in points.splitlines() if line.strip()):
+        if not _finite_ply(output / "sparse.ply"):
             return False
         if hashlib.sha256((output / "evaluator.py").read_bytes()).hexdigest() != evaluator_sha256:
             return False
@@ -395,10 +392,7 @@ def artifacts_complete(output, frames, evaluator_sha256):
             return False
         if not _finite_numeric_file(output / "poses.txt", pose_rows=frames):
             return False
-        ply = (output / "sparse.ply").read_text(encoding="ascii")
-        header, marker, points = ply.partition("end_header\n")
-        if not marker or "format ascii" not in header or any(
-                not _finite_numeric_file_from_line(line) for line in points.splitlines() if line.strip()):
+        if not _finite_ply(output / "sparse.ply"):
             return False
         return hashlib.sha256((output / "evaluator.py").read_bytes()).hexdigest() == evaluator_sha256
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -411,6 +405,29 @@ def _finite_numeric_file_from_line(line):
     except ValueError:
         return False
     return len(values) == 6 and all(math.isfinite(value) for value in values)
+
+
+def _finite_ply(path):
+    lines = Path(path).read_text(encoding="ascii").splitlines()
+    try:
+        end = lines.index("end_header")
+    except ValueError:
+        return False
+    header = lines[:end]
+    if "format ascii 1.0" not in header:
+        return False
+    counts = [line.split()[-1] for line in header
+              if line.startswith("element vertex ") and len(line.split()) == 3]
+    if len(counts) != 1:
+        return False
+    try:
+        expected = int(counts[0])
+    except ValueError:
+        return False
+    if expected < 0:
+        return False
+    rows = [line for line in lines[end + 1:] if line.strip()]
+    return len(rows) == expected and all(_finite_numeric_file_from_line(line) for line in rows)
 
 
 def artifact_hashes(output):

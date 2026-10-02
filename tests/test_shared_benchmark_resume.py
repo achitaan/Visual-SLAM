@@ -133,6 +133,49 @@ def test_preflight_timeout_never_returns_a_partial_identity(tmp_path, monkeypatc
         module.hash_sequence_inputs(tmp_path, "04", 2, True, reference, ExpiringBudget())
 
 
+def test_ply_export_vertex_count_must_match_finite_rows(tmp_path, monkeypatch):
+    module = load_identity(monkeypatch)
+    ply = tmp_path / "sparse.ply"
+    header = "ply\nformat ascii 1.0\nelement vertex {count}\nend_header\n"
+    ply.write_text(header.format(count=1) + "1 2 3 4 5 6\n", encoding="ascii")
+    assert module._finite_ply(ply)
+    ply.write_text(header.format(count=2) + "1 2 3 4 5 6\n", encoding="ascii")
+    assert not module._finite_ply(ply)
+    ply.write_text(header.format(count=0) + "1 2 3 4 5 6\n", encoding="ascii")
+    assert not module._finite_ply(ply)
+
+
+def test_legacy_partial_report_retries_only_with_matching_manifest_identity(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location(
+        "shared_benchmark_retry_under_test", SCRIPTS / "run_shared_benchmark.py"
+    )
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    output = tmp_path / "kitti04-stereo"
+    output.mkdir()
+    report_path = output / "evaluation.json"
+    report_path.write_text(json.dumps({
+        "sequence": "04", "dataset": "kitti", "stereo": True,
+        "frames": 1, "coverage": "partial", "status": "interrupted_low_disk_space",
+    }), encoding="utf-8")
+    identity = {"version": 1, "sequence": "04", "mode": "stereo", "frames": 2}
+    kwargs = dict(
+        sequence="04", mode="stereo", frames=2, coverage="partial",
+        mapping={}, performance={}, contract={"sources": {"scripts/evaluate_shared_slam.py": "hash"}},
+    )
+    with pytest.raises(ValueError, match="legacy"):
+        runner._try_reuse(output, identity, **kwargs)
+    assert runner._try_reuse(output, identity, manifest_identity=identity, **kwargs) == "incomplete"
+
+    report_path.write_text(json.dumps({
+        "sequence": "04", "dataset": "kitti", "stereo": True,
+        "frames": 2, "coverage": "partial", "status": "completed",
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="legacy"):
+        runner._try_reuse(output, identity, manifest_identity=identity, **kwargs)
+
+
 @pytest.mark.parametrize("liveness", [True, None])
 def test_active_or_unknown_owner_blocks_resume(tmp_path, monkeypatch, liveness):
     module = load_identity(monkeypatch)

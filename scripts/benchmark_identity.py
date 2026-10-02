@@ -382,6 +382,29 @@ def report_reusable(output, expected_identity, *, sequence, mode, frames, covera
     return True
 
 
+def artifacts_complete(output, frames, evaluator_sha256):
+    """Check the finite, complete exports needed for a report to be reusable."""
+    output = Path(output)
+    required = ("run.json", "preview.json", "poses.txt", "sparse.ply", "evaluator.py")
+    if any(not (output / name).is_file() for name in required):
+        return False
+    try:
+        run = _load_finite_json(output / "run.json")
+        preview = _load_finite_json(output / "preview.json")
+        if not isinstance(run, dict) or not isinstance(preview, dict):
+            return False
+        if not _finite_numeric_file(output / "poses.txt", pose_rows=frames):
+            return False
+        ply = (output / "sparse.ply").read_text(encoding="ascii")
+        header, marker, points = ply.partition("end_header\n")
+        if not marker or "format ascii" not in header or any(
+                not _finite_numeric_file_from_line(line) for line in points.splitlines() if line.strip()):
+            return False
+        return hashlib.sha256((output / "evaluator.py").read_bytes()).hexdigest() == evaluator_sha256
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def _finite_numeric_file_from_line(line):
     try:
         values = [float(token) for token in line.split()]

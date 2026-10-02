@@ -1,4 +1,8 @@
-"""Run fixed-configuration stereo/monocular KITTI tests with bounded caches."""
+"""Run fixed-configuration KITTI tests with bounded caches.
+
+Use the bounded development runner for focused validation first; official worker
+processes launched here currently have no independent wall-clock deadline.
+"""
 
 import argparse
 from contextlib import ExitStack
@@ -17,7 +21,9 @@ from benchmark_identity import (
     CONTRACT_VERSION,
     FULL_FRAMES,
     artifact_hashes,
+    artifacts_complete,
     hash_sequence_inputs,
+    _load_finite_json,
     report_reusable,
     resume_manifest as _resume_manifest,
     same_run_identity,
@@ -120,7 +126,7 @@ def _report_source_hashes(contract):
     }
 
 
-def _prepare_archive(archive, cache, sequence, frames):
+def _prepare_archive(archive, cache, sequence, frames, budget):
     prefix = f"dataset/sequences/{sequence}/"
     entries = [
         entry for entry in archive.infolist()
@@ -134,6 +140,8 @@ def _prepare_archive(archive, cache, sequence, frames):
     if shutil.disk_usage(cache).free <= required + 750 * 1024**2:
         return False
     for number, entry in enumerate(sorted(entries, key=lambda item: item.header_offset)):
+        if budget.remaining <= 0:
+            raise TimeoutError("Archive preflight exceeded its budget; no input hash was authorized")
         relative = Path(*Path(entry.filename).parts[1:])
         target = (cache / relative).resolve()
         if not target.is_relative_to(cache):
@@ -153,8 +161,22 @@ def _report_path(root, sequence, mode, attempt=0):
 def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
                mapping, performance, contract):
     if not (output / "evaluation.json").exists():
-        return False
+        return "missing"
+    try:
+        candidate = _load_finite_json(output / "evaluation.json")
+    except (OSError, ValueError, TypeError):
+        return "incomplete"
+    stored_identity = candidate.get("benchmark_identity")
+    if not isinstance(stored_identity, dict) or stored_identity.get("version") != CONTRACT_VERSION:
+        raise ValueError(f"Existing {sequence}-{mode} report is legacy and cannot be resumed")
+    if (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
+            or candidate.get("frames") != frames or candidate.get("coverage") != coverage):
+        return "incomplete"
+    if not same_run_identity(stored_identity, expected_identity):
+        raise ValueError(f"Existing completed {sequence}-{mode} report has a different exact identity")
     evaluator_hash = contract["sources"]["scripts/evaluate_shared_slam.py"]
+    if not artifacts_complete(output, frames, evaluator_hash):
+        return "incomplete"
     valid = report_reusable(
         output,
         expected_identity,
@@ -171,10 +193,10 @@ def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
     )
     if not valid:
         raise ValueError(
-            f"Existing {sequence}-{mode} report is legacy, incomplete, diagnostic, "
-            "nonfinite, or has a different exact identity; preserve it and use a fresh --output"
+            f"Existing completed {sequence}-{mode} report has mismatched configuration "
+            "or invalid artifacts; preserve it and use a fresh --output"
         )
-    return True
+    return "reusable"
 
 
 def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, mode,
@@ -193,9 +215,10 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
             raise ValueError(f"Cannot resume changed inputs for {sequence}-{mode}")
 
     base = _report_path(root, sequence, mode)
-    if _try_reuse(base, run_identity, sequence=sequence, mode=mode, frames=frames,
-                  coverage=coverage, mapping=mapping, performance=performance,
-                  contract=contract):
+    decision = _try_reuse(base, run_identity, sequence=sequence, mode=mode, frames=frames,
+                          coverage=coverage, mapping=mapping, performance=performance,
+                          contract=contract)
+    if decision == "reusable":
         status["runs"].append({
             "sequence": sequence, "mode": mode, "status": "completed",
             "reused": True, "output": base.name, "frames": frames,
@@ -209,9 +232,10 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
         attempts = 1
         while _report_path(root, sequence, mode, attempts).exists():
             candidate = _report_path(root, sequence, mode, attempts)
-            if _try_reuse(candidate, run_identity, sequence=sequence, mode=mode,
-                          frames=frames, coverage=coverage, mapping=mapping,
-                          performance=performance, contract=contract):
+            decision = _try_reuse(candidate, run_identity, sequence=sequence, mode=mode,
+                                  frames=frames, coverage=coverage, mapping=mapping,
+                                  performance=performance, contract=contract)
+            if decision == "reusable":
                 status["runs"].append({
                     "sequence": sequence, "mode": mode, "status": "completed",
                     "reused": True, "output": candidate.name, "frames": frames,
@@ -270,7 +294,7 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
         )
     except ValueError:
         valid_report = False
-    if not valid_report:
+    if valid_report != "reusable":
         row["status"] = "invalid_report"
         save()
         raise RuntimeError(f"{sequence} {mode}: evaluator report failed exact reuse validation")
@@ -309,7 +333,7 @@ def _run_sequence(repo, root, status, save, env, args, sequence, contract,
             }), encoding="utf-8")
             remote = resources.enter_context(RangeFile(URL))
             archive = resources.enter_context(zipfile.ZipFile(remote))
-            use_local_cache = _prepare_archive(archive, cache, sequence, frames)
+            use_local_cache = _prepare_archive(archive, cache, sequence, frames, preflight_budget)
 
         identity_source = cache if use_local_cache else archive
         inputs = hash_sequence_inputs(
@@ -324,6 +348,8 @@ def _run_sequence(repo, root, status, save, env, args, sequence, contract,
         if source_contract(repo) != contract:
             raise RuntimeError("Benchmark code or dependencies changed during the batch")
         for mode in args.modes:
+            if source_contract(repo) != contract:
+                raise RuntimeError("Benchmark code or dependencies changed during the batch")
             _run_mode(
                 repo, root, status, save, env, cache, use_local_cache,
                 sequence, mode, frames, report_coverage, reference, contract,

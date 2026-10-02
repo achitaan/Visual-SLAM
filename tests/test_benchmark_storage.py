@@ -142,6 +142,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
     repo = Path(__file__).resolve().parents[1]
     contract = module.source_contract(repo)
     mapping, performance, _threads = module._configuration(repo)
+    run_state = {"interrupted": interrupted}
     monkeypatch.setattr(
         module, "RangeFile", lambda *_: pytest.fail("Local input downloaded")
     )
@@ -173,7 +174,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
                     {
                         "sequence": "04", "dataset": "kitti", "stereo": True,
                         "frames": 2, "coverage": "partial",
-                        "status": "interrupted_low_disk_space" if interrupted else "completed",
+                        "status": "interrupted_low_disk_space" if run_state["interrupted"] else "completed",
                         "ground_truth_used_for_estimation": False,
                         "configuration": mapping,
                         "performance_configuration": performance,
@@ -191,10 +192,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module.subprocess, "run", run)
-    monkeypatch.setattr(
-        module.sys,
-        "argv",
-        [
+    argv = [
             "batch",
             "--data-root",
             str(data),
@@ -210,17 +208,43 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
             str(scratch),
             "--max-frames",
             "2",
-        ],
-    )
+        ]
+    monkeypatch.setattr(module.sys, "argv", argv)
     if interrupted:
         with pytest.raises(RuntimeError, match="failed exact reuse validation"):
             module.main()
+        batch_path = next(output.rglob("batch.json"))
+        first_batch = json.loads(batch_path.read_text())
+        first_output = next(output.rglob("kitti04-stereo/evaluation.json"))
+        first_report = json.loads(first_output.read_text())
+        assert first_report["status"] == "interrupted_low_disk_space"
+        # Model a process that exited between the retained partial report and resume.
+        first_batch["owner"]["pid"] = 2**31 - 1
+        batch_path.write_text(json.dumps(first_batch), encoding="utf-8")
+        run_state["interrupted"] = False
+        monkeypatch.setattr(module.sys, "argv", [*argv, "--resume"])
+        module.main()
     else:
         module.main()
     batch = json.loads(next(output.rglob("batch.json")).read_text())
     assert batch["runs"][0]["status"] == ("invalid_report" if interrupted else "completed")
     assert batch["runs"][0]["coverage"] == "partial"
     assert batch["runs"][0]["frames_expected"] == 2
+    if interrupted:
+        assert batch["runs"][1]["status"] == "completed"
+        assert batch["runs"][1]["output"] == "kitti04-stereo-retry-1"
+        assert json.loads(first_output.read_text())["status"] == "interrupted_low_disk_space"
+    else:
+        batch_root = next(output.rglob("batch.json")).parent
+        completed_output = batch_root / batch["runs"][0]["output"]
+        changed_identity = {**batch["runs"][0]["identity"],
+                            "inputs": {"reference_sha256": "changed"}}
+        with pytest.raises(ValueError, match="different exact identity"):
+            module._try_reuse(
+                completed_output, changed_identity, sequence="04", mode="stereo",
+                frames=2, coverage="partial", mapping=mapping,
+                performance=performance, contract=contract,
+            )
     assert sentinel.read_bytes() == b"retain original input"
     assert not (data / "owner.json").exists()
     assert not scratch.exists()

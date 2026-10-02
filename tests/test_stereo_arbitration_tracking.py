@@ -285,3 +285,35 @@ def test_source_pixel_aliases_linked_flow_id_excluded(monkeypatch):
         assert 999 in context['excluded_landmarks']
     finally:
         slam.close()
+
+
+def test_current_descriptor_alias_excludes_different_flow_landmark(monkeypatch):
+    slam = camera()
+    try:
+        raw = record(slam)
+        previous = SupportedStereoFrame(raw.pixels, raw.descriptors, raw.points, raw.right_u,
+            np.full(len(raw.pixels), -1, int), 0, raw.image_size, raw.calibration_identity)
+        current = record(slam, 1)
+        install_previous(slam, previous)
+        monkeypatch.setattr(module, 'estimate_stereo_reference',
+                            lambda source, target, matrix, **kw: verified(np.eye(4), kw['matcher'](None, None)))
+        context, _ = slam._prepare_stereo_arbitration(1, current)
+        slam._arbitration_context = context
+        # Different map IDs own the current descriptors. Source snapshot IDs
+        # alone cannot exclude these landmarks or their detector-free flow.
+        for j in range(len(previous.pixels)):
+            feature = (j+1) % len(previous.pixels)
+            slam.map.add_landmark(previous.points[feature], previous.descriptors[feature], 0, {})
+        slam.previous_tracks = [(0, np.array([10., 10.], np.float32))]
+        slam.previous_gray = slam.current_gray = np.zeros((376, 1241), np.uint8)
+        monkeypatch.setattr(module, 'estimate_pose',
+                            lambda points, pixels, *args, **kwargs: (np.eye(4), np.arange(len(points)), 0.))
+        monkeypatch.setattr(module, 'refine_stereo_map_pose', lambda answer, *args: (answer, {}))
+        slam.current_disparity = np.full((376, 1241), K[0, 0]*BASELINE/20.+OFFSET)
+        answer, _ = slam._track(current.pixels, current.descriptors, current.image_size)
+        assert answer is not None
+        assert context['excluded_landmarks'] == set(range(0, 48, 2))
+        assert context['map_fit_landmarks'] == set(range(1, 48, 2))
+        assert context['map_fit_targets'] == set(range(0, 48, 2))
+    finally:
+        slam.close()

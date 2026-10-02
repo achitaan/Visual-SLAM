@@ -2,33 +2,41 @@
 
 Performance branch based on shared-SLAM commit `63454a0`. Accuracy settings and geometric checks are unchanged. Shared-SLAM and main were not merged.
 
-Full KITTI01 stereo completed in **21.0 minutes versus 70.8 minutes frozen (3.37×)**. ATE is identical at 87.755872 m; lost frames are 30 versus 30 frozen. Peak RAM rises from 1.43 to 1.98 GiB (+38.4%). This combined CPU/index/CUDA result does not attribute the full gain to indexing alone.
+Current-source aggregate processing target (2.5× across the five pilot cases plus the promoted full case): 2.65×; passed.
+
+Full KITTI01 stereo completed in **17.8 minutes versus 70.8 minutes frozen (3.99×)**. ATE is identical at 87.755872 m; lost frames are 30 versus 30 frozen. Peak RAM rises from 1.43 to 1.96 GiB (+37.6%). This combined CPU/index/CUDA result does not attribute the full gain to indexing alone.
 
 Host: Windows, 12 logical CPU processors, 15.8 GiB RAM; NVIDIA GeForce GTX 1660 SUPER (6.0 GiB). Python 3.12.14, OpenCV 5.0.0, SciPy 1.18.1, NumPy 2.5.3; isolated PyTorch 2.7.1+cu126/CUDA 12.6. OpenCV/BLAS use one worker unless explicitly stated.
 
-Timings are provisional: retrieval audits and validation work overlapped on this shared host, and background workloads were not controlled. Each controller ran its cases serially; the final repeat overlapped the promoted full run. These single-run comparisons do not establish an uncontended throughput guarantee.
+Timings are provisional: retrieval audits and validation work overlapped on this shared host, and background workloads were not controlled. Each controller ran its cases serially; the historical final repeat overlapped the original promoted full run. The current-source revalidation is serial, with a short retrieval audit overlapping its stereo prefix. These single-run comparisons do not establish an uncontended throughput guarantee.
 
 ## Pilot and final repeat
 
 KITTI 04 is full (271 frames); small KITTI 01 and TUM fr1 desk cases are 300-frame prefixes. The promoted KITTI 01 run is 1101 frames. Stereo ATE uses SE(3); monocular ATE uses Sim(3) with scale fitting only for evaluation. All table runs use one OpenCV worker.
 
-Elapsed time includes input loading, estimator processing and background finalization. It excludes estimator setup, exports and reference evaluation. FPS is frames divided by that elapsed time; export/setup times are separate. Baseline export/setup times and the saved full baseline's frame latency were not collected, so whole-process speedup is not claimed.
+Elapsed time includes input loading, estimator processing and background finalization. It excludes estimator setup, exports and reference evaluation. FPS is frames divided by that elapsed time; export/setup times are separate. Historical baseline export/setup times and the saved full baseline's frame latency were not collected. Whole-process comparisons below use a separate parent-clock measurement.
 
 | Case | Stage | Backend | Frozen s | Candidate s | Speedup | FPS | RAM MiB | Torch VRAM MiB | ATE m | Lost | Loops | Quality |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | 04-stereo | initial | cpu | 277.1 | 261.9 | 1.06× | 1.03 | 341.1 | 0.0 | 0.7637 | 0 | 0 | pass |
 | 04-stereo | initial | cuda | 277.1 | 186.5 | 1.49× | 1.45 | 1017.9 | 30.6 | 0.7637 | 0 | 0 | pass |
 | 04-stereo | final | cuda | 277.1 | 157.2 | 1.76× | 1.72 | 1041.7 | 30.6 | 0.7637 | 0 | 0 | pass |
+| 04-stereo | revalidated | cuda | 277.1 | 112.5 | 2.46× | 2.41 | 1039.9 | 30.6 | 0.7637 | 0 | 0 | pass |
 | 04-mono | initial | cpu | 160.8 | 161.8 | 0.99× | 1.67 | 291.8 | 0.0 | 0.4151 | 0 | 0 | pass |
 | 04-mono | final | cpu | 160.8 | 137.4 | 1.17× | 1.97 | 292.6 | 0.0 | 0.4151 | 0 | 0 | pass |
+| 04-mono | revalidated | cpu | 160.8 | 128.7 | 1.25× | 2.11 | 292.8 | 0.0 | 0.4151 | 0 | 0 | pass |
 | 01-stereo | initial | cpu | 309.6 | 291.3 | 1.06× | 1.03 | 502.7 | 0.0 | 14.4019 | 2 | 0 | pass |
 | 01-stereo | initial | cuda | 309.6 | 209.4 | 1.48× | 1.43 | 1212.4 | 30.6 | 14.4019 | 2 | 0 | pass |
 | 01-stereo | final | cuda | 309.6 | 207.0 | 1.50× | 1.45 | 1213.1 | 30.6 | 14.4019 | 2 | 0 | pass |
+| 01-stereo | revalidated | cuda | 309.6 | 209.1 | 1.48× | 1.43 | 1211.5 | 30.6 | 14.4019 | 2 | 0 | pass |
 | 01-mono | initial | cpu | 443.8 | 489.6 | 0.91× | 0.61 | 297.4 | 0.0 | 43.9145 | 78 | 0 | pass |
 | 01-mono | final | cpu | 443.8 | 462.1 | 0.96× | 0.65 | 298.2 | 0.0 | 43.9145 | 78 | 0 | pass |
+| 01-mono | revalidated | cpu | 443.8 | 383.6 | 1.16× | 0.78 | 297.4 | 0.0 | 43.9145 | 78 | 0 | pass |
 | tum-desk | initial | cpu | 369.6 | 457.8 | 0.81× | 0.66 | 235.4 | 0.0 | 0.7993 | 105 | 0 | pass |
 | tum-desk | final | cpu | 369.6 | 310.4 | 1.19× | 0.97 | 232.9 | 0.0 | 0.7993 | 105 | 0 | pass |
+| tum-desk | revalidated | cpu | 369.6 | 296.9 | 1.24× | 1.01 | 234.0 | 0.0 | 0.7993 | 105 | 0 | pass |
 | 01-full-stereo | promoted | cuda | 4248.5 | 1259.7 | 3.37× | 0.87 | 2023.6 | 30.6 | 87.7559 | 30 | 0 | pass |
+| 01-full-stereo | revalidated-full | cuda | 4248.5 | 1065.5 | 3.99× | 1.03 | 2011.3 | 30.6 | 87.7559 | 30 | 0 | pass |
 
 ## Latency, recovery and drift
 
@@ -37,11 +45,17 @@ Final repeats and promotion only. RAM is process peak working set; GPU values ar
 | Case | Median / p95 ms | Input / export s | RAM change | Lost intervals | Recoveries | Translation % | Rotation deg/m |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 04-stereo | 498.57/1120.85 | 3.50/2.39 | +204.5% | 0 | 0 | 1.00 | 0.0083 |
+| 04-stereo | 347.11/780.37 | 2.46/2.29 | +204.0% | 0 | 0 | 1.00 | 0.0083 |
 | 04-mono | 260.34/1464.70 | 1.50/1.73 | -11.8% | 0 | 0 | unavailable | unavailable |
+| 04-mono | 243.27/1427.26 | 1.58/1.42 | -11.7% | 0 | 0 | unavailable | unavailable |
 | 01-stereo | 513.85/1405.55 | 3.44/5.82 | +159.5% | 1 | 1 | 6.98 | 0.0092 |
+| 01-stereo | 507.37/1484.38 | 3.49/5.49 | +159.1% | 1 | 1 | 6.98 | 0.0092 |
 | 01-mono | 334.92/4679.51 | 1.81/1.63 | -11.7% | 2 | 1 | unavailable | unavailable |
+| 01-mono | 285.13/4306.90 | 1.46/1.39 | -12.0% | 2 | 1 | unavailable | unavailable |
 | tum-desk | 579.71/3140.59 | 3.65/1.76 | -8.6% | 2 | 2 | unavailable | unavailable |
+| tum-desk | 585.33/3163.32 | 3.60/1.79 | -8.1% | 2 | 2 | unavailable | unavailable |
 | 01-full-stereo | 757.05/2991.72 | 13.43/24.55 | +38.4% | 2 | 2 | 10.90 | 0.0132 |
+| 01-full-stereo | 650.48/2569.00 | 12.05/25.99 | +37.6% | 2 | 2 | 10.90 | 0.0132 |
 
 JSON and CSV include median/p95 frame latency, drift metrics where available, recovery counts, memory changes, and per-file source hashes. Prefix results are not substitutes for full-sequence scores.
 
@@ -129,10 +143,29 @@ Quality gate requires identical frame counts, no additional lost frame indices o
 
 GPU RAM increases exceed the 10% investigation threshold. Setup peak working set and Torch allocated/reserved VRAM are retained in JSON: the CUDA runtime alone raises setup RAM to roughly 581 MiB on this host, before map growth. Total driver/context VRAM was unavailable to this collector. The memory cost remains a tradeoff; no memory gate is waived silently.
 
-Backend validation: 93 tests passed in the isolated CUDA environment, covering index startup/update/removal, temporal eligibility, exhaustive fallback and score reuse, correction cache refresh, bundle equivalence, matching ties/ratio/cancellation, and unavailable CUDA. Graph solver, accuracy configuration, feature counts, budgets, schedules and the 300-keyframe guard were preserved. Optimization commits are separate from accuracy work.
+Backend validation: 95 tests passed in the isolated CUDA environment, covering index startup/update/removal, temporal eligibility, exhaustive fallback and score reuse, correction cache refresh, bundle equivalence, matching ties/ratio/cancellation, and unavailable CUDA. Graph solver, accuracy configuration, feature counts, budgets, schedules and the 300-keyframe guard were preserved. Optimization commits are separate from accuracy work.
 
 Review only: leave shared-SLAM and main unchanged. Repeat promising cases without competing workloads and validate held-out live loop closure before merging. The original frozen benchmark checkout, environment, datasets/caches and results were read only; experiment outputs and CUDA installation are isolated in this worktree.
 
-CPU performance gains are not uniform. Final CPU regressions: 01-mono 0.96× frozen throughput. These cases preserve accuracy but do not meet the 20% improvement target.
+Updated target: **2.5× processing**, with at least **20% lower whole-process elapsed time** as worthwhile evidence. Historical `final`/`promoted` rows use the earlier retrieval implementation; `revalidated` rows include the detected-SIFT appearance correction.
 
-The persistent cache retains float32 SIFT descriptors (512 bytes per landmark), float64 positions (24 bytes) and IDs (8 bytes). At 264,925 landmarks this is about 137 MiB of array payload. CPU setup was about 110 MiB in the final monocular case versus 583 MiB for the full CUDA stereo run. Runtime initialization plus the retained cache broadly explains the 562 MiB full-run process RAM increase; these working-set peaks are not additive allocation accounting. The cache estimate excludes Python containers.
+## Live appearance-index correction
+
+The stereo-depth query check recalled 14/15 known pairs before the correction. The corrected proposal uses a stable view of the detected SIFT descriptors, excludes appended optical-flow descriptors, and recalls **15/15**. Exact reranking and geometry still use finite-depth features. The view shares the existing descriptor buffer; no descriptor copy or extra feature extraction is added. The saved left-image feature bank now matches the live appearance-bank policy; query images, stereo-filter counts and source hashes are recorded in JSON. This remains candidate-retrieval evidence rather than fresh geometry verification.
+
+## Whole-process timing check
+
+Includes interpreter/imports, setup, input loading, all frames, background shutdown, exports and reference evaluation. KITTI04 full stereo, identical input hashes, frozen OpenCV workers=1. Candidate worker counts are explicit; these checks do not imply a change to the default.
+
+| Candidate workers | Frozen s | Candidate s | Speedup | Elapsed reduction | 20% gate | Quality |
+|---:|---:|---:|---:|---:|---|---|
+| 1 | 151.7 | 127.2 | 1.19× | 16.1% | FAIL | pass |
+| 4 | 151.7 | 92.3 | 1.64× | 39.2% | pass | pass |
+
+The four-worker check reused the same checksum-verified frozen baseline recorded roughly 20 minutes earlier. Background load remained uncontrolled; both whole-process results are provisional. The one-worker result failed the 20% gate and is retained.
+
+The one-worker check precedes the appearance-index correction; the four-worker check uses the corrected source. These compare complete configurations rather than isolating the effect of worker count.
+
+Historical CPU performance gains were not uniform. Earlier final CPU regressions: 01-mono 0.96× frozen throughput. These earlier results preserve accuracy but do not meet the 20% improvement target; current-source results appear in the revalidated rows.
+
+The persistent cache retains float32 SIFT descriptors (512 bytes per landmark), float64 positions (24 bytes) and IDs (8 bytes). At 264,925 landmarks this is about 137 MiB of array payload. CPU setup was about 110 MiB in the final monocular case versus 583 MiB for the full CUDA stereo run. Runtime initialization plus the retained cache broadly explains the 549 MiB full-run process RAM increase; these working-set peaks are not additive allocation accounting. The cache estimate excludes Python containers.

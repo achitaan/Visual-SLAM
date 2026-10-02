@@ -3,6 +3,7 @@
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 
 from run_performance_pilot import quality_passed
@@ -13,24 +14,26 @@ def main():
     parser.add_argument("--results", type=Path, default=Path("results/performance"))
     parser.add_argument("--report", type=Path, default=Path("docs/performance/REPORT.md"))
     parser.add_argument("--full-baseline", type=Path, help="Read-only saved full KITTI 01 stereo evaluation.json")
+    parser.add_argument("--candidate-results", type=Path, help="Current-source revalidation results, preserving previous final rows")
+    parser.add_argument("--target-speedup", type=float, default=2.5)
     args = parser.parse_args()
     rows = []
-    cases = [(label, args.results / ("baseline" + label) / "evaluation.json", ["cpu", "gpu", "final"])
+    cases = [(label, args.results / ("baseline" + label) / "evaluation.json", ["cpu", "gpu", "final"] + (["revalidated"] if args.candidate_results else []))
              for label in ["04-stereo", "04-mono", "01-stereo", "01-mono", "tum-desk"]]
     if args.full_baseline:
-        cases.append(("01-full-stereo", args.full_baseline, ["promoted"]))
+        cases.append(("01-full-stereo", args.full_baseline, ["promoted"] + (["revalidated-full"] if args.candidate_results else [])))
     for label, base_path, variants in cases:
         if not base_path.exists():
             continue
         base = json.loads(base_path.read_text(encoding="utf-8"))
         for variant in variants:
-            path = args.results / (variant + ("01-stereo" if variant == "promoted" else label)) / "evaluation.json"
+            path = (args.candidate_results / ("promoted01-stereo" if variant == "revalidated-full" else "final" + label) if variant.startswith("revalidated") else args.results / (variant + ("01-stereo" if variant == "promoted" else label))) / "evaluation.json"
             if not path.exists():
                 continue
             r = json.loads(path.read_text(encoding="utf-8"))
             backend = r.get("performance_configuration", {}).get("matching_backend", variant)
             rows.append({
-                "case": label, "backend": backend, "stage": "final" if variant == "final" else "promoted" if variant == "promoted" else "initial", "frames": r["frames"],
+                "case": label, "backend": backend, "stage": variant if variant in ("final", "promoted", "revalidated", "revalidated-full") else "initial", "frames": r["frames"],
                 "baseline_s": base["elapsed_s"], "elapsed_s": r["elapsed_s"],
                 "speedup": base["elapsed_s"] / r["elapsed_s"], "fps": r["processing_fps"],
                 "median_frame_ms": r["frame_latency"]["median_ms"], "p95_frame_ms": r["frame_latency"]["p95_ms"],
@@ -54,6 +57,11 @@ def main():
                 "evaluator_sha256": r.get("evaluator_sha256"),
             })
     machine = {"timing_provisional": True, "comparisons": rows}
+    tests_log = args.results / "retrieval-fix-tests.log"
+    if not tests_log.exists():
+        tests_log = args.results / "final-tests.log"
+    test_counts = re.findall(r"(\d+) passed", tests_log.read_text(encoding="utf-8")) if tests_log.exists() else []
+    tests_passed = int(test_counts[-1]) if test_counts else None
     manifest = args.results / "pilot.json"
     if manifest.exists():
         original = json.loads(manifest.read_text(encoding="utf-8"))
@@ -62,6 +70,11 @@ def main():
     for key, file in [("retrieval", "retrieval-final.json"), ("matching_microbenchmark", "matching-microbenchmark-final.json"), ("environment", "environment.json"), ("full_baseline_provenance", "full-baseline-provenance.json")]:
         if (args.results / file).exists():
             machine[key] = json.loads((args.results / file).read_text(encoding="utf-8"))
+    for key, file in [("retrieval_stereo_before_fix", "retrieval-stereo-query.json"), ("retrieval_stereo_current", "retrieval-stereo-query-current.json"), ("end_to_end_one_worker", "end-to-end04/comparison.json"), ("end_to_end_four_workers", "end-to-end04-workers4/comparison.json")]:
+        if (args.results / file).exists():
+            machine[key] = json.loads((args.results / file).read_text(encoding="utf-8"))
+    if args.candidate_results and (args.candidate_results / "validation.json").exists():
+        machine["revalidation"] = json.loads((args.candidate_results / "validation.json").read_text(encoding="utf-8"))
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.with_suffix(".json").write_text(json.dumps(machine, indent=2), encoding="utf-8")
     fields = [k for k in rows[0] if not k.endswith("sha256") and k != "lost_interval_details"] if rows else []
@@ -115,22 +128,47 @@ def main():
             machine["ablations"][label] = {"elapsed_s": r["elapsed_s"], "speedup": b["elapsed_s"]/r["elapsed_s"], "quality_passed": quality_passed(b,r), "source_sha256": r["source_sha256"]}
     lines += ["", "Early full KITTI04 ablations: histogram indexing alone took 302.5 s (0.92× frozen); adding CPU allocation optimizations took 227.4 s (1.22×). The final index uses SciPy instead of importing scikit-learn, avoiding roughly 40 MiB of unnecessary runtime overhead. These early runs used earlier index revisions and uncontrolled host load; they do not isolate an additive contribution. The initial monocular/indoor regression led to the separate fallback-score reuse fix; both earlier and final measurements remain above.", "", "## Acceptance and review", "", "Quality gate requires identical frame counts, no additional lost frame indices or lost intervals, no fewer verified loops, no additional initialization failures, and ATE ≤ frozen×1.05+0.05 m. The pilot does not prove improved accuracy. CPU matching remains default; GPU requires opt-in.", "", "GPU RAM increases exceed the 10% investigation threshold. Setup peak working set and Torch allocated/reserved VRAM are retained in JSON: the CUDA runtime alone raises setup RAM to roughly 581 MiB on this host, before map growth. Total driver/context VRAM was unavailable to this collector. The memory cost remains a tradeoff; no memory gate is waived silently.", "", "Backend validation: 93 tests passed in the isolated CUDA environment, covering index startup/update/removal, temporal eligibility, exhaustive fallback and score reuse, correction cache refresh, bundle equivalence, matching ties/ratio/cancellation, and unavailable CUDA. Graph solver, accuracy configuration, feature counts, budgets, schedules and the 300-keyframe guard were preserved. Optimization commits are separate from accuracy work.", "", "Review only: leave shared-SLAM and main unchanged. Repeat promising cases without competing workloads and validate held-out live loop closure before merging. The original frozen benchmark checkout, environment, datasets/caches and results were read only; experiment outputs and CUDA installation are isolated in this worktree."]
     args.report.with_suffix(".json").write_text(json.dumps(machine, indent=2), encoding="utf-8")
-    full = next((r for r in rows if r["stage"] == "promoted"), None)
+    lines += ["", f"Updated target: **{args.target_speedup:.1f}× processing**, with at least **20% lower whole-process elapsed time** as worthwhile evidence. Historical `final`/`promoted` rows use the earlier retrieval implementation; `revalidated` rows include the detected-SIFT appearance correction."]
+    if "retrieval_stereo_current" in machine:
+        r = machine["retrieval_stereo_current"]
+        before = machine.get("retrieval_stereo_before_fix", {})
+        lines += ["", "## Live appearance-index correction", "", f'The stereo-depth query check recalled {before.get("retrieved_loops", "unavailable")}/15 known pairs before the correction. The corrected proposal uses a stable view of the detected SIFT descriptors, excludes appended optical-flow descriptors, and recalls **{r["retrieved_loops"]}/{r["known_loops"]}**. Exact reranking and geometry still use finite-depth features. The view shares the existing descriptor buffer; no descriptor copy or extra feature extraction is added. The saved left-image feature bank now matches the live appearance-bank policy; query images, stereo-filter counts and source hashes are recorded in JSON. This remains candidate-retrieval evidence rather than fresh geometry verification.']
+    lines += ["", "## Whole-process timing check", "", "Includes interpreter/imports, setup, input loading, all frames, background shutdown, exports and reference evaluation. KITTI04 full stereo, identical input hashes, frozen OpenCV workers=1. Candidate worker counts are explicit; these checks do not imply a change to the default.", "", "| Candidate workers | Frozen s | Candidate s | Speedup | Elapsed reduction | 20% gate | Quality |", "|---:|---:|---:|---:|---:|---|---|"]
+    for key in ["end_to_end_one_worker", "end_to_end_four_workers"]:
+        if key in machine:
+            e = machine[key]
+            b, c = e["runs"]["baseline"], e["runs"]["candidate"]
+            lines.append(f'| {e.get("candidate_opencv_threads", 1)} | {b["end_to_end_elapsed_s"]:.1f} | {c["end_to_end_elapsed_s"]:.1f} | {e["end_to_end_speedup"]:.2f}× | {e["elapsed_reduction_fraction"]*100:.1f}% | {"pass" if e["worthwhile_end_to_end"] else "FAIL"} | {"pass" if e["quality_passed"] else "FAIL"} |')
+    lines += ["", "The four-worker check reused the same checksum-verified frozen baseline recorded roughly 20 minutes earlier. Background load remained uncontrolled; both whole-process results are provisional. The one-worker result failed the 20% gate and is retained."]
+    lines += ["", "The one-worker check precedes the appearance-index correction; the four-worker check uses the corrected source. These compare complete configurations rather than isolating the effect of worker count."]
+    full = next((r for r in rows if r["stage"] == ("revalidated-full" if args.candidate_results else "promoted")), None)
     if full:
         accuracy = "identical" if abs(full["ate_m"] - full["baseline_ate_m"]) <= 1e-9 else f'changed from {full["baseline_ate_m"]:.6f} m'
         lines[3:3] = ["", f'Full KITTI01 stereo completed in **{full["elapsed_s"]/60:.1f} minutes versus {full["baseline_s"]/60:.1f} minutes frozen ({full["speedup"]:.2f}×)**. ATE is {accuracy} at {full["ate_m"]:.6f} m; lost frames are {full["lost_frames"]} versus {full["baseline_lost_frames"]} frozen. Peak RAM rises from {full["baseline_ram_mb"]/1024:.2f} to {full["peak_ram_mb"]/1024:.2f} GiB ({full["ram_change_percent"]:+.1f}%). This combined CPU/index/CUDA result does not attribute the full gain to indexing alone.', ""]
     regressions = [r for r in rows if r["stage"] == "final" and r["backend"] == "cpu" and r["speedup"] < 1]
     if regressions:
-        lines += ["", "CPU performance gains are not uniform. Final CPU regressions: " + "; ".join(f'{r["case"]} {r["speedup"]:.2f}× frozen throughput' for r in regressions) + ". These cases preserve accuracy but do not meet the 20% improvement target."]
+        lines += ["", "Historical CPU performance gains were not uniform. Earlier final CPU regressions: " + "; ".join(f'{r["case"]} {r["speedup"]:.2f}× frozen throughput' for r in regressions) + ". These earlier results preserve accuracy but do not meet the 20% improvement target; current-source results appear in the revalidated rows."]
     lines += ["", "The persistent cache retains float32 SIFT descriptors (512 bytes per landmark), float64 positions (24 bytes) and IDs (8 bytes). At 264,925 landmarks this is about 137 MiB of array payload. CPU setup was about 110 MiB in the final monocular case versus 583 MiB for the full CUDA stereo run. Runtime initialization plus the retained cache broadly explains the 562 MiB full-run process RAM increase; these working-set peaks are not additive allocation accounting. The cache estimate excludes Python containers."]
-    machine["acceptance"] = {"final_cases_completed": sum(r["stage"] == "final" for r in rows),
-                             "quality_passed_for_all_completed_cases": all(r["quality_passed"] for r in rows),
-                             "two_times_processing_cases": [r["case"] for r in rows if r["stage"] != "initial" and r["speedup"] >= 2],
-                             "twenty_percent_elapsed_improvement_cases": [r["case"] for r in rows if r["stage"] != "initial" and r["elapsed_s"] <= .8 * r["baseline_s"]],
-                             "memory_increases_above_10_percent": [r["case"] for r in rows if r["stage"] != "initial" and r["ram_change_percent"] > 10],
-                             "tests_passed": 93, "merge_ready": False,
+    current_rows = [r for r in rows if r["stage"] in (("revalidated", "revalidated-full") if args.candidate_results else ("final", "promoted"))]
+    aggregate = sum(r["baseline_s"] for r in current_rows) / sum(r["elapsed_s"] for r in current_rows) if current_rows else None
+    complete = len(current_rows) == 6
+    machine["acceptance"] = {"final_cases_completed": sum(r["stage"] == ("revalidated" if args.candidate_results else "final") for r in rows),
+                             "quality_passed_for_all_completed_cases": all(r["quality_passed"] for r in current_rows),
+                             "processing_target_speedup": args.target_speedup,
+                             "processing_target_cases": [r["case"] for r in current_rows if r["speedup"] >= args.target_speedup],
+                             "aggregate_processing_speedup": aggregate if complete else None,
+                             "aggregate_processing_target_met": complete and aggregate >= args.target_speedup,
+                             "twenty_percent_elapsed_improvement_cases": [r["case"] for r in current_rows if r["elapsed_s"] <= .8 * r["baseline_s"]],
+                             "memory_increases_above_10_percent": [r["case"] for r in current_rows if r["ram_change_percent"] > 10],
+                             "tests_passed": tests_passed, "merge_ready": False,
                              "limits": "Provisional timings, GPU RAM tradeoff, loop index tuned on saved image proxy; held-out live validation needed before merge"}
     args.report.with_suffix(".json").write_text(json.dumps(machine, indent=2), encoding="utf-8")
+    lines = [line.replace("Backend validation: 93 tests passed", f"Backend validation: {tests_passed} tests passed")
+             .replace("562 MiB full-run process RAM increase", f'{full["peak_ram_mb"] - full["baseline_ram_mb"]:.0f} MiB full-run process RAM increase' if full else "historically measured 562 MiB full-run process RAM increase")
+             .replace("Baseline export/setup times and the saved full baseline's frame latency were not collected, so whole-process speedup is not claimed.", "Historical baseline export/setup times and the saved full baseline's frame latency were not collected. Whole-process comparisons below use a separate parent-clock measurement.")
+             .replace("Each controller ran its cases serially; the final repeat overlapped the promoted full run.", "Each controller ran its cases serially; the historical final repeat overlapped the original promoted full run. The current-source revalidation is serial, with a short retrieval audit overlapping its stereo prefix.")
+             for line in lines]
+    lines[3:3] = ["", f'Current-source aggregate processing target ({args.target_speedup:.1f}× across the five pilot cases plus the promoted full case): ' + (f'{aggregate:.2f}×; {"passed" if aggregate >= args.target_speedup else "not met"}.' if complete else f'pending, {len(current_rows)}/6 cases complete.'), ""]
     content = "\n".join(lines) + "\n"
     while "\n\n\n" in content:
         content = content.replace("\n\n\n", "\n\n")

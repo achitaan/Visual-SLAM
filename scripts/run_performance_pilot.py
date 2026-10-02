@@ -35,6 +35,7 @@ def main():
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
     dev = args.development_root.resolve()
     frozen, candidate = output / "frozen", output / "candidate"
     poses = dev / "results/benchmark-batch/reference/poses"

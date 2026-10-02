@@ -242,3 +242,24 @@ Use `scripts/summarize_performance_pilot.py` to regenerate Markdown/JSON/CSV rep
 `scripts/check_performance_retrieval.py` audits known loop candidates using saved
 input images and replays saved loop measurements against exported keyframe poses;
 that replay does not reproduce the original pre-correction optimization snapshot.
+
+The performance acceptance target is 2.5× processing throughput across the pilot
+and promoted full case, with at least 20% lower whole-process elapsed time as
+worthwhile evidence. `scripts/check_performance_end_to_end.py` measures interpreter
+startup through exports and reference evaluation on full KITTI04. It records an
+explicit candidate OpenCV worker count and can reuse a checksum-verified frozen
+baseline. Single-run shared-host timings remain provisional.
+
+Loop appearance retrieval now uses a stable view of detected SIFT descriptors;
+appended optical-flow descriptors stay in the tracking map. Exact loop matching
+and geometric verification retain their finite-depth feature checks. To audit
+known pairs with stereo measurement evidence, pass `--stereo-right-root` to
+`scripts/check_performance_retrieval.py`; only right images for the known query
+frames are needed. `scripts/download_kitti_sequence.py --frames ... --cameras 1`
+downloads selected official images into a separate output root.
+
+After a retrieval change, `scripts/repeat_performance_validation.py` repeats the
+same five cases and the already-promoted KITTI01 stereo case against frozen
+baselines. `scripts/audit_performance_acceptance.py` checks current source hashes,
+quality, known-pair recall, whole-process improvement, aggregate processing
+throughput and the memory investigation. Its default speed target is 2.5×.

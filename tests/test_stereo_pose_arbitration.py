@@ -124,3 +124,41 @@ def test_no_cross_candidate_trimming_normalization_or_offset_loss():
     report = call(f)
     assert report['independent']['cost'] > 1
     assert report['independent']['inliers'] == 23
+
+
+@pytest.mark.parametrize('points', [np.array(3.), np.zeros(24), np.zeros((24, 2))])
+def test_invalid_source_dimensions_abstain(points):
+    f = list(fixture()); e = f[0]
+    f[0] = SupportedStereoHoldout(points, e.left, e.right_u, e.source_ids, e.target_ids, e.landmark_ids,
+                                 e.provenance, e.source_frame, e.calibration_identity)
+    assert call(f)['reason'] == 'invalid_evidence'
+
+
+@pytest.mark.parametrize('field', ['points', 'left', 'right_u'])
+def test_nonfinite_evidence_abstains(field):
+    f = list(fixture()); e = f[0]
+    values = {name: getattr(e, name).copy() for name in ('points', 'left', 'right_u', 'source_ids', 'target_ids', 'landmark_ids')}
+    values[field].flat[0] = np.nan
+    f[0] = SupportedStereoHoldout(**values, provenance=e.provenance, source_frame=e.source_frame,
+                                 calibration_identity=e.calibration_identity)
+    assert call(f)['reason'] == 'invalid_evidence'
+
+
+@pytest.mark.parametrize('field', ['left', 'right_u'])
+def test_image_domain_abstains(field):
+    f = list(fixture()); e = f[0]
+    values = {name: getattr(e, name).copy() for name in ('points', 'left', 'right_u', 'source_ids', 'target_ids', 'landmark_ids')}
+    values[field].flat[0] = -1
+    f[0] = SupportedStereoHoldout(**values, provenance=e.provenance, source_frame=e.source_frame,
+                                 calibration_identity=e.calibration_identity)
+    assert call(f)['reason'] == 'invalid_image_domain'
+
+
+@pytest.mark.parametrize('kind', ['nonfinite_matrix', 'invalid_baseline'])
+def test_invalid_calibration_abstains(kind):
+    f = list(fixture())
+    if kind == 'nonfinite_matrix':
+        f[1] = f[1].copy(); f[1][0, 0] = np.nan
+    else:
+        f[2] = 0.
+    assert call(f)['reason'] == 'invalid_calibration'

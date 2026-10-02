@@ -100,6 +100,9 @@ def arbitrate_stereo_pose(map_relative, independent_relative, evidence, matrix, 
             or not isinstance(evidence.source_frame, (int, np.integer)) or evidence.source_frame < 0):
         report['reason'] = 'invalid_provenance'
         return report
+    if evidence.points.ndim != 2 or evidence.points.shape[1] != 3:
+        report['reason'] = 'invalid_evidence'
+        return report
     n = len(evidence.points)
     report['holdout_count'] = n
     if (evidence.points.shape != (n, 3) or evidence.left.shape != (n, 2)

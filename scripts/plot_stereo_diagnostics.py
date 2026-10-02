@@ -24,11 +24,22 @@ def main():
     figure, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
     colors = ['#44536a', '#2a8b76', '#ba6744', '#6474ba']
     labels, errors = [], []
+    identity = None
+    coverages = set()
     for number, item in enumerate(args.run):
         label, directory = item.split('=', 1)
         directory = Path(directory)
         report = json.loads((directory / 'evaluation.json').read_text(encoding='utf-8'))
+        current = (report['sequence'], report['frames'], report['stereo'])
+        if not current[2] or (identity is not None and current != identity):
+            parser.error('Compare stereo runs with matching sequence and frame coverage')
+        if report['metrics']['ate_alignment'] != 'se3' or report['metrics']['alignment_scale'] != 1.:
+            parser.error('Stereo comparison requires SE(3) evaluation without scale fitting')
+        identity = current
+        coverages.add(report.get('coverage', 'partial'))
         poses = load_poses_txt(directory / 'poses.txt')
+        if len(poses) != report['frames'] or len(truth) < len(poses) or not np.isfinite(np.asarray(poses)).all():
+            parser.error('Trajectory exports must be finite and match reported/reference coverage')
         estimated = np.array([p[:3, 3] for p in poses])
         reference = truth[:len(estimated)]
         rotation, _, translation = umeyama_alignment(estimated, reference, with_scale=False)
@@ -52,7 +63,8 @@ def main():
     axes[0, 1].set(title='Position error after alignment', xlabel='Frame', ylabel='Error (m)')
     axes[0, 1].legend(fontsize=8)
     axes[1, 0].barh(labels, errors, color=colors[:len(labels)])
-    axes[1, 0].set(title='ATE RMSE: short diagnostic, not a release benchmark', xlabel='ATE (m)')
+    scope = 'full-sequence diagnostic' if coverages == {'full'} else 'prefix diagnostic'
+    axes[1, 0].set(title=f'ATE RMSE: {scope}, not a release benchmark', xlabel='ATE (m)')
     for axis in axes.ravel():
         axis.grid(alpha=.15)
     args.output.parent.mkdir(parents=True, exist_ok=True)

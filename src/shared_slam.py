@@ -55,6 +55,7 @@ class MappingConfig:
     bundle_enabled: bool = True
     loop_mode: str = "live"
     retrieval_candidates: int = 8
+    stereo_feature_contrast_threshold: float = 0.02
 
 
 class SharedSlam:
@@ -76,7 +77,12 @@ class SharedSlam:
             )
         self.config = config or MappingConfig()
         self.map = MapState(metric=stereo is not None)
-        self.detector = cv.SIFT_create(nfeatures=self.config.features)
+        # Low-contrast road and surface texture can supply spatial support that
+        # high-contrast repeated edges lack. Pose acceptance remains unchanged.
+        contrast = self.config.stereo_feature_contrast_threshold if stereo is not None else 0.04
+        if not np.isfinite(contrast) or contrast <= 0:
+            raise ValueError("Feature contrast threshold must be finite and positive")
+        self.detector = cv.SIFT_create(nfeatures=self.config.features, contrastThreshold=contrast)
         self.initial = None
         self.last_keyframe = None
         self.diagnostics = []
@@ -447,6 +453,19 @@ class SharedSlam:
 
         result, pose_diagnostics, ids, world, observed = solve(candidates)
         source = "descriptor_map" if relocalize else "flow_assisted_map"
+        augmented_correspondences = len(candidates)
+        flow_rejection = None
+        if result is None and not relocalize and len(descriptor_candidates) >= self.config.min_inliers:
+            # A large, coherent cluster of repeated-texture flow can dominate
+            # RANSAC while failing spatial or stereo checks. Independently matched
+            # map descriptors must still get a solve with the same acceptance gates.
+            fallback, fallback_diagnostics, fallback_ids, fallback_world, fallback_observed = solve(descriptor_candidates)
+            if fallback is not None:
+                flow_rejection = pose_diagnostics.get("pose_rejection_reason")
+                result, pose_diagnostics = fallback, fallback_diagnostics
+                candidates = descriptor_candidates
+                ids, world, observed = fallback_ids, fallback_world, fallback_observed
+                source = "descriptor_map_fallback"
         info = {
             "num_matches": len(ids),
             "valid_3d": len(world),
@@ -457,6 +476,9 @@ class SharedSlam:
             "flow_visibility_rejections": flow_visibility_rejections,
             "descriptor_correspondences": len(descriptor_candidates),
         }
+        if source == "descriptor_map_fallback":
+            info.update(flow_pose_rejection_reason=flow_rejection,
+                        augmented_correspondences=augmented_correspondences)
         if result is None:
             return None, info
         pose, valid, error = result

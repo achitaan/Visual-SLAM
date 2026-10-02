@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import cv2
 import numpy as np
@@ -147,7 +148,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
         module, "RangeFile", lambda *_: pytest.fail("Local input downloaded")
     )
 
-    def run(command, **_):
+    def run_owned(command, log, seconds, env):
         exit_code = 0
         if Path(command[1]).name == "evaluate_shared_slam.py":
             assert command[command.index("--data-root") + 1] == str(data.resolve())
@@ -191,9 +192,9 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
                 )
             )
             exit_code = 3 if run_state["interrupted"] else 0
-        return SimpleNamespace(returncode=exit_code)
+        return {"exit_code": exit_code, "elapsed_s": 1.0, "timed_out": False}
 
-    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module, "_run_owned", run_owned)
     argv = [
             "batch",
             "--data-root",
@@ -210,6 +211,13 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
             str(scratch),
             "--max-frames",
             "2",
+            "--budget-seconds",
+            "600",
+            "--_deadline-worker",
+            "--_deadline-at",
+            str(time.monotonic() + 540),
+            "--_owner-token",
+            "storage-test-owner",
         ]
     monkeypatch.setattr(module.sys, "argv", argv)
     if interrupted:

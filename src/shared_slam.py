@@ -16,6 +16,8 @@ from mapping_geometry import (
 from local_bundle import local_bundle_adjustment
 from live_loops import LiveLoopWorker
 from loop_geometry import StereoLoopFrame, verify_loop
+from stage_profile import StageProfile
+from keyframe_retrieval import KeyframeRetrieval
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,9 @@ class MappingConfig:
     keyframe_interval: int = 10
     max_landmarks: int = 2000
     bundle_window: int = 5
+    bundle_enabled: bool = True
+    loop_mode: str = "live"
+    retrieval_candidates: int = 8
 
 
 class SharedSlam:
@@ -71,7 +76,11 @@ class SharedSlam:
         self.last_keyframe = None
         self.diagnostics = []
         self.bundle_reports = []
-        self.loop_worker = LiveLoopWorker(self.K, self.map.metric)
+        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, mode=self.config.loop_mode)
+        self.profile = StageProfile()
+        self.retrieval = KeyframeRetrieval()
+        for name in ("_extract", "_track", "_keyframe", "_relocalize", "_keyframe_stereo_reference"):
+            setattr(self, name, self.profile.wrap(name, getattr(self, name)))
         self.previous_gray = None
         self.previous_tracks = []
         self.accepted_tracks = []
@@ -480,10 +489,13 @@ class SharedSlam:
 
     def _relocalize(self, pixels, desc, size, points=None):
         # Retrieval proposes views; only image-to-landmark PnP can recover tracking.
+        self.retrieval.update(self.map.keyframes)
+        candidate_ids = (self.retrieval.query(desc, self.config.retrieval_candidates)
+                         if self.config.retrieval_candidates > 0 else list(self.map.keyframes))
         ranked = sorted(
             (
                 (len(match_descriptors(k.descriptors, desc)), k.id)
-                for k in self.map.keyframes.values()
+                for k in (self.map.keyframes[i] for i in candidate_ids)
             ),
             reverse=True,
         )
@@ -738,12 +750,13 @@ class SharedSlam:
             and self.map.keyframes[anchor].frame == index
             and len(self.map.keyframes) >= 3
         ):
-            report = local_bundle_adjustment(
-                self.map,
-                self.K,
-                self.stereo.baseline if self.stereo is not None else 0.0,
-                window=self.config.bundle_window,
-            )
+            with self.profile.measure("local_bundle"):
+                report = local_bundle_adjustment(
+                    self.map,
+                    self.K,
+                    self.stereo.baseline if self.stereo is not None else 0.0,
+                    window=self.config.bundle_window,
+                ) if self.config.bundle_enabled else {"applied": False, "reason": "diagnostic_ablation"}
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
             self.loop_worker.schedule(self.map)
@@ -770,6 +783,7 @@ class SharedSlam:
                 removed = True
         if removed:
             self.map.revision += 1
+            self.map.geometry_revision += 1
         info.update(
             state=status,
             map_revision=self.map.revision,
@@ -786,8 +800,8 @@ class SharedSlam:
         )
         return pose, info
 
-    def close(self):
-        self.loop_worker.close(self.map)
+    def close(self, finish=True):
+        self.loop_worker.close(self.map, finish=finish)
 
     def map_state(self):
         return {

@@ -45,6 +45,7 @@ class MapState:
         self.relative_poses = []
         self.statuses = []
         self.revision = 0
+        self.geometry_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
 
@@ -71,7 +72,7 @@ class MapState:
                 else pose.copy()
             )
 
-    def apply_corrections(self, expected_revision, corrected, scales=None):
+    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True):
         """Commit a complete correction atomically; reject stale snapshots and moved origin."""
         with self.lock:
             if self.revision != expected_revision or set(corrected) != set(
@@ -101,8 +102,11 @@ class MapState:
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
             for ident, landmark in self.landmarks.items():
-                rotation, scale, translation = corrections[landmark.anchor]
-                positions[ident] = scale * rotation @ landmark.position + translation
+                if propagate_landmarks:
+                    rotation, scale, translation = corrections[landmark.anchor]
+                    positions[ident] = scale * rotation @ landmark.position + translation
+                else:
+                    positions[ident] = landmark.position.copy()
                 if not np.isfinite(positions[ident]).all():
                     raise ValueError("Nonfinite corrected landmark")
             poses = []
@@ -126,4 +130,36 @@ class MapState:
                 for p, a in zip(poses, self.pose_anchors)
             ]
             self.revision += 1
+            self.geometry_revision += 1
             return True
+
+    def apply_snapshot_corrections(self, revision, geometry_revision, original, corrected, scales=None):
+        """Allow append-only progress, but never rebase across changed snapshot geometry."""
+        with self.lock:
+            ids = sorted(original)
+            current = sorted(self.keyframes)
+            if (self.geometry_revision != geometry_revision or not ids
+                    or current[:len(ids)] != ids or set(corrected) != set(original)):
+                return False
+            if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
+                return False
+            if self.revision != revision and len(current) == len(ids):
+                return False
+            if isinstance(scales,dict) and set(scales)!=set(ids):
+                return False
+            values = (np.ones(len(ids)) if scales is None else
+                      np.array([scales[i] for i in ids],float) if isinstance(scales,dict) else np.asarray(scales,float))
+            if values.shape != (len(ids),) or not np.isfinite(values).all() or np.any(values <= 0):
+                return False
+            expanded = {i:p.copy() for i,p in corrected.items()}
+            last = ids[-1]
+            rotation = corrected[last][:3,:3] @ original[last][:3,:3].T
+            scale = values[-1]
+            translation = corrected[last][:3,3] - scale * rotation @ original[last][:3,3]
+            for ident in current[len(ids):]:
+                pose = self.keyframes[ident].pose.copy()
+                pose[:3,:3] = rotation @ pose[:3,:3]
+                pose[:3,3] = scale * rotation @ pose[:3,3] + translation
+                expanded[ident] = pose
+            expanded_scales = dict(zip(current, np.r_[values, np.full(len(current)-len(ids), scale)]))
+            return self.apply_corrections(self.revision, expanded, expanded_scales)

@@ -9,6 +9,7 @@ from mapping_geometry import match_descriptors, coverage
 from metrics import umeyama_alignment
 from loop_geometry import StereoLoopFrame, verify_loop
 from pose_graph import optimize
+from keyframe_retrieval import KeyframeRetrieval
 
 
 def similarity(source, target):
@@ -155,7 +156,12 @@ def optimize_similarities(poses, edges, max_evaluations=200):
 
 
 class LiveLoopWorker:
-    def __init__(self, matrix, metric):
+    def __init__(self, matrix, metric, mode="live"):
+        if mode not in ("off", "live", "offline"):
+            raise ValueError("Loop mode must be off, live or offline")
+        self.mode = mode
+        self.finalizing = False
+        self.retrieval = KeyframeRetrieval()
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
@@ -169,20 +175,28 @@ class LiveLoopWorker:
         self.pending_pairs = set()
         self.last_correction_before = None
         self.last_correction_after = None
+        self.snapshot_poses = None
+        self.snapshot_geometry_revision = None
 
     def schedule(self, state):
+        if self.mode == "off":
+            return
         if self.future is not None or len(state.keyframes) < 3:
             return
         with state.lock:
+            if len(state.keyframes) > 300:
+                self.events.append({"type": "loop_skipped", "reason": "graph_size_not_validated"})
+                return
+            latest = state.keyframes[max(state.keyframes)]
+            first = state.keyframes[min(state.keyframes)]
+            if latest.frame - first.frame < 150:
+                return
             snapshot = copy.deepcopy(state.keyframes)
             revision = state.revision
+            self.snapshot_poses = {i:k.pose.copy() for i,k in snapshot.items()}
+            self.snapshot_geometry_revision = state.geometry_revision
         current = max(snapshot)
         if snapshot[current].frame - snapshot[0].frame < 150:
-            return
-        if len(snapshot) > 300:
-            self.events.append(
-                {"type": "loop_skipped", "reason": "graph_size_not_validated"}
-            )
             return
         previous_loops = copy.deepcopy({**self.verified, **self.pending_loops})
         self.last_scheduled_keyframe = current
@@ -191,7 +205,7 @@ class LiveLoopWorker:
             snapshot,
             revision,
             previous_loops,
-            bool(self.pending_loops),
+            bool(self.pending_loops) or (self.mode == "offline" and self.finalizing),
             set(self.pending_pairs),
         )
 
@@ -206,10 +220,13 @@ class LiveLoopWorker:
             return frame.descriptors[valid]
 
         query = measured_descriptors(last)
+        self.retrieval.update(keyframes)
+        allowed = [i for i,k in keyframes.items() if last.frame-k.frame >= 150]
+        shortlisted = self.retrieval.query(query,8,allowed=allowed)
         candidates = [
             (len(match_descriptors(measured_descriptors(k), query)), i)
-            for i, k in keyframes.items()
-            if last.frame - k.frame >= 150
+            for i in shortlisted
+            for k in [keyframes[i]]
         ]
         newly_verified = []
         attempts = []
@@ -255,7 +272,7 @@ class LiveLoopWorker:
             if result is not None:
                 loops[(i, j)] = result
                 newly_verified.append((i, j))
-        if not newly_verified and not force:
+        if (self.mode == "offline" and not self.finalizing) or (not newly_verified and not force):
             return {
                 "revision": revision,
                 "loops": loops,
@@ -335,11 +352,16 @@ class LiveLoopWorker:
                 (a["first_keyframe"], a["second_keyframe"]) for a in result["attempts"]
             )
         if result["correction"] is None:
+            if self.mode == "offline":
+                self.verified.update(result["loops"])
             return False
         before = [pose.copy() for pose in state.poses]
-        if state.apply_corrections(
-            result["revision"], result["correction"], result["scales"]
-        ):
+        applied = (state.apply_snapshot_corrections(
+            result["revision"], self.snapshot_geometry_revision, self.snapshot_poses,
+            result["correction"], result["scales"]
+        ) if self.snapshot_poses is not None else state.apply_corrections(
+            result["revision"], result["correction"], result["scales"]))
+        if applied:
             if not self.metric:
                 for (i, j), measurement in result["loops"].items():
                     measurement["scale"] *= result["scales"][i] / result["scales"][j]
@@ -374,12 +396,18 @@ class LiveLoopWorker:
         self.events.append({"type": "loop_discarded", "reason": "stale_revision"})
         return False
 
-    def close(self, state):
+    def close(self, state, finish=True):
+        if not finish:
+            if self.future is not None:
+                self.future.cancel()
+            self.executor.shutdown(wait=False, cancel_futures=True)
+            return
         self.poll(state, wait=True)
+        self.finalizing = True
         # Once tracking stops, a fresh snapshot can finish without becoming stale.
         stale = self.events and self.events[-1]["type"] == "loop_discarded"
         latest = max(state.keyframes) if state.keyframes else None
-        if stale or latest != self.last_scheduled_keyframe:
+        if stale or latest != self.last_scheduled_keyframe or (self.mode == "offline" and self.verified):
             self.schedule(state)
             self.poll(state, wait=True)
         self.executor.shutdown(wait=True)

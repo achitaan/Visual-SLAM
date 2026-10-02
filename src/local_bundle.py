@@ -183,10 +183,10 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
     with state.lock:
         if state.revision != revision:
             return {**report, "reason": "stale_revision"}
-        if not state.apply_corrections(revision, poses):
+        if not state.apply_corrections(revision, poses, propagate_landmarks=False):
             return report
         for l, p in zip(landmarks, points):
             state.landmarks[l.id].position = p.copy()
-        # Unoptimized landmarks follow their anchor correction; optimized ones use BA positions.
+        # BA solves world coordinates directly; excluded points remain fixed.
         report["applied"] = True
     return report

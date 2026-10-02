@@ -15,6 +15,22 @@ from contextlib import nullcontext
 from download_kitti_sequence import RangeFile, URL
 
 
+def resume_manifest(path, initial, resume):
+    if not path.exists():
+        return initial
+    if not resume:
+        raise ValueError("Existing batch is preserved; use --resume or a fresh output")
+    existing = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("source_sha256", "coverage", "input_source"):
+        if existing.get(key) != initial[key]:
+            raise ValueError(f"Cannot resume mismatched {key}")
+    if existing.get("requested_sequences") != initial["requested_sequences"] or existing.get("requested_modes") != initial["requested_modes"]:
+        raise ValueError("Cannot resume a legacy or differently configured batch manifest")
+    existing.setdefault("resumed_utc", []).append(datetime.now(timezone.utc).isoformat())
+    existing.pop("finished_utc", None)
+    return existing
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -36,6 +52,7 @@ def main():
         "--cache-root", type=Path, default=Path(".datasets/shared-benchmark-scratch")
     )
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     if any(s not in [f"{i:02d}" for i in range(11)] for s in args.sequences):
         parser.error("Evaluation sequences must be 00–10")
@@ -56,7 +73,10 @@ def main():
         "configuration_policy": "One fixed MappingConfig per sensor mode; no sequence overrides",
         "coverage": coverage,
         "input_source": "local_images" if args.data_root else "official_remote_archive",
+        "requested_sequences": args.sequences,
+        "requested_modes": args.modes,
     }
+    status = resume_manifest(root / "batch.json", status, args.resume)
 
     def save():
         pending = root / "batch.json.part"
@@ -142,11 +162,13 @@ def main():
                 output = root / f"kitti{sequence}-{mode}"
                 if (output / "evaluation.json").exists():
                     existing = json.loads((output / "evaluation.json").read_text())
+                    expected_source = {name: hashlib.sha256((repo / "src" / name).read_bytes()).hexdigest() for name in sources}
                     expected_coverage = "partial" if args.max_frames else "full"
                     if (
                         existing["coverage"] != expected_coverage
                         or existing["status"].startswith("interrupted")
                         or any(existing.get("diagnostic_overrides", {}).values())
+                        or existing.get("source_sha256") != expected_source
                     ):
                         raise RuntimeError(
                             "Existing report is incomplete or diagnostic; use a fresh "

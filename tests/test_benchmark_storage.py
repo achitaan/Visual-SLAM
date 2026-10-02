@@ -67,20 +67,22 @@ def test_low_space_exports_only_processed_frames(tmp_path, monkeypatch):
             self.diagnostics = []
             self.bundle_reports = []
             self.closed = False
+            from stage_profile import StageProfile
+            self.profile = StageProfile()
 
         def process(self, index, image, right):
             self.map.poses.append(np.eye(4))
             self.map.statuses.append("tracking")
             return None, {"tracking_ok": True, "state": "tracking"}
 
-        def close(self):
+        def close(self, finish=True):
             self.closed = True
 
     exported = []
 
     def export(tracker, folder, saved_paths, **_):
         assert tracker.closed
-        folder.mkdir()
+        folder.mkdir(exist_ok=True)
         exported.extend(saved_paths)
 
     monkeypatch.setattr(module, "SharedSlam", Tracker)

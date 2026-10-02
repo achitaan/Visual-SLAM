@@ -23,13 +23,15 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared_slam import SharedSlam, StereoCamera
+from shared_slam import SharedSlam, StereoCamera, MappingConfig
 from StereoVisualOdometry import StereoVisualOdometry
 from VisualOdometry import VisualOdometry
 from kitti import load_poses_txt, validate_sequence
 from reconstruction import export_run
 from metrics import evaluate_trajectory
 from benchmark_telemetry import SnapshotWriter, snapshot_target
+from test_budget import Budget, write_json
+from feature_cache import FeatureCache
 
 
 def peak_memory_mb():
@@ -78,6 +80,7 @@ def export_reserve_bytes(state, minimum_mb):
 
 
 def main():
+    invocation_started = time.perf_counter()
     evaluator_source = Path(__file__).read_bytes()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=["kitti", "tum"], default="kitti")
@@ -91,6 +94,11 @@ def main():
     parser.add_argument("--sequence", default="04")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--max-wall-seconds", type=float)
+    parser.add_argument("--stop-file", type=Path)
+    parser.add_argument("--disable-bundle", action="store_true")
+    parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
+    parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--telemetry-file",
@@ -104,6 +112,10 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if args.max_wall_seconds is not None and args.max_wall_seconds <= 0:
+        parser.error("--max-wall-seconds must be positive")
+    budget = Budget(args.max_wall_seconds)
+    budget.started -= time.perf_counter() - invocation_started
     if args.min_free_mb < 128:
         parser.error("--min-free-mb must be at least 128")
     if args.max_frames is not None and args.max_frames < 2:
@@ -224,7 +236,7 @@ def main():
         vo = None
         right = None
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
-    slam = SharedSlam(matrix, stereo=camera)
+    slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle, loop_mode=args.loop_mode))
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -232,6 +244,22 @@ def main():
     source_hashes = {
         name: hashlib.sha256(data).hexdigest() for name, data in source_snapshot.items()
     }
+    cache = None
+    if args.feature_cache:
+        signature = hashlib.sha256((source_hashes["shared_slam.py"] + source_hashes["mapping_geometry.py"] + source_hashes["StereoVisualOdometry.py"] + str(slam.config.features) + cv.__version__).encode() + matrix.tobytes()
+                                   + (vo.Q.tobytes() if args.stereo else b"mono")).hexdigest()
+        cache = FeatureCache(args.feature_cache, signature)
+        extract = slam._extract
+        def cached_extract(image, right_image):
+            key = cache.key(image, right_image)
+            values = cache.get(key)
+            if values is not None:
+                slam.current_disparity = values[4] if args.stereo else None
+                return values[:4]
+            result = extract(image, right_image)
+            cache.put(key, (*result, slam.current_disparity if args.stereo else np.empty((0,0))))
+            return result
+        slam._extract = cached_extract
     target = snapshot_target(args.output, args.telemetry_file)
     observer = (
         SnapshotWriter(target, args.sequence, args.output.name, len(paths))
@@ -241,8 +269,17 @@ def main():
     started = time.perf_counter()
     initialized_at = None
     storage_interruption = None
+    interruption = None
+    args.output.mkdir(parents=True, exist_ok=True)
+    last_image = None
     try:
         for i in range(len(paths)):
+            if budget.remaining <= max(2, min(30, (args.max_wall_seconds or 0) * .1)):
+                interruption = {"reason": "interrupted_time_budget", "next_frame": i}
+                break
+            if args.stop_file and args.stop_file.exists():
+                interruption = {"reason": "interrupted_user_stop", "next_frame": i}
+                break
             if i % 50 == 0:
                 free = shutil.disk_usage(args.output.parent).free
                 required = export_reserve_bytes(slam.map, args.min_free_mb)
@@ -253,27 +290,37 @@ def main():
                         "required_bytes": required,
                     }
                     break
-            left_image = loader(i)
+            try:
+                with slam.profile.measure("image_loading"):
+                    left_image = loader(i)
+                    right_image = right[i] if right is not None else None
+            except (OSError, ValueError) as error:
+                interruption = {"reason": "interrupted_input_error", "next_frame": i, "error_type": type(error).__name__, "input_name": Path(paths[i]).name}
+                break
             _, info = slam.process(
-                i, left_image, right[i] if right is not None else None
+                i, left_image, right_image
             )
+            last_image = left_image
             if observer:
                 observer.publish(slam, i, left_image, info)
             if initialized_at is None and info["tracking_ok"]:
                 initialized_at = time.perf_counter() - started
             if i % 50 == 0:
+                from kitti import save_poses_txt
+                save_poses_txt(args.output / "checkpoint-poses.txt", slam.map.poses)
+                write_json(args.output / "checkpoint.json", {"frames": i + 1, "coverage": "partial", "status": "running_checkpoint", "source_sha256": source_hashes, "configuration": slam.config.__dict__, "states": dict(Counter(slam.map.statuses))})
                 print(
                     f'{args.sequence} {i+1}/{len(paths)} {info["state"]} landmarks={len(slam.map.landmarks)}',
                     flush=True,
                 )
     finally:
-        slam.close()
+        slam.close(finish=not (interruption or storage_interruption))
     if observer and slam.map.poses:
         observer.publish(slam, len(slam.map.poses) - 1, left_image, info, force=True)
     elapsed = time.perf_counter() - started
     processed_frames = len(slam.map.poses)
     paths = paths[:processed_frames]
-    export_run(slam, args.output, paths, image_loader=loader)
+    export_run(slam, args.output, paths, image_loader=loader, include_images=not bool(interruption))
     source_folder = args.output / "source"
     source_folder.mkdir(exist_ok=True)
     for name, data in source_snapshot.items():
@@ -301,11 +348,17 @@ def main():
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
         "configuration": slam.config.__dict__,
-        "coverage": "partial" if args.max_frames or storage_interruption else "full",
+        "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,
     }
     report["source_sha256"] = source_hashes
     report["evaluator_sha256"] = hashlib.sha256(evaluator_source).hexdigest()
+    report["stage_timings"] = slam.profile.report()
+    report["stage_timing_semantics"] = "Inclusive timings; nested stages overlap"
+    report["diagnostic_overrides"] = {"disable_bundle": args.disable_bundle, "loop_mode": args.loop_mode if args.loop_mode != "live" else None}
+    report["wall_budget_seconds"] = args.max_wall_seconds
+    report["feature_cache"] = cache.metadata() if cache else {"enabled": False}
+    report["interruption"] = interruption
     (args.output / "evaluator.py").write_bytes(evaluator_source)
     report["telemetry"] = observer.metadata() if observer else {"enabled": False}
     if observer:
@@ -325,6 +378,8 @@ def main():
     )
     if storage_interruption:
         report["status"] = "interrupted_low_disk_space"
+    if interruption:
+        report["status"] = interruption["reason"]
     report["lost_intervals"] = []
     start = None
     for i, status in enumerate([*slam.map.statuses, "end"]):
@@ -391,7 +446,9 @@ def main():
     (args.output / "evaluation.json").write_text(
         json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
     )
-    print(json.dumps(report, indent=2), flush=True)
+    report["total_wall_seconds"] = time.perf_counter() - invocation_started
+    write_json(args.output / "evaluation.json", report)
+    print(json.dumps({k: v for k, v in report.items() if k not in ("loop_events", "source_sha256")}, indent=2), flush=True)
 
 
 if __name__ == "__main__":

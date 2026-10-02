@@ -34,11 +34,14 @@ def write_ply(path, points, colors=None):
             )
 
 
-def export_run(slam, folder, image_paths, image_loader=None):
+def export_run(slam, folder, image_paths, image_loader=None, include_images=True):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     state = slam.map
-    save_poses_txt(folder / "poses.txt", state.poses)
+    if state.poses:
+        save_poses_txt(folder / "poses.txt", state.poses)
+    else:
+        (folder / "poses.txt").write_text("", encoding="ascii")
     if slam.loop_worker.last_correction_before:
         save_poses_txt(
             folder / "before-final-loop.txt", slam.loop_worker.last_correction_before
@@ -58,11 +61,11 @@ def export_run(slam, folder, image_paths, image_loader=None):
             image_loader(k.frame)
             if image_loader is not None
             else cv.imread(str(source), cv.IMREAD_UNCHANGED)
-        )
-        if image is None:
+        ) if include_images else None
+        if include_images and image is None:
             raise ValueError(f"Unreadable reconstruction input: {source.name}")
         name = f"images/{ident:06d}.png"
-        if not cv.imwrite(str(folder / name), image):
+        if include_images and not cv.imwrite(str(folder / name), image):
             raise OSError("Unable to save reconstruction image")
         observations = [
             {
@@ -78,7 +81,7 @@ def export_run(slam, folder, image_paths, image_loader=None):
                 "id": ident,
                 "frame": k.frame,
                 "pose": k.pose.tolist(),
-                "image": name,
+                "image": name if include_images else None,
                 "observations": observations,
             }
         )

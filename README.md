@@ -75,7 +75,7 @@ npm test
 npm run build
 ```
 
-Local backend validation passes 82 tests. The dashboard previously passed its 4 socket tests and production build. GitHub Actions runs backend tests on Windows/Linux and dashboard tests/build on Linux; inspect the workflow for remote results.
+Local backend validation passes 97 tests. The dashboard passed its 4 socket tests, type checking and production build. GitHub Actions runs backend tests on Windows/Linux and dashboard tests/build on Linux; inspect the workflow for remote results.
 
 The evaluator writes KITTI-format poses and JSON metrics. ATE uses explicitly labeled SE(3) alignment without scale fitting. Translation and rotation drift use the official 100–800 m segments in metric coordinates. Partial runs are labeled; insufficient segment coverage produces null drift. `--estimates-root` evaluates saved trajectories without rerunning tracking.
 
@@ -124,6 +124,10 @@ Original mathematical notes are available in [VisualOdometry.tex](VisualOdometry
 ## Shared mapping pipeline (experimental)
 
 This development branch is an experimental snapshot, not a validated replacement for the original pipeline. Full paired validation is paused for stereo reliability rework; retained failures and coverage are documented in [the sensor comparison](docs/benchmark/SENSOR_COMPARISON.md).
+
+The [stereo reliability workflow](docs/STEREO_REWORK.md) provides bounded quick,
+focused and release profiles, controlled ablations and exact-fingerprint resume
+checks. Full validation and a release review remain pending.
 
 Use `--slam` to select persistent landmark tracking and local bundle adjustment;
 add `--stereo` for calibrated stereo input. Commands without `--slam` retain the

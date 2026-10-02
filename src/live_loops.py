@@ -10,6 +10,9 @@ from metrics import umeyama_alignment
 from loop_geometry import StereoLoopFrame, verify_loop
 from pose_graph import optimize
 from keyframe_retrieval import KeyframeRetrieval
+from keyframe_index import KeyframeIndex
+from performance import profiled
+from stage_profile import StageProfile
 
 
 def similarity(source, target):
@@ -156,12 +159,24 @@ def optimize_similarities(poses, edges, max_evaluations=200):
 
 
 class LiveLoopWorker:
-    def __init__(self, matrix, metric, mode="live"):
+    def __init__(self, matrix, metric, mode="live", performance=None, profiler=None, matcher=None):
         if mode not in ("off", "live", "offline"):
             raise ValueError("Loop mode must be off, live or offline")
+        retrieval = getattr(performance, "retrieval", "current")
+        if retrieval not in ("current", "indexed", "exhaustive"):
+            raise ValueError("Retrieval must be current, indexed or exhaustive")
         self.mode = mode
         self.finalizing = False
-        self.retrieval = KeyframeRetrieval()
+        self.performance = performance
+        self.retrieval_mode = retrieval
+        self.retrieval = KeyframeRetrieval() if retrieval == "current" else None
+        self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
+        self.cpu_optimizations = bool(getattr(performance, "cpu_optimizations", False))
+        self.matcher = matcher if matcher is not None else match_descriptors
+        profile_enabled = bool(getattr(performance, "profile", False))
+        self.profiler = profiler if profiler is not None else StageProfile(
+            detailed=profile_enabled, enabled=profile_enabled
+        )
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
@@ -178,6 +193,26 @@ class LiveLoopWorker:
         self.snapshot_poses = None
         self.snapshot_geometry_revision = None
 
+    @staticmethod
+    def _snapshot_array(value, always_copy=False):
+        if not isinstance(value, np.ndarray):
+            return value
+        if always_copy or value.flags.writeable:
+            return value.copy()
+        return value
+
+    @classmethod
+    def _snapshot_keyframe(cls, frame):
+        """Copy changing geometry and share feature/image arrays only if frozen."""
+        saved = copy.copy(frame)
+        for name in ("pose", "landmark_ids", "depth_points"):
+            if hasattr(frame, name):
+                setattr(saved, name, cls._snapshot_array(getattr(frame, name), always_copy=True))
+        for name in ("pixels", "descriptors", "image", "retrieval_descriptors"):
+            if hasattr(frame, name):
+                setattr(saved, name, cls._snapshot_array(getattr(frame, name)))
+        return saved
+
     def schedule(self, state):
         if self.mode == "off":
             return
@@ -191,7 +226,13 @@ class LiveLoopWorker:
             first = state.keyframes[min(state.keyframes)]
             if latest.frame - first.frame < 150:
                 return
-            snapshot = copy.deepcopy(state.keyframes)
+            if self.cpu_optimizations:
+                snapshot = {
+                    ident: self._snapshot_keyframe(frame)
+                    for ident, frame in state.keyframes.items()
+                }
+            else:
+                snapshot = copy.deepcopy(state.keyframes)
             revision = state.revision
             self.snapshot_poses = {i:k.pose.copy() for i,k in snapshot.items()}
             self.snapshot_geometry_revision = state.geometry_revision
@@ -209,6 +250,7 @@ class LiveLoopWorker:
             set(self.pending_pairs),
         )
 
+    @profiled("background_loops")
     def _solve(self, keyframes, revision, loops, force=False, pending_pairs=None):
         current = max(keyframes)
         last = keyframes[current]
@@ -220,18 +262,45 @@ class LiveLoopWorker:
             return frame.descriptors[valid]
 
         query = measured_descriptors(last)
-        self.retrieval.update(keyframes)
-        allowed = [i for i,k in keyframes.items() if last.frame-k.frame >= 150]
-        shortlisted = self.retrieval.query(query,8,allowed=allowed)
+        eligible = [i for i, k in keyframes.items() if last.frame - k.frame >= 150]
+        if self.retrieval_mode == "current":
+            # Preserve the established descriptor-sketch shortlist exactly.
+            self.retrieval.update(keyframes)
+            shortlisted = self.retrieval.query(query, 8, allowed=eligible)
+        elif self.retrieval_mode == "indexed":
+            def appearance_descriptors(frame):
+                return getattr(frame, "retrieval_descriptors", frame.descriptors)
+
+            with self.profiler.measure("loop_retrieval_index"):
+                for ident, frame in keyframes.items():
+                    self.retrieval_index.upsert(
+                        ident, frame.frame, appearance_descriptors(frame)
+                    )
+                shortlisted = self.retrieval_index.query(
+                    appearance_descriptors(last), eligible, limit=20
+                )
+            # Vocabulary startup signals a bounded exhaustive fallback.
+            if shortlisted is None:
+                shortlisted = eligible
+        else:
+            shortlisted = eligible
+        self.profiler.count("loop_keyframes_matched", len(shortlisted))
         candidates = [
-            (len(match_descriptors(measured_descriptors(k), query)), i)
+            (
+                len(self.profiler.call(
+                    "loop_matching", self.matcher, measured_descriptors(keyframes[i]), query
+                )),
+                i,
+            )
             for i in shortlisted
-            for k in [keyframes[i]]
         ]
+        # The indexed proposal is wider, but exact reranking retains the same
+        # eight-candidate budget before the existing top-three verification.
+        candidates = sorted(candidates, reverse=True)[:8]
         newly_verified = []
         attempts = []
         pairs = [
-            (support, i, current) for support, i in sorted(candidates, reverse=True)[:3]
+            (support, i, current) for support, i in candidates[:3]
         ]
         pairs.extend(
             (0, i, j)
@@ -258,9 +327,13 @@ class LiveLoopWorker:
                         or (int(self.matrix[0, 2] * 2), int(self.matrix[1, 2] * 2)),
                     )
 
-                result = verify_loop(frame(first), frame(query_frame), self.matrix)
+                result = self.profiler.call(
+                    "loop_verification", verify_loop, frame(first), frame(query_frame), self.matrix
+                )
             else:
-                result = verify_similarity(first, query_frame, self.matrix)
+                result = self.profiler.call(
+                    "loop_verification", verify_similarity, first, query_frame, self.matrix
+                )
             attempts.append(
                 {
                     "first_keyframe": i,
@@ -302,7 +375,9 @@ class LiveLoopWorker:
                         "loop",
                     )
                 )
-            corrected = optimize(poses, edges, max_evaluations=500)
+            corrected = self.profiler.call(
+                "graph_optimization", optimize, poses, edges, max_evaluations=500
+            )
             scales = np.ones(len(poses))
         else:
             edges = []
@@ -320,7 +395,9 @@ class LiveLoopWorker:
                         2.0,
                     )
                 )
-            corrected, scales = optimize_similarities(poses, edges)
+            corrected, scales = self.profiler.call(
+                "graph_optimization", optimize_similarities, poses, edges
+            )
         return {
             "revision": revision,
             "loops": loops,

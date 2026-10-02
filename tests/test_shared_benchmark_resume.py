@@ -176,6 +176,78 @@ def test_legacy_partial_report_retries_only_with_matching_manifest_identity(tmp_
         runner._try_reuse(output, identity, manifest_identity=identity, **kwargs)
 
 
+def _load_runner(monkeypatch, name):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / "run_shared_benchmark.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    return runner
+
+
+def test_non_object_json_report_is_classified_as_incomplete(tmp_path, monkeypatch):
+    runner = _load_runner(monkeypatch, "shared_benchmark_non_object_under_test")
+    output = tmp_path / "report"
+    output.mkdir()
+    (output / "evaluation.json").write_text("[]", encoding="utf-8")
+    assert runner._try_reuse(
+        output, {"version": 1}, sequence="04", mode="stereo", frames=2,
+        coverage="partial", mapping={}, performance={}, contract={},
+    ) == "incomplete"
+
+
+def test_source_change_after_evaluator_return_invalidates_attempt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runner = _load_runner(monkeypatch, "shared_benchmark_source_drift_under_test")
+    expected_contract = {"contract_sha256": "before", "sources": {}}
+    monkeypatch.setattr(runner, "source_contract", lambda _repo: {
+        "contract_sha256": "after", "sources": {},
+    })
+    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    root = tmp_path / "out"
+    root.mkdir()
+    saved = []
+    status = {"runs": []}
+    with pytest.raises(RuntimeError, match="sources changed during evaluation"):
+        runner._run_mode(
+            tmp_path, root, status, lambda: saved.append(json.loads(json.dumps(status)),),
+            {}, tmp_path, True, "04", "stereo", 2, "partial", tmp_path / "04.txt",
+            expected_contract, {}, {}, {}, {}, {},
+        )
+    assert status["runs"][0]["status"] == "invalid_source"
+    assert saved[-1]["runs"][0]["status"] == "invalid_source"
+
+
+@pytest.mark.parametrize(("error_type", "expected_status"), [
+    (RuntimeError, "failed"), (KeyboardInterrupt, "interrupted"),
+])
+def test_main_persists_stopped_status_and_preserves_completed_rows(
+        tmp_path, monkeypatch, error_type, expected_status):
+    runner = _load_runner(monkeypatch, "shared_benchmark_failure_manifest_under_test")
+    completed = {"sequence": "00", "mode": "mono", "status": "completed"}
+    monkeypatch.setattr(runner.sys, "argv", [
+        "benchmark", "--poses-root", str(tmp_path), "--data-root", str(tmp_path),
+        "--output", str(tmp_path / "results"), "--sequences", "04", "--modes", "stereo",
+    ])
+    monkeypatch.setattr(runner, "resume_manifest", lambda *args, **kwargs: {"runs": [completed.copy()]})
+    def fail_sequence(*args, **kwargs):
+        args[2]["runs"].append({"sequence": "04", "mode": "stereo", "status": "running"})
+        raise error_type("sequence exploded")
+    monkeypatch.setattr(runner, "_run_sequence", fail_sequence)
+    with pytest.raises(error_type, match="sequence exploded"):
+        runner.main()
+    manifest = next((tmp_path / "results").rglob("batch.json"))
+    saved = json.loads(manifest.read_text(encoding="utf-8"))
+    assert saved["status"] == expected_status
+    assert saved["finished_utc"]
+    assert f"{error_type.__name__}: sequence exploded" in saved["error"]
+    assert saved["runs"] == [completed, {
+        "sequence": "04", "mode": "stereo", "status": "interrupted",
+        "error": f"{error_type.__name__}: sequence exploded",
+    }]
+    assert "owner" not in saved
+
+
 @pytest.mark.parametrize("liveness", [True, None])
 def test_active_or_unknown_owner_blocks_resume(tmp_path, monkeypatch, liveness):
     module = load_identity(monkeypatch)

@@ -185,6 +185,8 @@ def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
         candidate = _load_finite_json(output / "evaluation.json")
     except (OSError, ValueError, TypeError):
         return "incomplete"
+    if not isinstance(candidate, dict):
+        return "incomplete"
     stored_identity = candidate.get("benchmark_identity")
     if not isinstance(stored_identity, dict) or stored_identity.get("version") != CONTRACT_VERSION:
         is_partial = (candidate.get("status") not in ("completed", "completed_with_tracking_loss")
@@ -303,6 +305,16 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
         result = subprocess.run(command, env=env, cwd=repo, stdout=log,
                                 stderr=subprocess.STDOUT, check=False)
     row["exit_code"] = result.returncode
+    try:
+        source_unchanged = source_contract(repo) == contract
+    except Exception:
+        source_unchanged = False
+    if not source_unchanged:
+        _annotate_partial_report(output / "evaluation.json", run_identity)
+        row.update(status="invalid_source",
+                   error="Benchmark code or dependencies changed during evaluation")
+        save()
+        raise RuntimeError(f"{sequence} {mode}: benchmark sources changed during evaluation")
     if result.returncode != 0:
         _annotate_partial_report(output / "evaluation.json", run_identity)
         row["status"] = "failed"
@@ -451,6 +463,8 @@ def main():
         "runs": [],
     }
     lock = acquire_batch_lock(root / "batch.lock")
+    status = None
+    save = None
     try:
         status = resume_manifest(root / "batch.json", initial, args.resume)
         status.update(
@@ -484,6 +498,20 @@ def main():
         status.pop("owner", None)
         save()
         print(root / "batch.json")
+    except BaseException as error:
+        if status is not None and save is not None:
+            for row in status.get("runs", []):
+                if row.get("status") == "running":
+                    row.update(status="interrupted",
+                               error=f"{type(error).__name__}: {error}")
+            status.update(
+                status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+                finished_utc=datetime.now(timezone.utc).isoformat(),
+                error=f"{type(error).__name__}: {error}",
+            )
+            status.pop("owner", None)
+            save()
+        raise
     finally:
         release_batch_lock(lock)
 

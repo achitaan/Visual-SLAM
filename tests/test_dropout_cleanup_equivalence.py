@@ -70,7 +70,7 @@ def _run_cleanup(cpu_optimizations):
         slam._relocalize = lambda *args, **kwargs: (None, {})
 
         _, info = slam.process(1, np.zeros((24, 32), np.uint8))
-        _, _, _, positions, descriptors, id_to_row = slam._cached_landmarks()
+        _, _, cached_landmarks, positions = slam._cached_landmarks()
         keyframe_ids = {
             ident: keyframe.landmark_ids.copy()
             for ident, keyframe in slam.map.keyframes.items()
@@ -79,8 +79,7 @@ def _run_cleanup(cpu_optimizations):
             "landmark_ids": tuple(sorted(slam.map.landmarks)),
             "keyframe_ids": keyframe_ids,
             "positions": positions.copy(),
-            "descriptors": descriptors.copy(),
-            "id_to_row": dict(id_to_row),
+            "cached_landmark_ids": tuple(landmark.id for landmark in cached_landmarks),
             "revision": slam.map.revision,
             "geometry_revision": slam.map.geometry_revision,
             "cleanup_frame_state": info["state"],
@@ -103,7 +102,7 @@ def test_optimized_dropout_cleanup_matches_full_scan_via_process_path():
     reference = _run_cleanup(cpu_optimizations=False)
 
     assert optimized["landmark_ids"] == reference["landmark_ids"]
-    assert optimized["id_to_row"] == reference["id_to_row"]
+    assert optimized["cached_landmark_ids"] == reference["cached_landmark_ids"]
     assert optimized["revision"] == reference["revision"] == 13
     assert optimized["geometry_revision"] == reference["geometry_revision"] == 8
     assert optimized["cleanup_frame_state"] == reference["cleanup_frame_state"] == "lost"
@@ -113,4 +112,3 @@ def test_optimized_dropout_cleanup_matches_full_scan_via_process_path():
             optimized["keyframe_ids"][ident], reference["keyframe_ids"][ident]
         )
     np.testing.assert_array_equal(optimized["positions"], reference["positions"])
-    np.testing.assert_array_equal(optimized["descriptors"], reference["descriptors"])

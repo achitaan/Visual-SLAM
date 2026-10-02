@@ -129,9 +129,7 @@ class SharedSlam:
             cache = self._landmark_cache
             if cache is None or cache[0] != structure:
                 landmarks = list(self.map.landmarks.values())
-                cache = [structure, -1, landmarks, None,
-                         np.asarray([l.descriptor for l in landmarks]),
-                         {l.id: i for i, l in enumerate(landmarks)}]
+                cache = [structure, -1, landmarks, None]
                 self._landmark_cache = cache
             if cache[1] != self.map.revision:
                 cache[3] = np.asarray([l.position for l in cache[2]])
@@ -450,8 +448,10 @@ class SharedSlam:
                 landmarks = landmarks[: self.config.max_landmarks]
         if not landmarks:
             return None, {}
-        descriptors = (cache[4][[cache[5][l.id] for l in landmarks]] if cache is not None
-                       else np.array([l.descriptor for l in landmarks]))
+        # Keep descriptor storage bounded by the already-filtered tracking set.
+        # A persistent dense matrix here duplicates every descriptor in the map,
+        # even though tracking truncates the active list to max_landmarks above.
+        descriptors = np.array([l.descriptor for l in landmarks])
         pairs = self._match(descriptors, desc)
         candidates = {landmarks[a].id: (pixels[b], int(b)) for a, b in pairs}
         descriptor_candidates = candidates.copy()

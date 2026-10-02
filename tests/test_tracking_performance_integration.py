@@ -1,7 +1,9 @@
 """Performance wiring retains map corrections, observations and geometry-only recovery."""
 import numpy as np
+import shared_slam as shared_slam_module
 from shared_slam import SharedSlam, MappingConfig, StereoCamera
 from performance import PerformanceConfig
+from slam_state import Observation
 
 K = np.array([[250., 0, 320], [0, 250, 240], [0, 0, 1.]])
 
@@ -18,7 +20,7 @@ def test_landmark_cache_refreshes_positions_after_geometry_change_and_removal():
         del slam.map.landmarks[second]
         assert [l.id for l in slam._cached_landmarks()[2]] == [first]
         third = slam.map.add_landmark([3, 0, 6], np.full(128, 3), 0, {})
-        assert third in slam._cached_landmarks()[5]
+        assert third in [landmark.id for landmark in slam._cached_landmarks()[2]]
     finally:
         slam.close()
 
@@ -98,3 +100,91 @@ def test_indexed_recovery_retains_exhaustive_fallback_and_reuses_scores(monkeypa
         assert matched==[0, 1, 2] and len(seen[1])==3
     finally:
         slam.close()
+
+
+def test_tracking_materializes_only_selected_descriptors_with_exact_equivalence(monkeypatch):
+    rng = np.random.default_rng(2815)
+    landmark_count = 2105
+    all_descriptors = rng.normal(size=(landmark_count, 128)).astype(np.float32)
+    positions = np.zeros((landmark_count, 3), dtype=float)
+    positions[:, 0] = np.linspace(-0.2, 0.2, landmark_count)
+    positions[:, 1] = np.linspace(-0.15, 0.15, landmark_count)
+    positions[:, 2] = 5.0
+    positions[:8, 0] = 100.0  # Filter these before applying max_landmarks.
+    expected_descriptors = all_descriptors[8:2008]
+    query_pixels = np.column_stack((np.linspace(100, 200, 24), np.linspace(120, 220, 24)))
+    query_descriptors = expected_descriptors[:24].copy()
+    query_descriptors += rng.normal(scale=0.001, size=query_descriptors.shape).astype(np.float32)
+
+    proposed_pose = np.eye(4)
+    proposed_pose[0, 3] = 0.125
+
+    def fake_estimate_pose(points, pixels, matrix, size, min_inliers,
+                           initial_pose=None, diagnostics=None):
+        if diagnostics is not None:
+            diagnostics["test_solver"] = "deterministic"
+        return proposed_pose.copy(), np.arange(len(points)), 0.125
+
+    monkeypatch.setattr(shared_slam_module, "estimate_pose", fake_estimate_pose)
+
+    outputs = []
+    for optimized in (True, False):
+        slam = SharedSlam(
+            K,
+            config=MappingConfig(loop_mode="off", max_landmarks=2000),
+            performance=PerformanceConfig(cpu_optimizations=optimized),
+        )
+        try:
+            slam.map.record(np.eye(4), "tracking")
+            for ident, (position, descriptor) in enumerate(zip(positions, all_descriptors)):
+                slam.map.add_landmark(
+                    position,
+                    descriptor,
+                    0,
+                    {0: Observation(np.array([320.0, 240.0]))},
+                )
+
+            class CapturingMatcher:
+                def __init__(self, matcher):
+                    self.matcher = matcher
+                    self.descriptor_rows = []
+                    self.matches = []
+
+                def __call__(self, first, second, ratio=0.7):
+                    self.descriptor_rows.append(first.copy())
+                    result = self.matcher(first, second, ratio)
+                    self.matches.append(result.copy())
+                    return result
+
+            capture = CapturingMatcher(slam.matcher)
+            slam.matcher = capture
+            result, info = slam._track(query_pixels, query_descriptors, (640, 480))
+            cache = slam._landmark_cache
+            outputs.append((result, info, capture, cache))
+        finally:
+            slam.close()
+
+    optimized, reference = outputs
+    assert len(optimized[2].descriptor_rows) == len(reference[2].descriptor_rows) == 1
+    selected = optimized[2].descriptor_rows[0]
+    assert selected.shape == (2000, 128)
+    assert selected.dtype == np.float32
+    np.testing.assert_array_equal(selected, expected_descriptors)
+    np.testing.assert_array_equal(selected, reference[2].descriptor_rows[0])
+    expected_pairs = np.column_stack((np.arange(24), np.arange(24)))
+    np.testing.assert_array_equal(optimized[2].matches[0], expected_pairs)
+    np.testing.assert_array_equal(optimized[2].matches[0], reference[2].matches[0])
+    np.testing.assert_array_equal(optimized[0][0], reference[0][0])
+    assert optimized[0][1] == reference[0][1] == {i: i + 8 for i in range(24)}
+    assert optimized[1] == reference[1]
+
+    # The persistent cache holds only the map-order objects and positions;
+    # descriptor materialization is bounded by max_landmarks at match time.
+    assert len(optimized[3]) == 4
+    assert len(optimized[3][2]) == landmark_count
+    assert optimized[3][3].shape == (landmark_count, 3)
+    assert optimized[3][3].nbytes == landmark_count * 3 * np.dtype(float).itemsize
+    assert not any(
+        isinstance(value, np.ndarray) and value.ndim == 2 and value.shape[1] == 128
+        for value in optimized[3]
+    )

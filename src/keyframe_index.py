@@ -1,8 +1,7 @@
 """Persistent visual-word postings for candidate proposal, never pose verification."""
 
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
-from threadpoolctl import threadpool_limits
+from scipy.cluster.vq import kmeans2, vq
 
 
 class KeyframeIndex:
@@ -29,12 +28,10 @@ class KeyframeIndex:
             usable = [d for d in self.pending.values() if len(d) >= 2]
             if len(usable) < 5 or sum(len(d) for d in usable[:5]) < 128:
                 return
-            self.vocabulary = MiniBatchKMeans(
-                n_clusters=128, random_state=0, n_init=1, batch_size=1024,
-                max_iter=50, reassignment_ratio=0,
-            )
-            with threadpool_limits(limits=1):
-                self.vocabulary.fit(np.vstack(usable[:5]).astype(np.float32))
+            # SciPy is already required by the solvers. Avoid importing a second
+            # ML runtime solely to train this small deterministic vocabulary.
+            training = np.vstack(usable[:5]).astype(np.float32)
+            self.vocabulary, _ = kmeans2(training, 128, iter=20, minit="++", rng=np.random.default_rng(0))
             for key, desc in self.pending.items():
                 self._insert(key, desc)
             self.pending.clear()
@@ -44,8 +41,7 @@ class KeyframeIndex:
     def _histogram(self, descriptors):
         if not len(descriptors):
             return np.zeros(128, np.float64)
-        with threadpool_limits(limits=1):
-            words = self.vocabulary.predict(np.asarray(descriptors, np.float32))
+        words, _ = vq(np.asarray(descriptors, np.float32), self.vocabulary)
         counts = np.bincount(words, minlength=128).astype(np.float64)
         return counts / counts.sum()
 

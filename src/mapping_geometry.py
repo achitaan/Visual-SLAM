@@ -287,6 +287,7 @@ def estimate_stereo_reference(
         initial_pose=np.linalg.inv(measurement),
     )
     reverse_translation = reverse_rotation = None
+    refinement = None
     if reverse is not None:
         consistency = reverse[0] @ measurement
         reverse_translation = float(np.linalg.norm(consistency[:3, 3]))
@@ -295,6 +296,14 @@ def estimate_stereo_reference(
         )
         if reverse_translation > 0.5 or reverse_rotation > 1.5:
             return None
+        reverse_a = a[reverse_available][reverse[1]]
+        reverse_b = b[reverse_available][reverse[1]]
+        measurement, refinement = refine_bidirectional_stereo(
+            measurement, source.points[a_source[valid]], target.pixels[b_target[valid]],
+            target.points[reverse_b], source.pixels[reverse_a], matrix,
+        )
+        predicted, _ = project(source.points[a_source[valid]], measurement, matrix)
+        error = float(np.median(np.linalg.norm(predicted-target.pixels[b_target[valid]], axis=1)))
     return {
         "measurement": measurement,
         "matches": len(a_source),
@@ -304,4 +313,50 @@ def estimate_stereo_reference(
         "reverse_translation_error_m": reverse_translation,
         "reverse_rotation_error_deg": reverse_rotation,
         "target_features": b_target[valid].tolist(),
+        "bidirectional_refinement": refinement,
     }
+
+
+def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):
+    """Refine one relative pose using independently verified observations in both views."""
+    from scipy.optimize import least_squares
+
+    initial = np.r_[cv.Rodrigues(pose[:3, :3])[0].ravel(), pose[:3, 3]]
+
+    def unpack(value):
+        camera = np.eye(4)
+        camera[:3, :3] = cv.Rodrigues(value[:3])[0]
+        camera[:3, 3] = value[3:]
+        return camera
+
+    def errors(camera):
+        first, z1 = project(source_points, camera, matrix)
+        second, z2 = project(target_points, np.linalg.inv(camera), matrix)
+        first -= target_pixels
+        second -= source_pixels
+        first[z1 <= 0] = 1e4
+        second[z2 <= 0] = 1e4
+        return first, second, z1, z2
+
+    def residual(value):
+        first, second, _, _ = errors(unpack(value))
+        return np.clip(np.r_[first.ravel(), second.ravel()], -1e4, 1e4)
+
+    def objective(value):
+        r = residual(value);a = np.abs(r)
+        return float(np.sum(np.where(a <= 1.5, .5*r*r, 1.5*(a-.75))))
+
+    before = objective(initial)
+    solved = least_squares(residual, initial, loss='huber', f_scale=1.5, max_nfev=20)
+    report = {'applied': False, 'initial_cost': before, 'final_cost': objective(solved.x),
+              'forward_observations': len(source_points), 'reverse_observations': len(target_points)}
+    if not np.isfinite(solved.x).all() or not report['final_cost'] < before:
+        return pose, report
+    candidate = unpack(solved.x)
+    first, second, z1, z2 = errors(candidate)
+    if (np.any(z1 <= 0) or np.any(z2 <= 0) or
+            np.median(np.linalg.norm(first, axis=1)) > 1.5 or
+            np.median(np.linalg.norm(second, axis=1)) > 1.5):
+        return pose, report
+    report['applied'] = True
+    return candidate, report

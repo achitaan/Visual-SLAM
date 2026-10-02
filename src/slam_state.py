@@ -72,7 +72,7 @@ class MapState:
                 else pose.copy()
             )
 
-    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True):
+    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True, landmark_updates=None):
         """Commit a complete correction atomically; reject stale snapshots and moved origin."""
         with self.lock:
             if self.revision != expected_revision or set(corrected) != set(
@@ -101,8 +101,12 @@ class MapState:
                 translation = corrected[ident][:3, 3] - scale * rotation @ old[:3, 3]
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
+            if landmark_updates is not None and not set(landmark_updates).issubset(self.landmarks):
+                raise ValueError("Unknown corrected landmark")
             for ident, landmark in self.landmarks.items():
-                if propagate_landmarks:
+                if landmark_updates is not None and ident in landmark_updates:
+                    positions[ident] = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                elif propagate_landmarks:
                     rotation, scale, translation = corrections[landmark.anchor]
                     positions[ident] = scale * rotation @ landmark.position + translation
                 else:

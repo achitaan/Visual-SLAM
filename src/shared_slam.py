@@ -85,6 +85,8 @@ class SharedSlam:
         self.previous_tracks = []
         self.accepted_tracks = []
         self.previous_stereo_geometry = None
+        self.verified_stereo_motion = None
+        self.motion_prediction_source = "held_pose"
         self.current_disparity = None
 
     def _measure_stereo_pixels(self, pixels):
@@ -274,6 +276,19 @@ class SharedSlam:
 
     def _motion_prediction(self):
         predicted = self.map.poses[-1].copy()
+        self.motion_prediction_source = "held_pose"
+        # A held output is not a zero-velocity measurement. Keep a short-lived
+        # independently verified stereo increment for matching after brief loss.
+        if self.stereo is not None and self.verified_stereo_motion is not None:
+            increment, frame = self.verified_stereo_motion
+            count = len(self.map.poses)
+            accepted = [i for i in range(max(0, count-self.config.bundle_window), count)
+                        if self.map.statuses[i] in ("tracking", "relocalized")]
+            if accepted and count-frame <= self.config.bundle_window:
+                gap = count-accepted[-1]
+                if gap <= 3:
+                    self.motion_prediction_source = "verified_stereo_increment"
+                    return self.map.poses[accepted[-1]] @ np.linalg.matrix_power(increment, gap)
         if (
             len(self.map.poses) >= 2
             and self.map.statuses[-1] in ("tracking", "relocalized")
@@ -282,6 +297,7 @@ class SharedSlam:
             predicted = (
                 predicted @ np.linalg.inv(self.map.poses[-2]) @ self.map.poses[-1]
             )
+            self.motion_prediction_source = "consecutive_accepted_poses"
         return predicted
 
     def _track(self, pixels, desc, size, relocalize=False, candidate_ids=None):
@@ -657,10 +673,13 @@ class SharedSlam:
                         initial_pose=prior,
                     )
                     if verified is not None:
+                        if verified["reverse_checked"] and index-previous_index == 1:
+                            self.verified_stereo_motion = (verified["measurement"].copy(), index)
                         reference_pose = (
                             self.map.poses[previous_index] @ verified["measurement"]
                         )
                         info["stereo_reference_verified"] = True
+                        info["stereo_bidirectional_refinement"] = verified.get("bidirectional_refinement")
                         info["stereo_reference_verification"] = (
                             "bidirectional_pnp"
                             if verified["reverse_checked"]
@@ -786,6 +805,7 @@ class SharedSlam:
             self.map.geometry_revision += 1
         info.update(
             state=status,
+            motion_prediction_source=self.motion_prediction_source,
             map_revision=self.map.revision,
             translation_scale="metric" if self.map.metric else "arbitrary",
             feature_points=pixels.tolist(),

@@ -89,6 +89,20 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         free = [k for k in free if k not in fixed]
         if not free:
             return {"applied": False, "reason": "no_anchored_free_cameras"}
+        optimized_ids = {landmark.id for landmark in landmarks}
+        held_out = [
+            (landmark.position.copy(), k, o)
+            for landmark in state.landmarks.values()
+            if landmark.id not in optimized_ids and len(landmark.observations) >= 2
+            for k, o in landmark.observations.items()
+            if k in free
+        ]
+        single_view = [
+            (landmark.id, landmark.anchor, landmark.position.copy())
+            for landmark in state.landmarks.values()
+            if landmark.id not in optimized_ids and len(landmark.observations) == 1
+            and landmark.anchor in free and landmark.anchor in landmark.observations
+        ]
         pose_offset = {k: 6 * i for i, k in enumerate(free)}
         point_offset = 6 * len(free)
         initial = np.r_[
@@ -114,15 +128,19 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
     dimensions = [
         3 if state.metric and o.right_u is not None else 2 for _, _, o in records
     ]
-    pattern = lil_matrix((sum(dimensions), len(initial)), dtype=int)
+    held_dimensions = [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out]
+    pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
     row = 0
     for (i, k, _), dim in zip(records, dimensions):
         if k in pose_offset:
             pattern[row : row + dim, pose_offset[k] : pose_offset[k] + 6] = 1
         pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
         row += dim
+    for (_, k, _), dim in zip(held_out, held_dimensions):
+        pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
+        row += dim
 
-    def residual(x):
+    def optimized_residual(x):
         poses, points = unpack(x)
         cameras = np.array([poses[k] for _, k, _ in records])
         coordinates = points[np.array([i for i, _, _ in records])] - cameras[:, :3, 3]
@@ -150,7 +168,31 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         a = np.abs(r)
         return float(np.sum(np.where(a <= 2.0, 0.5 * r * r, 2.0 * (a - 1.0))))
 
-    before = objective(residual(initial))
+    def held_out_residual(poses):
+        if not held_out:
+            return np.empty(0)
+        cameras = np.array([poses[k] for _, k, _ in held_out])
+        coordinates = np.array([p for p, _, _ in held_out]) - cameras[:, :3, 3]
+        camera = np.einsum("ni,nij->nj", coordinates, cameras[:, :3, :3])
+        homogeneous = camera @ matrix.T
+        pixels = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
+        errors = np.clip(pixels - np.array([o.pixel for _, _, o in held_out]), -1e4, 1e4)
+        errors[camera[:, 2] <= 0] = 1e4
+        values = list(errors.ravel())
+        if state.metric:
+            for j, (_, _, observation) in enumerate(held_out):
+                if observation.right_u is not None:
+                    error = (pixels[j, 0] - matrix[0, 0]*baseline/max(camera[j, 2], 1e-9)
+                             - observation.right_u)
+                    values.append(error if camera[j, 2] > 0 else 1e4)
+        return np.asarray(values)
+
+    def residual(x):
+        poses, _ = unpack(x)
+        return np.r_[optimized_residual(x), held_out_residual(poses)]
+
+    before = objective(optimized_residual(initial))
+    held_before = objective(held_out_residual(base))
     result = least_squares(
         residual,
         initial,
@@ -161,7 +203,7 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         x_scale="jac",
         tr_solver="lsmr",
     )
-    after = objective(residual(result.x))
+    after = objective(optimized_residual(result.x))
     report = {
         "applied": False,
         "initial_cost": before,
@@ -172,9 +214,23 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         "observation_components": len(components),
         "unsupported_local_cameras": sorted(unsupported),
     }
-    if not np.isfinite(result.x).all() or not after < before:
+    if not np.isfinite(result.x).all():
         return report
     poses, points = unpack(result.x)
+    held_after = objective(held_out_residual(poses))
+    report.update(
+        held_out_observations=len(held_out),
+        held_out_initial_cost=held_before,
+        held_out_final_cost=held_after,
+        affected_initial_cost=before+held_before,
+        affected_final_cost=after+held_after,
+        optimized_landmarks=len(landmarks),
+        anchor_propagated_single_view_landmarks=len(single_view),
+        max_camera_translation_change=float(max(
+            np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
+    )
+    if not np.isfinite(held_after) or not after+held_after < before+held_before:
+        return {**report, "reason": "affected_observations_worsened"}
     if any(
         np.any(project(points[i : i + 1], poses[k], matrix)[1] <= 0)
         for i, k, _ in records
@@ -183,10 +239,13 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
     with state.lock:
         if state.revision != revision:
             return {**report, "reason": "stale_revision"}
-        if not state.apply_corrections(revision, poses, propagate_landmarks=False):
+        updates = {l.id: p.copy() for l, p in zip(landmarks, points)}
+        for ident, anchor, position in single_view:
+            camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])
+            updates[ident] = poses[anchor][:3, :3] @ camera + poses[anchor][:3, 3]
+        if not state.apply_corrections(revision, poses, propagate_landmarks=False, landmark_updates=updates):
             return report
-        for l, p in zip(landmarks, points):
-            state.landmarks[l.id].position = p.copy()
-        # BA solves world coordinates directly; excluded points remain fixed.
+        # Multiview world points are independent; single-view stereo points retain
+        # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
     return report

@@ -1,43 +1,58 @@
 [
   {
+    "file": "stereo-rework01-recovery.png",
+    "label": "KITTI 01 \u00b7 350 frames \u00b7 BA, bidirectional refinement and verified motion prior",
+    "group": "Stereo rework \u00b7 accuracy gate still failed"
+  },
+  {
+    "file": "stereo-rework01-constrained.png",
+    "label": "KITTI 01 \u00b7 350 frames \u00b7 matched stereo comparisons and retained regression",
+    "group": "Stereo rework \u00b7 01 gate failed"
+  },
+  {
+    "file": "stereo-rework04-constrained.png",
+    "label": "KITTI 04 \u00b7 80 frames \u00b7 BA with all affected multiview observations",
+    "group": "Stereo rework \u00b7 short-run improvement, wider validation pending"
+  },
+  {
     "file": "stereo-rework04-diagnostic.png",
     "label": "KITTI 04 \u00b7 first 80 frames \u00b7 controlled stereo ablation and BA landmark fix",
     "group": "Stereo rework \u00b7 diagnostic, release gate failed"
   },
   {
     "file": "shared-validated-pnp03-stereo.png",
-    "label": "KITTI 03 \u00c2\u00b7 current full stereo \u00c2\u00b7 trajectory, error and sparse map",
+    "label": "KITTI 03 \u00c2\u00b7 snapshot full stereo \u00c2\u00b7 trajectory, error and sparse map",
     "group": "Experimental snapshot \u00c2\u00b7 paused validation"
   },
   {
     "file": "shared-current-summary.png",
-    "label": "Current batch \u00c2\u00b7 all six completed runs \u00c2\u00b7 accuracy, loss, runtime and memory",
-    "group": "Current frozen revision \u00c2\u00b7 incomplete validation"
+    "label": "Paused shared-SLAM snapshot \u00b7 six runs at plot generation \u00b7 accuracy, loss, runtime and memory",
+    "group": "Preserved frozen revision \u00c2\u00b7 incomplete validation"
   },
   {
     "file": "shared-validated-pnp00-monocular.png",
-    "label": "KITTI 00 \u00c2\u00b7 current full monocular \u00c2\u00b7 tracking loss, trajectory and map",
-    "group": "Current validated pipeline \u00c2\u00b7 release hold"
+    "label": "KITTI 00 \u00c2\u00b7 snapshot full monocular \u00c2\u00b7 tracking loss, trajectory and map",
+    "group": "Preserved shared-SLAM snapshot \u00c2\u00b7 release hold"
   },
   {
     "file": "shared-validated-loop00-stereo.png",
-    "label": "KITTI 00 \u00c2\u00b7 actual live loop correction \u00c2\u00b7 1,884-frame prefix",
-    "group": "Current validated pipeline \u00c2\u00b7 release hold"
+    "label": "KITTI 00 \u00c2\u00b7 snapshot live loop correction \u00c2\u00b7 1,884-frame prefix",
+    "group": "Preserved shared-SLAM snapshot \u00c2\u00b7 release hold"
   },
   {
     "file": "shared-validated-pnp00-stereo.png",
-    "label": "KITTI 00 \u00c2\u00b7 current full stereo \u00c2\u00b7 trajectory, error and map",
-    "group": "Current validated pipeline \u00c2\u00b7 release hold"
+    "label": "KITTI 00 \u00c2\u00b7 snapshot full stereo \u00c2\u00b7 trajectory, error and map",
+    "group": "Preserved shared-SLAM snapshot \u00c2\u00b7 release hold"
   },
   {
     "file": "shared-sensor01-comparison.png",
     "label": "KITTI 01 \u00c2\u00b7 current paired run \u00c2\u00b7 tracking failures, trajectories and maps",
-    "group": "Current validated pipeline \u00c2\u00b7 release hold"
+    "group": "Preserved shared-SLAM snapshot \u00c2\u00b7 release hold"
   },
   {
     "file": "shared-sensor04-comparison.png",
     "label": "KITTI 04 \u00c2\u00b7 stereo vs monocular \u00c2\u00b7 trajectory, error and sparse maps",
-    "group": "Current validated pipeline"
+    "group": "Preserved shared-SLAM snapshot"
   },
   {
     "file": "00.png",
@@ -217,11 +232,11 @@
   {
     "file": "shared-validated-pnp04-monocular.png",
     "label": "KITTI 04 \u00c2\u00b7 current monocular \u00c2\u00b7 trajectory and sparse map",
-    "group": "Current validated pipeline"
+    "group": "Preserved shared-SLAM snapshot"
   },
   {
     "file": "shared-validated-pnp04-stereo.png",
     "label": "KITTI 04 \u00c2\u00b7 current stereo \u00c2\u00b7 trajectory and sparse map",
-    "group": "Current validated pipeline"
+    "group": "Preserved shared-SLAM snapshot"
   }
 ]

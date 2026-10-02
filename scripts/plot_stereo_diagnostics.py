@@ -46,7 +46,7 @@ def main():
             axes[1, 1].plot(estimated[:, 0], estimated[:, 2], color='#22343d')
             axes[1, 1].set(title=f'{label}: sparse preview in map coordinates', xlabel='X (m)', ylabel='Z (m)')
     axes[0, 0].plot(reference[:, 0], reference[:, 2], '--', color='black', label='Reference')
-    axes[0, 0].set(title='KITTI 04: first 80 frames, SE(3) alignment', xlabel='X (m)', ylabel='Z (m)')
+    axes[0, 0].set(title=f'KITTI {report["sequence"]}: {len(estimated)} frames, SE(3) alignment', xlabel='X (m)', ylabel='Z (m)')
     axes[0, 0].set_aspect('equal', adjustable='datalim')
     axes[0, 0].legend(fontsize=8)
     axes[0, 1].set(title='Position error after alignment', xlabel='Frame', ylabel='Error (m)')

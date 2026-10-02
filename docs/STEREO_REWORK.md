@@ -93,3 +93,71 @@ depth constraints with fixed-landmark camera refinement. Reproduce each change
 on this prefix before expanding to stereo 01. Broader input, recovery, monocular
 and full-sequence validation are still required. The scheduler stays paused and
 main is unchanged.
+
+### BA with complete affected-view constraints
+
+The next diagnostic separated independent multiview landmarks from single-view
+stereo points. Excluded multiview observations now constrain the camera solve and
+participate in its acceptance objective. Single-view points preserve their measured
+camera coordinates when their anchor moves. Explicit landmark updates are validated
+and committed with the corrected cameras under the map lock.
+
+All eight BA updates on the 80-frame 04 replay reduced the affected-view objective.
+ATE was **0.166 m**, versus **0.226 m** for map-only and **0.444 m** for a fresh
+preserved-stereo replay. Translation drift was **0.284%**, **0.776%** and **1.673%**,
+respectively; every variant tracked all 80 frames. This is still a one-segment
+diagnostic, with cached shared extraction and no verified loop correction.
+
+![BA with complete affected-view constraints](benchmark/plots/stereo-rework04-constrained.png)
+
+The matched 350-frame stereo 01 comparison completed in the same 574-second
+diagnostic cycle. It failed the wider correctness gate:
+
+| Stereo 01 variant | SE(3) ATE RMSE (m) | Translation drift (%) | Lost frames |
+| --- | ---: | ---: | ---: |
+| Preserved stereo VO | 21.510 | 8.357 | 18 |
+| Persistent map, BA and loops off | 26.458 | 10.149 | 3 |
+| BA with affected-view constraints, loops off | 27.474 | 10.387 | 6 |
+
+![Stereo 01 retained regression](benchmark/plots/stereo-rework01-constrained.png)
+
+The shared tracker underestimates distance despite fewer held poses. There are no
+verified loops in these runs, so this regression originates before pose-graph
+correction. Full-sequence expansion remains blocked by the diagnostic gate.
+
+A separate experiment jointly refines already verified forward/reverse stereo
+observations, retaining the same correspondence, coverage and reprojection checks.
+Synthetic checks show reduced directional depth bias and rejection of false
+descriptor candidates. Stereo 04's 80-frame result is unchanged. On a separately
+replayed frozen revision,
+stereo 01 scored 26.738 m ATE, 10.035% translation drift and three lost frames;
+this still fails the baseline accuracy gate. No release approval is implied.
+
+Further diagnosis of map-only frames 275–349 found a median accepted flow-based
+step of 0.547 m, versus 2.666 m for independently verified stereo steps. The
+evaluator-only reference median was 2.662 m. The interval had no loop correction.
+Fewer held poses concealed accepted motion errors.
+
+A subsequent experiment retains a bidirectionally verified stereo increment only
+as a short-lived matching prior. It expires after five frames and extrapolates at
+most three frames from the last accepted pose. It never fills held outputs or
+creates geometry while lost, and monocular prediction is unchanged. On stereo 04,
+ATE is 0.281 m and drift is 0.264%, with no loss; ATE worsens relative to the earlier
+BA fix while remaining below the preserved baseline. Stereo 01 completed all 350
+frames with zero held poses, but scored **24.350 m ATE** and **10.131% drift**.
+It improves on the preceding shared-map revision while still exceeding the
+baseline's 21.510 m ATE and 8.357% drift. The accuracy gate remains closed.
+
+![Stereo 01 recovery ablations](benchmark/plots/stereo-rework01-recovery.png)
+
+The complete backend suite passes 103 tests and the frontend production build
+passes. Source snapshots, evaluator hashes, finite trajectories and complete frame
+counts were verified for the two frozen 350-frame ablations. Shared timings remain
+cached diagnostics. Each ablation had an owned-process deadline; the final one
+finished in 440 seconds under a 900-second limit.
+
+Next, test stereo-depth consistency during map-pose refinement, including synthetic
+repeated-pattern ambiguity. Recheck stereo 04's first 80 frames and stereo 01's
+first 350 frames before any full-sequence expansion. Preserve the baseline and all
+failed revisions. Full stereo 01/04, 00/07, monocular/TUM and live-loop acceptance
+remain pending. The paired scheduler stays paused and main is unchanged.

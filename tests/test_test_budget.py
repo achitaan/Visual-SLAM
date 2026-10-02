@@ -66,12 +66,20 @@ def test_resume_keeps_history_and_rejects_incompatible_source(tmp_path,monkeypat
     import json
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'scripts'))
     module=load('run_shared_benchmark')
-    initial={'source_sha256':'abc','coverage':'full','input_source':'local_images','requested_sequences':['04'],'requested_modes':['stereo'],'runs':[]}
-    p=tmp_path/'batch.json';saved={**initial,'runs':[{'sequence':'04','status':'complete'}]};p.write_text(json.dumps(saved))
+    initial={'identity_version':1,'identity':{'code':'abc','coverage':'full'},
+             'source_sha256':'abc','coverage':'full','input_source':'local_images',
+             'requested_sequences':['04'],'requested_modes':['stereo'],'runs':[]}
+    p=tmp_path/'batch.json';saved={**initial,'status':'completed',
+             'runs':[{'sequence':'04','status':'completed','frames':271}]};p.write_text(json.dumps(saved))
     with pytest.raises(ValueError,match='preserved'):module.resume_manifest(p,initial,False)
     resumed=module.resume_manifest(p,initial,True)
     assert resumed['runs']==saved['runs']
-    with pytest.raises(ValueError,match='mismatched'):module.resume_manifest(p,{**initial,'source_sha256':'new'},True)
+    with pytest.raises(ValueError,match='legacy'):
+        p.write_text(json.dumps({'source_sha256':'abc','runs':saved['runs']}))
+        module.resume_manifest(p,initial,True)
+    p.write_text(json.dumps(saved))
+    with pytest.raises(ValueError,match='changed code'):
+        module.resume_manifest(p,{**initial,'identity':{'code':'new','coverage':'full'}},True)
     assert json.loads(p.read_text())==saved
 
 

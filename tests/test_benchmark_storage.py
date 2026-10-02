@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 
@@ -116,11 +117,31 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     data = tmp_path / "borrowed-data"
-    data.mkdir()
+    sequence = data / "sequences" / "04"
+    sequence.mkdir(parents=True)
+    (sequence / "calib.txt").write_text("P0: synthetic calibration\n", encoding="utf-8")
+    (sequence / "times.txt").write_text("0.0\n0.1\n", encoding="utf-8")
+    for camera in (0, 1):
+        image_folder = sequence / f"image_{camera}"
+        image_folder.mkdir()
+        for index in range(2):
+            ok, image = cv2.imencode(".png", np.full((8, 10), index + camera, np.uint8))
+            assert ok
+            (image_folder / f"{index:06d}.png").write_bytes(image.tobytes())
     sentinel = data / "image.png"
     sentinel.write_bytes(b"retain original input")
     scratch = tmp_path / "scratch"
     output = tmp_path / "results"
+    poses = tmp_path / "poses"
+    poses.mkdir()
+    reference = poses / "04.txt"
+    reference.write_text(
+        "1 0 0 0 0 1 0 0 0 0 1 0\n1 0 0 1 0 1 0 0 0 0 1 0\n",
+        encoding="ascii",
+    )
+    repo = Path(__file__).resolve().parents[1]
+    contract = module.source_contract(repo)
+    mapping, performance, _threads = module._configuration(repo)
     monkeypatch.setattr(
         module, "RangeFile", lambda *_: pytest.fail("Local input downloaded")
     )
@@ -129,15 +150,41 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
         if Path(command[1]).name == "evaluate_shared_slam.py":
             assert command[command.index("--data-root") + 1] == str(data.resolve())
             run_output = Path(command[command.index("--output") + 1])
-            run_output.mkdir()
+            evaluator_bytes = Path(command[1]).read_bytes()
+            (run_output / "evaluator.py").write_bytes(evaluator_bytes)
+            (run_output / "run.json").write_text(json.dumps({
+                "configuration": mapping,
+                "performance_configuration": performance,
+                "matching_backend": {"requested": "cpu"},
+            }), encoding="utf-8")
+            (run_output / "preview.json").write_text(
+                json.dumps({"trajectory": [[0, 0, 0]]}), encoding="utf-8")
+            (run_output / "poses.txt").write_text(
+                "1 0 0 0 0 1 0 0 0 0 1 0\n1 0 0 1 0 1 0 0 0 0 1 0\n",
+                encoding="ascii",
+            )
+            (run_output / "sparse.ply").write_text(
+                "ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\n"
+                "property float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n",
+                encoding="ascii",
+            )
             (run_output / "evaluation.json").write_text(
                 json.dumps(
                     {
-                        "frames": 50 if interrupted else 271,
-                        "coverage": "partial" if interrupted else "full",
-                        "status": (
-                            "interrupted_low_disk_space" if interrupted else "completed"
-                        ),
+                        "sequence": "04", "dataset": "kitti", "stereo": True,
+                        "frames": 2, "coverage": "partial",
+                        "status": "interrupted_low_disk_space" if interrupted else "completed",
+                        "ground_truth_used_for_estimation": False,
+                        "configuration": mapping,
+                        "performance_configuration": performance,
+                        "opencv_threads": 1,
+                        "source_sha256": module._report_source_hashes(contract),
+                        "evaluator_sha256": contract["sources"]["scripts/evaluate_shared_slam.py"],
+                        "diagnostic_overrides": {"disable_bundle": False, "loop_mode": None},
+                        "feature_cache": {"enabled": False},
+                        "matching_backend": {"requested": "cpu"},
+                        "input_source": "local_images",
+                        "telemetry": {"enabled": False},
                     }
                 )
             )
@@ -152,7 +199,7 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
             "--data-root",
             str(data),
             "--poses-root",
-            str(tmp_path / "poses"),
+            str(poses),
             "--sequences",
             "04",
             "--modes",
@@ -161,18 +208,19 @@ def test_local_batch_preserves_inputs_and_does_not_complete_interruption(
             str(output),
             "--cache-root",
             str(scratch),
+            "--max-frames",
+            "2",
         ],
     )
     if interrupted:
-        with pytest.raises(SystemExit, match="export reserve reached"):
+        with pytest.raises(RuntimeError, match="failed exact reuse validation"):
             module.main()
     else:
         module.main()
     batch = json.loads(next(output.rglob("batch.json")).read_text())
-    assert batch["runs"][0]["status"] == (
-        "interrupted_low_disk_space" if interrupted else "complete"
-    )
-    assert batch["runs"][0]["coverage"] == ("partial" if interrupted else "full")
+    assert batch["runs"][0]["status"] == ("invalid_report" if interrupted else "completed")
+    assert batch["runs"][0]["coverage"] == "partial"
+    assert batch["runs"][0]["frames_expected"] == 2
     assert sentinel.read_bytes() == b"retain original input"
     assert not (data / "owner.json").exists()
     assert not scratch.exists()

@@ -135,3 +135,6 @@ def test_cuda_matches_cpu_including_ties_ratio_boundaries_and_binary():
         assert np.array_equal(gpu(desc, query), match_descriptors(desc, query))
     binary = rng.integers(0, 255, (40, 32), dtype=np.uint8)
     assert np.array_equal(gpu(binary, binary), match_descriptors(binary, binary))
+    near = np.full((12, 128), 255, np.float32)
+    near[:, 0] += np.arange(12, dtype=np.float32) * .001
+    assert np.array_equal(gpu(near, near), match_descriptors(near, near))

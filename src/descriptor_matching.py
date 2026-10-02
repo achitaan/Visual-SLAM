@@ -57,6 +57,7 @@ class DescriptorMatcher:
         torch = self.torch
         mappings = np.full(len(first), -1, int)
         train = torch.as_tensor(np.ascontiguousarray(second, dtype=np.float32), device="cuda")
+        train_norm = float(np.max(np.einsum("ij,ij->i", second, second)))
         for start in range(0, len(first), 1024):
             source = np.ascontiguousarray(first[start:start + 1024], dtype=np.float32)
             query = torch.as_tensor(source, device="cuda")
@@ -66,8 +67,11 @@ class DescriptorMatcher:
             accepted = values[:, 0] < ratio * values[:, 1]
             # Roundoff near equal nearest neighbors or the ratio boundary is
             # resolved by exactly the same OpenCV search as the CPU estimator.
-            tolerance = np.maximum(values[:, 1], 1.0) * 2e-4
-            ambiguous = (values[:, 1] - values[:, 0] <= tolerance) | (np.abs(values[:, 0] - ratio * values[:, 1]) <= tolerance)
+            # Bound cancellation in ||a||^2 + ||b||^2 - 2<a,b>. A relative
+            # distance tolerance alone misses almost-identical large vectors.
+            squared = values.astype(np.float64) ** 2
+            bound = 8 * np.finfo(np.float32).eps * (source.shape[1] + 2) * (np.einsum("ij,ij->i", source, source) + train_norm)
+            ambiguous = (accepted & (squared[:, 1] - squared[:, 0] <= 2 * bound)) | (np.abs(squared[:, 0] - ratio ** 2 * squared[:, 1]) <= 2 * bound)
             rows = np.flatnonzero(ambiguous)
             self.ambiguous_rows += len(rows)
             if len(rows):

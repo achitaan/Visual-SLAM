@@ -7,7 +7,7 @@ from scipy.sparse import lil_matrix
 from mapping_geometry import project
 
 
-def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks=200):
+def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks=200, optimized=True):
     with state.lock:
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
@@ -122,15 +122,36 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
         row += dim
 
+    record_points = np.array([i for i, _, _ in records])
+    camera_ids = list(dict.fromkeys(k for _, k, _ in records))
+    camera_index = {k: i for i, k in enumerate(camera_ids)}
+    record_cameras = np.array([camera_index[k] for _, k, _ in records])
+    base_cameras = np.array([base[k] for k in camera_ids])
+    free_camera_ids = [k for k in free if k in camera_index]
+    free_camera_indices = np.array([camera_index[k] for k in free_camera_ids], int)
+    free_offsets = np.array([pose_offset[k] for k in free_camera_ids], int)[:, None] + np.arange(6)
+    measured_pixels = np.array([o.pixel for _, _, o in records])
+    measured_right = np.array([o.right_u if o.right_u is not None else 0.0 for _, _, o in records])
+    dimension_mask = np.array([[True, True, dim == 3] for dim in dimensions])
+
     def residual(x):
-        poses, points = unpack(x)
-        cameras = np.array([poses[k] for _, k, _ in records])
-        coordinates = points[np.array([i for i, _, _ in records])] - cameras[:, :3, 3]
+        if optimized:
+            camera_poses = base_cameras.copy()
+            values = x[free_offsets]
+            if len(values):
+                camera_poses[free_camera_indices, :3, :3] = Rotation.from_rotvec(values[:, :3]).as_matrix()
+                camera_poses[free_camera_indices, :3, 3] = values[:, 3:]
+            cameras = camera_poses[record_cameras]
+            points = x[point_offset:].reshape(-1, 3)
+        else:
+            poses, points = unpack(x)
+            cameras = np.array([poses[k] for _, k, _ in records])
+        coordinates = points[record_points] - cameras[:, :3, 3]
         camera = np.einsum("ni,nij->nj", coordinates, cameras[:, :3, :3])
         homogeneous = camera @ matrix.T
         z = camera[:, 2]
         pixels = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
-        errors = np.clip(pixels - np.array([o.pixel for _, _, o in records]), -1e4, 1e4)
+        errors = np.clip(pixels - measured_pixels, -1e4, 1e4)
         errors[z <= 0] = 1e4
         if not state.metric:
             return errors.ravel()
@@ -139,12 +160,10 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         values[:, 2] = (
             pixels[:, 0]
             - matrix[0, 0] * baseline / np.maximum(z, 1e-9)
-            - np.array(
-                [o.right_u if o.right_u is not None else 0.0 for _, _, o in records]
-            )
+            - measured_right
         )
         values[z <= 0] = 1e4
-        return values[np.array([[True, True, dim == 3] for dim in dimensions])]
+        return values[dimension_mask]
 
     def objective(r):
         a = np.abs(r)

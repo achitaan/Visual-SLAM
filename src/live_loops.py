@@ -157,9 +157,10 @@ def optimize_similarities(poses, edges, max_evaluations=200):
 
 
 class LiveLoopWorker:
-    def __init__(self, matrix, metric, profiler=None, retrieval="indexed"):
+    def __init__(self, matrix, metric, profiler=None, retrieval="indexed", cpu_optimizations=True):
         self.profiler = profiler or StageProfiler()
         self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
+        self.cpu_optimizations = cpu_optimizations
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
@@ -178,7 +179,24 @@ class LiveLoopWorker:
         if self.future is not None or len(state.keyframes) < 3:
             return
         with state.lock:
-            snapshot = copy.deepcopy(state.keyframes)
+            if self.cpu_optimizations:
+                current = max(state.keyframes)
+                if state.keyframes[current].frame - state.keyframes[0].frame < 150:
+                    return
+                if len(state.keyframes) > 300:
+                    self.events.append({"type": "loop_skipped", "reason": "graph_size_not_validated"})
+                    return
+                # Descriptors/pixels are immutable after keyframe creation. Geometry
+                # changes during BA/corrections, so snapshot those arrays separately.
+                snapshot = {}
+                for ident, frame in state.keyframes.items():
+                    saved = copy.copy(frame)
+                    saved.pose = frame.pose.copy()
+                    saved.landmark_ids = frame.landmark_ids.copy()
+                    saved.depth_points = frame.depth_points.copy() if frame.depth_points is not None else None
+                    snapshot[ident] = saved
+            else:
+                snapshot = copy.deepcopy(state.keyframes)
             revision = state.revision
         current = max(snapshot)
         if snapshot[current].frame - snapshot[0].frame < 150:

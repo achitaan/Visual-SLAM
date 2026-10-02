@@ -57,3 +57,49 @@ def test_recovery_uses_exhaustive_fallback_and_does_not_accept_appearance(monkey
     assert slam._relocalize([], [], (640, 480))[0] is not None
     assert calls == [20, 30]
     slam.loop_worker.executor.shutdown()
+
+
+def test_landmark_cache_refreshes_after_atomic_pose_corrections():
+    from shared_slam import SharedSlam
+    from slam_state import MappingKeyframe, Observation
+    slam = SharedSlam(np.diag([250., 250., 1.]))
+    slam.map.keyframes[0] = MappingKeyframe(0, 0, np.eye(4), np.zeros((1, 2)), np.ones((1, 128)), np.array([0]))
+    shifted = np.eye(4)
+    shifted[0, 3] = 1
+    slam.map.keyframes[1] = MappingKeyframe(1, 10, shifted, np.zeros((1, 2)), np.ones((1, 128)), np.array([0]))
+    slam.map.add_landmark([2, 0, 5], np.ones(128), 1, {1: Observation(np.zeros(2))})
+    before = slam._cached_landmarks()[3].copy()
+    corrected = shifted.copy()
+    corrected[0, 3] = 2
+    assert slam.map.apply_corrections(0, {0: np.eye(4), 1: corrected})
+    assert np.allclose(slam._cached_landmarks()[3], before + [1, 0, 0])
+    slam.loop_worker.executor.shutdown()
+
+
+def test_bundle_reference_and_optimized_residuals_agree():
+    import copy
+    from slam_state import MapState, MappingKeyframe, Observation
+    from local_bundle import local_bundle_adjustment
+    from mapping_geometry import project
+    K = np.array([[250., 0, 320], [0, 250., 240], [0, 0, 1.]])
+    state = MapState(metric=True)
+    rng = np.random.default_rng(3)
+    points = rng.uniform([-2, -1, 4], [2, 1, 9], (40, 3))
+    for i in range(3):
+        pose = np.eye(4)
+        pose[0, 3] = i * .3
+        state.keyframes[i] = MappingKeyframe(i, i * 10, pose, np.zeros((40, 2)), np.ones((40, 128)), np.arange(40))
+    for p in points:
+        observations = {}
+        for i, frame in state.keyframes.items():
+            pixel, depth = project(p[None], frame.pose, K)
+            observations[i] = Observation(pixel[0], pixel[0, 0] - 250 * .54 / depth[0])
+        state.add_landmark(p + rng.normal(0, .02, 3), np.ones(128), 0, observations)
+    other = MapState(metric=True)
+    other.keyframes, other.landmarks = copy.deepcopy(state.keyframes), copy.deepcopy(state.landmarks)
+    reference = local_bundle_adjustment(state, K, .54, optimized=False)
+    fast = local_bundle_adjustment(other, K, .54)
+    assert reference["applied"] == fast["applied"]
+    assert np.isclose(reference["final_cost"], fast["final_cost"], atol=1e-9)
+    for ident in state.landmarks:
+        assert np.allclose(state.landmarks[ident].position, other.landmarks[ident].position, atol=1e-7)

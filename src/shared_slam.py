@@ -54,6 +54,7 @@ class SharedSlam:
         self.performance = performance or PerformanceConfig()
         self.profiler = StageProfiler(self.performance.profile)
         self.retrieval_index = KeyframeIndex() if self.performance.retrieval == "indexed" else None
+        self._landmark_cache = None
         self.K = np.asarray(matrix, float).copy()
         if (
             self.K.shape != (3, 3)
@@ -76,7 +77,7 @@ class SharedSlam:
         self.last_keyframe = None
         self.diagnostics = []
         self.bundle_reports = []
-        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, profiler=self.profiler, retrieval=self.performance.retrieval)
+        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, profiler=self.profiler, retrieval=self.performance.retrieval, cpu_optimizations=self.performance.cpu_optimizations)
         self.previous_gray = None
         self.previous_tracks = []
         self.accepted_tracks = []
@@ -138,6 +139,18 @@ class SharedSlam:
         self.profiler.count("descriptor_pairs", len(first) * len(second))
         return self.profiler.call("matching", match_descriptors, first, second)
 
+    def _cached_landmarks(self):
+        structure = (len(self.map.landmarks), self.map.next_landmark)
+        cache = self._landmark_cache
+        if cache is None or cache[0] != structure:
+            landmarks = list(self.map.landmarks.values())
+            cache = [structure, -1, landmarks, None, np.array([l.descriptor for l in landmarks]), {l.id: i for i, l in enumerate(landmarks)}]
+            self._landmark_cache = cache
+        if cache[1] != self.map.revision:
+            cache[3] = np.array([l.position for l in cache[2]])
+            cache[1] = self.map.revision
+        return cache
+
     @profiled("mapping")
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations):
         pixels, desc, points, right_u = (
@@ -149,15 +162,19 @@ class SharedSlam:
         # A valid tracked landmark need not coincide with a freshly detected SIFT keypoint.
         # Preserve its actual image observation rather than dropping it from bundle adjustment.
         observed = set(associations.values())
+        appended_pixels, appended_desc = [], []
         for lid, pixel in self.accepted_tracks:
             if lid in self.map.landmarks and lid not in observed:
-                feature = len(pixels)
-                pixels = np.vstack([pixels, pixel])
-                desc = np.vstack([desc, self.map.landmarks[lid].descriptor])
-                points = np.vstack([points, np.full(3, np.nan)])
-                right_u = np.r_[right_u, np.nan]
+                feature = len(pixels) + len(appended_pixels)
+                appended_pixels.append(pixel)
+                appended_desc.append(self.map.landmarks[lid].descriptor)
                 associations[feature] = lid
                 observed.add(lid)
+        if appended_pixels:
+            pixels = np.vstack([pixels, appended_pixels])
+            desc = np.vstack([desc, appended_desc])
+            points = np.vstack([points, np.full((len(appended_pixels), 3), np.nan)])
+            right_u = np.r_[right_u, np.full(len(appended_pixels), np.nan)]
         ident = len(self.map.keyframes)
         frame = MappingKeyframe(
             ident,
@@ -175,6 +192,13 @@ class SharedSlam:
         )
         self.map.keyframes[ident] = frame
         tracked_pixels = {lid: pixel for lid, pixel in self.accepted_tracks}
+        measured_rights = {}
+        if self.performance.cpu_optimizations and self.stereo is not None and self.current_disparity is not None:
+            features = [feature for feature, lid in associations.items() if lid in self.map.landmarks]
+            if features:
+                observations = np.array([tracked_pixels.get(associations[f], pixels[f]) for f in features])
+                _, measured = self._measure_stereo_pixels(observations)
+                measured_rights = dict(zip(features, measured))
         for feature, lid in associations.items():
             if lid in self.map.landmarks:
                 frame.landmark_ids[feature] = lid
@@ -188,7 +212,10 @@ class SharedSlam:
                 if self.stereo is not None and self.current_disparity is not None:
                     # The disparity at a nearby detector feature is a different
                     # observation. Re-measure at the accepted flow coordinate.
-                    _, measured = self._measure_stereo_pixels(observed_pixel[None])
+                    if feature in measured_rights:
+                        measured = [measured_rights[feature]]
+                    else:
+                        _, measured = self._measure_stereo_pixels(observed_pixel[None])
                     measured_right = (
                         float(measured[0]) if np.isfinite(measured[0]) else None
                     )
@@ -288,15 +315,22 @@ class SharedSlam:
 
     @profiled("tracking")
     def _track(self, pixels, desc, size, relocalize=False, candidate_ids=None):
-        landmarks = list(self.map.landmarks.values())
-        if candidate_ids is not None:
+        cache = None
+        if self.performance.cpu_optimizations and candidate_ids is not None:
+            landmarks = [self.map.landmarks[i] for i in sorted(candidate_ids) if i in self.map.landmarks]
+        elif self.performance.cpu_optimizations:
+            cache = self._cached_landmarks()
+            landmarks = cache[2]
+        else:
+            landmarks = list(self.map.landmarks.values())
+        if candidate_ids is not None and not self.performance.cpu_optimizations:
             landmarks = [l for l in landmarks if l.id in candidate_ids]
         if not landmarks:
             return None, {}
         if not relocalize:
             predicted = self._motion_prediction()
             projected, z = project(
-                np.array([l.position for l in landmarks]), predicted, self.K
+                cache[3] if cache is not None else np.array([l.position for l in landmarks]), predicted, self.K
             )
             visible = (
                 (z > 0)
@@ -314,7 +348,8 @@ class SharedSlam:
                 landmarks = landmarks[: self.config.max_landmarks]
         if not landmarks:
             return None, {}
-        pairs = self._match(np.array([l.descriptor for l in landmarks]), desc)
+        descriptors = cache[4][[cache[5][l.id] for l in landmarks]] if cache is not None else np.array([l.descriptor for l in landmarks])
+        pairs = self._match(descriptors, desc)
         candidates = {landmarks[a].id: (pixels[b], int(b)) for a, b in pairs}
         descriptor_candidates = candidates.copy()
         flow_conflicts = 0
@@ -776,6 +811,7 @@ class SharedSlam:
                 self.K,
                 self.stereo.baseline if self.stereo is not None else 0.0,
                 window=self.config.bundle_window,
+                optimized=self.performance.cpu_optimizations,
             )
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
@@ -787,11 +823,13 @@ class SharedSlam:
             )
         # Bound the tracking working set, not the persistent map. Old, valid
         # landmarks remain available to geometric relocalization and loop correction.
+        dropped = {i: l for i, l in self.map.landmarks.items() if l.misses >= 5}
         self.map.landmarks = {
             i: l for i, l in self.map.landmarks.items() if l.misses < 5
         }
         removed = False
-        for keyframe in self.map.keyframes.values():
+        affected = {k for l in dropped.values() for k in l.observations} if self.performance.cpu_optimizations else set(self.map.keyframes)
+        for keyframe in (self.map.keyframes[k] for k in sorted(affected) if k in self.map.keyframes):
             stale = np.array(
                 [
                     lid >= 0 and lid not in self.map.landmarks

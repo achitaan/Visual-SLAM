@@ -23,3 +23,5 @@ results/
 dashboard/AGENTS.md
 dashboard/CLAUDE.md
 trajectory.html
+dashboard/public/saved-visuals/
+dashboard/public/benchmark-graphs.html

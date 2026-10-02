@@ -19,7 +19,7 @@ export function MapView3D() {
       const z = -Math.sin(view.yaw) * p[0] + Math.cos(view.yaw) * p[2];
       return [x, Math.cos(view.pitch) * p[1] - Math.sin(view.pitch) * z];
     };
-    const path = frames.map(f => { const p = f.pose_graph?.optimized_pose_T_wc ?? f.pose_T_wc; return [p[0][3], p[1][3], p[2][3]]; });
+    const path = latest?.trajectory ?? frames.map(f => { const p = f.pose_graph?.optimized_pose_T_wc ?? f.pose_T_wc; return [p[0][3], p[1][3], p[2][3]]; });
     const landmarks = latest?.map_points ?? [], all = [...path, ...landmarks].map(rotate);
     const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
     const minX = Math.min(...xs, 0), maxX = Math.max(...xs, 0), minY = Math.min(...ys, 0), maxY = Math.max(...ys, 0);

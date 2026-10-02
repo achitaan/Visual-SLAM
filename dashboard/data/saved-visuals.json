@@ -1,0 +1,222 @@
+[
+  {
+    "file": "shared-validated-pnp03-stereo.png",
+    "label": "KITTI 03 · current full stereo · trajectory, error and sparse map",
+    "group": "Experimental snapshot · paused validation"
+  },
+  {
+    "file": "shared-current-summary.png",
+    "label": "Current batch · all six completed runs · accuracy, loss, runtime and memory",
+    "group": "Current frozen revision · incomplete validation"
+  },
+  {
+    "file": "shared-validated-pnp00-monocular.png",
+    "label": "KITTI 00 · current full monocular · tracking loss, trajectory and map",
+    "group": "Current validated pipeline · release hold"
+  },
+  {
+    "file": "shared-validated-loop00-stereo.png",
+    "label": "KITTI 00 · actual live loop correction · 1,884-frame prefix",
+    "group": "Current validated pipeline · release hold"
+  },
+  {
+    "file": "shared-validated-pnp00-stereo.png",
+    "label": "KITTI 00 · current full stereo · trajectory, error and map",
+    "group": "Current validated pipeline · release hold"
+  },
+  {
+    "file": "shared-sensor01-comparison.png",
+    "label": "KITTI 01 · current paired run · tracking failures, trajectories and maps",
+    "group": "Current validated pipeline · release hold"
+  },
+  {
+    "file": "shared-sensor04-comparison.png",
+    "label": "KITTI 04 · stereo vs monocular · trajectory, error and sparse maps",
+    "group": "Current validated pipeline"
+  },
+  {
+    "file": "00.png",
+    "label": "00",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "01.png",
+    "label": "01",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "02.png",
+    "label": "02",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "03.png",
+    "label": "03",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "04.png",
+    "label": "04",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "05.png",
+    "label": "05",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "06.png",
+    "label": "06",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "07.png",
+    "label": "07",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "08.png",
+    "label": "08",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "09.png",
+    "label": "09",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "10.png",
+    "label": "10",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "benchmark-overview.png",
+    "label": "Original stereo benchmark · all KITTI 00–10",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "graphs-00-03.png",
+    "label": "graphs 00 03",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "graphs-04-07.png",
+    "label": "graphs 04 07",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "graphs-08-10.png",
+    "label": "graphs 08 10",
+    "group": "Original stereo baseline"
+  },
+  {
+    "file": "shared-bundle-gauge-check.png",
+    "label": "bundle gauge check",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-gauge-tumdesk-monocular.png",
+    "label": "gauge tumdesk monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-gauge01-stereo.png",
+    "label": "gauge01 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-gauge04-monocular.png",
+    "label": "gauge04 monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-gauge04-stereo.png",
+    "label": "gauge04 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-gauge07-stereo.png",
+    "label": "Retained KITTI 07 · stereo loop correction",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp-desk-prefix.png",
+    "label": "PnP desk prefix",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp-tumdesk-monocular.png",
+    "label": "PnP tumdesk monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp-tumroom-monocular.png",
+    "label": "PnP tumroom monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp01-stereo.png",
+    "label": "pnp01 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp03-stereo.png",
+    "label": "pnp03 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp04-monocular.png",
+    "label": "pnp04 monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp04-stereo.png",
+    "label": "pnp04 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-pnp07-stereo.png",
+    "label": "pnp07 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tracking01-comparison.png",
+    "label": "tracking01 comparison",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tracking01-stereo.png",
+    "label": "tracking01 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tracking04-monocular.png",
+    "label": "tracking04 monocular",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tracking04-stereo.png",
+    "label": "tracking04 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tracking07-stereo.png",
+    "label": "tracking07 stereo",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-tumdesk-failure-inputs.png",
+    "label": "tumdesk failure inputs",
+    "group": "Retained diagnostic run"
+  },
+  {
+    "file": "shared-validated-pnp04-monocular.png",
+    "label": "KITTI 04 · current monocular · trajectory and sparse map",
+    "group": "Current validated pipeline"
+  },
+  {
+    "file": "shared-validated-pnp04-stereo.png",
+    "label": "KITTI 04 · current stereo · trajectory and sparse map",
+    "group": "Current validated pipeline"
+  }
+]

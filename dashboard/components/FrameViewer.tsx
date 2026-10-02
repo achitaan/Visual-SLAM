@@ -5,7 +5,7 @@ import { Icon } from './Icon';
 import { useTelemetry } from './TelemetryProvider';
 
 export function FrameViewer() {
-  const { latest } = useTelemetry();
+  const { latest, benchmark } = useTelemetry();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [cameraFrame, setCameraFrame] = useState<TelemetryFrame>();
   useEffect(() => {
@@ -34,7 +34,7 @@ export function FrameViewer() {
   }, [image, cameraFrame, latest?.overlay_enabled]);
   const progress = latest?.total_frames ? (latest.frame_index + 1) / latest.total_frames * 100 : 0;
   return <section className="panel cameraPanel">
-    <div className="panelHeading"><div><span className="eyebrow">VISUAL INPUT</span><h2>Camera feed</h2></div><span className="pill">{image ? `${image.width} × ${image.height}` : 'No feed'}</span></div>
+    <div className="panelHeading"><div><span className="eyebrow">VISUAL INPUT</span><h2>{benchmark?.paused ? 'Saved camera frame · paused' : 'Camera feed'}</h2></div><span className="pill">{image ? `${image.width} × ${image.height}` : 'No feed'}</span></div>
     <div className={`cameraStage ${image ? 'hasImage' : ''}`}>
       <canvas ref={canvasRef} hidden={!image} role="img" aria-label="Latest received camera frame with optional feature overlay" />
       {!image && <div className="emptyState"><Icon name="camera" size={32} /><strong>Waiting for camera frames</strong><span>Connect an odometry run to see the camera feed.</span></div>}

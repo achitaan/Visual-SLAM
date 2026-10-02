@@ -45,7 +45,13 @@ def verify_loop(first, second, matrix, min_inliers=30):
     if len(pairs) < min_inliers:
         return None
     a, b = np.array(pairs).T
-    def solve(points, pixels):
+    def solve(points, pixels, image_size):
+        # PnP needs source 3D and target 2D, not target depth. Missing depth
+        # in the other direction must not discard an otherwise valid image match.
+        available = np.flatnonzero(np.isfinite(points).all(axis=1) & np.isfinite(pixels).all(axis=1))
+        if len(available) < min_inliers:
+            return None
+        points, pixels = points[available], pixels[available]
         ok, rv, tv, inliers = cv.solvePnPRansac(points, pixels, matrix, None, iterationsCount=500,
                                               reprojectionError=2., confidence=.999, flags=cv.SOLVEPNP_ITERATIVE)
         if not ok or inliers is None or len(inliers) < min_inliers or len(inliers) / len(points) < .35:
@@ -56,22 +62,23 @@ def verify_loop(first, second, matrix, min_inliers=30):
         depths = (transform[:3, :3] @ points[ids].T + tv).T[:, 2]
         predicted = cv.projectPoints(points[ids], rv, tv, matrix, None)[0].reshape(-1, 2)
         residual = np.linalg.norm(predicted - pixels[ids], axis=1)
-        width, height = second.image_size
+        width, height = image_size
         cells = np.floor(pixels[ids] / [width / 3, height / 3]).clip(0, 2).astype(int)
         if np.any(depths <= 0) or np.median(residual) > 1.5 or len(np.unique(cells, axis=0)) < 3:
             return None
-        return transform, ids, float(np.median(residual))
-    result = solve(first.points[a], second.pixels[b])
-    reverse = solve(second.points[b], first.pixels[a])
+        return transform, available[ids], float(np.median(residual)), len(available)
+    result = solve(first.points[a], second.pixels[b], second.image_size)
+    reverse = solve(second.points[b], first.pixels[a], first.image_size)
     if result is None or reverse is None:
         return None
-    transform, inliers, error = result
+    transform, inliers, error, support = result
     consistency = reverse[0] @ transform
     rotation_error = np.degrees(Rotation.from_matrix(consistency[:3, :3]).magnitude())
     translation_error = np.linalg.norm(consistency[:3, 3])
     if translation_error > .5 or rotation_error > 1.5:
         return None
-    return {'measurement': np.linalg.inv(transform), 'matches': len(pairs), 'inliers': len(inliers),
+    return {'measurement': np.linalg.inv(transform), 'matches': support, 'inliers': len(inliers),
+            'descriptor_matches': len(pairs), 'reverse_depth_support': reverse[3],
             'median_reprojection_px': error, 'reverse_translation_error_m': float(translation_error),
             'reverse_rotation_error_deg': float(rotation_error)}
 

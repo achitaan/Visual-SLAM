@@ -56,6 +56,13 @@ def test_bind_error_is_reported():
         second.stop()
 
 
+def test_fixed_pipeline_cannot_be_mislabelled_by_mode_control():
+    state=TelemetryState(mode='slam',mode_locked=True)
+    server=TelemetryServer('127.0.0.1',0,state=state)
+    server._handle_message(json.dumps({'type':'control','action':'set_mode','mode':'vo'}))
+    assert state.mode=='slam'
+
+
 def test_final_frame_metadata_is_delivered_before_shutdown():
     state = TelemetryState(overlay_enabled=False)
     server = TelemetryServer('127.0.0.1', 0, state=state)

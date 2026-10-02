@@ -31,6 +31,8 @@ from config import (
 )
 from slam_backend import SlamBackend
 from telemetry import TelemetryServer, TelemetryState, encode_image, make_frame_message, now
+from shared_slam import SharedSlam, StereoCamera
+from reconstruction import export_run
 
 def plot(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     def get_coords(poses):
@@ -142,11 +144,11 @@ def main() -> None:
             stereo_root,
             calib_path,
             use_brute_force=False,  # Match the SIFT benchmark configuration.
-            poses_path=gt_path,
+            poses_path=None,
             draw_matches=False,
             max_frames=args.max_frames,
         )
-        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo")
+        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo",mode_locked=args.slam)
         telemetry = None
         slam_backend = SlamBackend(camera_matrix=vo.K1)
     else:
@@ -158,7 +160,7 @@ def main() -> None:
             draw_matches=False,
             max_frames=args.max_frames,
         )
-        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo")
+        telemetry_state = TelemetryState(mode="slam" if args.slam else "vo",mode_locked=args.slam)
         telemetry = None
         slam_backend = SlamBackend(camera_matrix=vo.K)
     last_keyframe_pose = vo.poses[0]
@@ -169,6 +171,13 @@ def main() -> None:
         if args.slam:
             telemetry_state.mode = "slam"
     last_time = now()
+    shared_events_sent = 0
+    last_payload = None
+    stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
+    shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera) if args.slam else None
+    if shared is not None:
+        shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
+        vo.poses = shared.map.poses
 
     num_frames = len(vo.Images_1) if use_stereo else len(vo.Images)
     if args.max_frames is not None:
@@ -187,7 +196,11 @@ def main() -> None:
             use_local_map = ENABLE_LOCAL_MAP and mode_is_slam
             use_relocalization = ENABLE_RELOCALIZATION and mode_is_slam
 
-            if use_stereo:
+            if shared is not None:
+                pose, debug = shared.process(i, vo.Images_1[i] if use_stereo else vo.Images[i], vo.Images_2[i] if use_stereo else None)
+                vo.poses = shared.map.poses
+                p2 = np.asarray(debug.get('feature_points', []), dtype=np.float32).reshape(-1, 2)
+            elif use_stereo:
                 T, debug = vo.find_transf_pnp_debug(i)
                 kp2 = debug.get("keypoints", [])
                 desc2 = debug.get("descriptors")
@@ -200,10 +213,11 @@ def main() -> None:
                     p1, p2 = vo.flann_match_features(i)
                 T, debug = vo.find_transf(p1, p2, return_debug=True, use_scale_fix=USE_RELATIVE_SCALE_FIX)
         
-            vo.poses.append(vo.poses[-1] @ T)
+            if shared is None:
+                vo.poses.append(vo.poses[-1] @ T)
 
             events = []
-            if (use_keyframes or use_local_map) and debug.get("tracking_ok", False):
+            if shared is None and (use_keyframes or use_local_map) and debug.get("tracking_ok", False):
                 should_add_keyframe = False
                 if (i - last_keyframe_index) >= KEYFRAME_INTERVAL:
                     should_add_keyframe = True
@@ -251,7 +265,7 @@ def main() -> None:
                     last_keyframe_pose = vo.poses[-1]
                     last_keyframe_index = i
 
-            if use_relocalization and (use_keyframes or use_local_map) and not use_stereo:
+            if shared is None and use_relocalization and (use_keyframes or use_local_map) and not use_stereo:
                 lost = slam_backend.update_tracking_state(
                     debug.get("num_inliers"),
                     debug.get("inlier_ratio"),
@@ -288,14 +302,17 @@ def main() -> None:
                     "num_matches": debug.get("num_matches"),
                     "num_inliers": debug.get("num_inliers"),
                     "inlier_ratio": debug.get("inlier_ratio"),
-                    "reprojection_error": None,
+                    "reprojection_error": debug.get('reprojection_error'),
+                    "state": debug.get('state'),
                     "tracking_ok": debug.get("tracking_ok", False),
                 }
-                map_state = slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
-                pose_graph_state = slam_backend.pose_graph_state(i if (use_keyframes or use_local_map) else None)
+                map_state = shared.map_state() if shared is not None else slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
+                pose_graph_state = None if shared is not None else slam_backend.pose_graph_state(i if (use_keyframes or use_local_map) else None)
+                if shared is not None and shared.loop_worker.verified:
+                    pose_graph_state={'optimized_pose_T_wc':vo.poses[-1].tolist(),'optimized_poses_count':len(vo.poses),'optimized_poses':[p.tolist() for p in vo.poses] if len(vo.poses)<=5000 else None}
                 map_points_payload = None
                 if use_local_map and TELEMETRY.stream_map_points:
-                    map_points_payload = slam_backend.map_points_sample(TELEMETRY.max_map_points)
+                    map_points_payload = shared.map_points_sample(TELEMETRY.max_map_points) if shared is not None else slam_backend.map_points_sample(TELEMETRY.max_map_points)
 
                 expected_pose = gt_poses[i] if gt_poses and i < len(gt_poses) else None
                 payload = make_frame_message(
@@ -311,22 +328,36 @@ def main() -> None:
                     features=features,
                     fps=fps,
                     state=telemetry.state,
-                    events=[e.__dict__ for e in events] if events else [],
+                    events=([{'timestamp':current_time,'type':e['type'],'message':str(e),'severity':'warn' if e['type'] in ('loop_failed','loop_discarded') else 'info'} for e in shared.loop_worker.events[shared_events_sent:]] if shared is not None else [e.__dict__ for e in events]),
                     translation_scale="metric" if use_stereo else "arbitrary",
                     sequence=args.sequence if args.data_root else "sample",
                     total_frames=num_frames,
                     run_id=run_id,
                 )
                 telemetry.publish(payload)
+                last_payload = payload
+                if shared is not None:shared_events_sent=len(shared.loop_worker.events)
             if args.realtime and frame_times and i < len(frame_times):
                 time.sleep(max(0.0, frame_times[i] - frame_times[i - 1]))
             elif telemetry and args.frame_delay_ms > 0:
                 time.sleep(args.frame_delay_ms / 1000.0)
     finally:
+        if shared is not None:
+            shared.close()
+            vo.poses = shared.map.poses
+            if telemetry and last_payload is not None:
+                final_payload={**last_payload,'pose_T_wc':vo.poses[-1].tolist(),'map':shared.map_state(),'map_points':shared.map_points_sample(TELEMETRY.max_map_points)}
+                if shared.loop_worker.verified:
+                    final_payload['pose_graph']={'optimized_pose_T_wc':vo.poses[-1].tolist(),'optimized_poses_count':len(vo.poses),'optimized_poses':[p.tolist() for p in vo.poses] if len(vo.poses)<=5000 else None}
+                final_payload['events']=[{'timestamp':now(),'type':e['type'],'message':str(e),'severity':'info'} for e in shared.loop_worker.events[shared_events_sent:]]
+                telemetry.publish(final_payload)
         if telemetry:
             telemetry.stop()
     print("Visual Odometry completed.")
     save_poses_txt(args.output, vo.poses)
+    if shared is not None:
+        inputs = vo.Images_1.paths if use_stereo else vo.Images.paths
+        export_run(shared, args.output.parent / (args.output.stem + '-map'), inputs)
     print(f"Saved {len(vo.poses)} KITTI poses to {args.output}")
     if args.plot:
         plot(vo.poses, gt_poses)

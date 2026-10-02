@@ -47,6 +47,8 @@ CURATED_TESTS = (
     'tests/test_development_runner.py',
     'tests/test_development_timing_history.py',
     'tests/test_stereo_pose_arbitration.py',
+    'tests/test_stereo_arbitration_tracking.py',
+    'tests/test_stereo_pose_arbitration_cli.py',
 )
 
 
@@ -114,7 +116,7 @@ def _finite_positive(value):
             and math.isfinite(value) and value > 0)
 
 
-def current_mapping_configuration(variant, stereo_depth_policy):
+def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False):
     """Return the exact evaluator config represented by a development variant."""
     if variant == 'baseline':
         return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
@@ -124,7 +126,8 @@ def current_mapping_configuration(variant, stereo_depth_policy):
     from shared_slam import MappingConfig
     loop_mode = {'map-only': 'off', 'bundle': 'off', 'live': 'live', 'offline': 'offline'}[variant]
     return dict(MappingConfig(bundle_enabled=variant != 'map-only', loop_mode=loop_mode,
-                              stereo_depth_policy=stereo_depth_policy).__dict__)
+                              stereo_depth_policy=stereo_depth_policy,
+                              stereo_pose_arbitration=stereo_pose_arbitration).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -153,6 +156,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     raise ValueError(f'mismatched {field}')
             if source_identity.get('variant') != identity.get('variant'):
                 raise ValueError('mismatched variant')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_pose_arbitration')
+                    is not identity.get('stereo_pose_arbitration')):
+                raise ValueError('mismatched stereo-pose-arbitration mode')
             if report.get('stereo') is not True:
                 raise ValueError('sensor mode is not stereo')
             if report.get('coverage') != coverage:
@@ -323,8 +330,7 @@ def source_fingerprint():
     sources = sorted((REPO/'src').glob('*.py')) + [
         REPO/'scripts'/name for name in ('evaluate_shared_slam.py',
         'evaluate_stereo_baseline.py', 'run_development_tests.py',
-        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py',
-        'stereo_pose_arbitration.py')]
+        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py')]
     sources += sorted((REPO/'tests').glob('test_*.py'))
     digest = hashlib.sha256()
     for path in sources:
@@ -348,6 +354,8 @@ def main():
                         help='Explicit completed evaluation JSON files used only to estimate runtime')
     parser.add_argument('--matching-backend',choices=['cpu','cuda','auto'],default='cpu')
     parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback'],default='supported')
+    parser.add_argument('--stereo-pose-arbitration', action='store_true',
+                        help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
@@ -369,6 +377,7 @@ def main():
                'poses_root': str(args.poses_root.resolve()),
                'feature_cache': str(args.feature_cache.resolve()) if args.feature_cache else None,
                'stereo_depth_policy': args.stereo_depth_policy,
+               'stereo_pose_arbitration': args.stereo_pose_arbitration,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
                                'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
     try:
@@ -409,6 +418,7 @@ def main():
             identity={'revision':fingerprint,'sequence':seq,'frames':frames,'input':inputs['sha256'],'variant':variant,
                       'cached':args.feature_cache is not None and variant!='baseline',
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
+                      'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
@@ -433,7 +443,9 @@ def main():
                      ('completed', 'completed_with_tracking_loss')
                      and _finite_positive(r.get('elapsed_s'))]
             expected_coverage = 'full' if args.profile == 'release' else 'partial'
-            expected_configuration = current_mapping_configuration(variant, args.stereo_depth_policy)
+            expected_configuration = current_mapping_configuration(
+                variant, args.stereo_depth_policy,
+                args.stereo_pose_arbitration and variant != 'baseline')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -459,6 +471,7 @@ def main():
                 command.extend(['--matching-backend',args.matching_backend,'--retrieval',args.retrieval,
                                 '--opencv-threads',str(args.opencv_threads),
                                 '--stereo-depth-policy',args.stereo_depth_policy])
+                if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
                 if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
                 if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])

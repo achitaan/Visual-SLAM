@@ -54,3 +54,64 @@ def test_extraction_identity_includes_calibration_and_extractor_source(monkeypat
     monkeypatch.setattr(SharedSlam,'_extract',changed_extract)
     assert extraction_signature(slam,cv)!=expected
     slam.close()
+
+
+def test_pose_arbitration_policy_and_stereo_calibration_change_cache_identity():
+    matrix=np.array([[250.,0,320],[0,250,240],[0,0,1.]])
+    q=np.eye(4);q[2,3]=100.;q[3,2]=1.;q[3,3]=.5
+    stereo=cv.StereoSGBM_create(numDisparities=96,blockSize=5)
+    camera=StereoCamera(stereo,q,.54)
+    default=SharedSlam(matrix,stereo=camera)
+    assert default.config.stereo_pose_arbitration is False
+    default_signature=extraction_signature(default,cv)
+    enabled=SharedSlam(matrix,stereo=camera,
+                       config=MappingConfig(stereo_pose_arbitration=True))
+    assert extraction_signature(enabled,cv)!=default_signature
+    changed_baseline=SharedSlam(matrix,stereo=StereoCamera(stereo,q,.55))
+    assert extraction_signature(changed_baseline,cv)!=default_signature
+    default.close();enabled.close();changed_baseline.close()
+
+
+def test_arbitration_producer_changes_invalidate_cache_signature(monkeypatch):
+    matrix=np.array([[250.,0,320],[0,250,240],[0,0,1.]])
+    slam=SharedSlam(matrix,stereo=StereoCamera(
+        cv.StereoSGBM_create(numDisparities=96,blockSize=5),np.eye(4),.54),
+        config=MappingConfig(stereo_pose_arbitration=True))
+    expected=extraction_signature(slam,cv)
+    producer=SharedSlam._prepare_stereo_arbitration
+
+    def changed_producer(self,index,current):
+        return producer(self,index,current)
+
+    monkeypatch.setattr(SharedSlam,'_prepare_stereo_arbitration',changed_producer)
+    assert extraction_signature(slam,cv)!=expected
+    slam.close()
+
+
+def test_cache_hit_holdout_uses_fresh_supported_measurement_not_cached_geometry(tmp_path):
+    matrix=np.array([[100.,0,32],[0,100,24],[0,0,1.]])
+    q=np.eye(4);q[2,3]=100.;q[3,2]=1.;q[3,3]=.5
+    slam=SharedSlam(matrix,stereo=StereoCamera(
+        cv.StereoSGBM_create(numDisparities=96,blockSize=5),q,.54),
+        config=MappingConfig(stereo_pose_arbitration=True))
+    cache=FeatureCache(tmp_path,extraction_signature(slam,cv))
+    left=np.zeros((48,64),np.uint8);right=left.copy()
+    pixels=np.array([[20.25,15.5],[30.5,25.25]],np.float32)
+    descriptors=np.ones((2,128),np.float32)
+    cached_points=np.full((2,3),999.,np.float32)
+    cached_right=np.full(2,999.,np.float32)
+    cached_disparity=np.full((48,64),10.,np.float32)
+    key=cache.key(left,right)
+    cache.put(key,(pixels,descriptors,cached_points,cached_right,cached_disparity))
+    restored=cache.get(key)
+    slam.current_disparity=restored[4]
+    slam._supported_extraction=None
+
+    evidence=slam._capture_supported_stereo(3,restored[0],restored[1],(64,48))
+    expected_points,expected_right=slam._measure_supported_stereo_pixels(restored[0])
+
+    assert np.allclose(evidence.points,expected_points,equal_nan=True)
+    assert np.allclose(evidence.right_u,expected_right,equal_nan=True)
+    assert not np.any(evidence.points==999.)
+    assert not np.any(evidence.right_u==999.)
+    slam.close()

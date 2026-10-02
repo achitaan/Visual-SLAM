@@ -17,19 +17,34 @@ def extraction_signature(slam, opencv):
                 if name.startswith('get') and callable(getattr(algorithm, name))}}
 
     settings = {
-        'schema': 1, 'opencv': opencv.__version__, 'numpy': np.__version__,
+        'schema': 2, 'opencv': opencv.__version__, 'numpy': np.__version__,
         'machine': platform.machine(), 'processor': platform.processor(),
         'detector': parameters(slam.detector),
         'stereo': parameters(slam.stereo.stereo) if slam.stereo is not None else None,
         'stereo_depth_policy': slam.config.stereo_depth_policy,
+        'stereo_pose_arbitration': bool(getattr(slam.config, 'stereo_pose_arbitration', False)),
         'stereo_search_config': asdict(slam.stereo_search_config),
     }
+    if slam.stereo is not None:
+        settings['stereo_calibration'] = {
+            'baseline': float(slam.stereo.baseline),
+            'disparity_offset': float(slam.stereo.disparity_offset),
+        }
     digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode())
     digest.update(opencv.getBuildInformation().encode())
     digest.update(Path(stereo_depth.__file__).read_bytes())
-    for method in (type(slam).__init__, type(slam)._extract, type(slam)._measure_stereo_pixels,
-                   type(slam)._prepare_frame_images):
-        digest.update(inspect.getsource(method).encode())
+    scorer_source = Path(__file__).resolve().with_name('stereo_pose_arbitration.py')
+    if scorer_source.is_file():
+        digest.update(b'stereo_pose_arbitration.py\0')
+        digest.update(scorer_source.read_bytes())
+    method_names = ('__init__', '_extract', '_measure_stereo_pixels',
+                    '_measure_supported_stereo_pixels', '_capture_supported_stereo',
+                    '_prepare_stereo_arbitration', '_prepare_frame_images', 'process')
+    for name in method_names:
+        method = getattr(type(slam), name, None)
+        if method is not None:
+            digest.update(name.encode()+b'\0')
+            digest.update(inspect.getsource(method).encode())
     for value in (slam.K, slam.inverse_K):
         digest.update(value.dtype.str.encode());digest.update(value.tobytes())
     if slam.stereo is not None:

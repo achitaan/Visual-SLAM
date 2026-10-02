@@ -132,6 +132,14 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
             np.tile([1., 1., 1., length_scale, length_scale, length_scale], len(free)),
             np.full(3 * len(landmarks), length_scale),
         ]
+        motion_checks = []
+        for (first, second), measurement in state.stereo_motion.items():
+            anchors = (state.pose_anchors[first], state.pose_anchors[second])
+            # A shared rigid correction preserves relative motion within one anchor.
+            if anchors[0] == anchors[1] or not any(a in free for a in anchors):
+                continue
+            motion_checks.append((measurement.copy(), anchors,
+                                  (state.poses[first].copy(), state.poses[second].copy())))
 
     def unpack(x):
         poses = {k: p.copy() for k, p in base.items()}
@@ -254,6 +262,25 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         for i, k, _ in records
     ):
         return report
+    motion_translation, motion_rotation = [], []
+    for measurement, anchors, recorded in motion_checks:
+        updated = [
+            poses[anchor] @ np.linalg.inv(base[anchor]) @ pose
+            if anchor is not None else pose
+            for anchor, pose in zip(anchors, recorded)
+        ]
+        difference = np.linalg.inv(measurement) @ np.linalg.inv(updated[0]) @ updated[1]
+        motion_translation.append(float(np.linalg.norm(difference[:3, 3])))
+        motion_rotation.append(float(np.degrees(Rotation.from_matrix(difference[:3, :3]).magnitude())))
+    report.update(
+        independent_stereo_motion_checks=len(motion_checks),
+        max_stereo_motion_translation_error_m=max(motion_translation, default=0.),
+        max_stereo_motion_rotation_error_deg=max(motion_rotation, default=0.),
+    )
+    # Apply the same agreement limits used before tracking acceptance, including
+    # earlier frame boundaries affected by this local correction.
+    if any(v > .5 for v in motion_translation) or any(v > 1.5 for v in motion_rotation):
+        return {**report, "reason": "independent_stereo_motion_inconsistency"}
     with state.lock:
         if state.revision != revision:
             return {**report, "reason": "stale_revision"}

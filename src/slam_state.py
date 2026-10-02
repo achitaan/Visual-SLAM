@@ -44,10 +44,25 @@ class MapState:
         self.pose_anchors = []
         self.relative_poses = []
         self.statuses = []
+        self.stereo_motion = {}
         self.revision = 0
         self.geometry_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
+
+    def add_stereo_motion(self, previous, current, measurement):
+        """Retain independently verified metric motion between accepted frames."""
+        validate_pose(measurement)
+        with self.lock:
+            if (not self.metric or not 0 <= previous < current < len(self.poses)
+                    or self.statuses[previous] not in ('tracking', 'relocalized')
+                    or self.statuses[current] not in ('tracking', 'relocalized')):
+                raise ValueError('Stereo motion requires two accepted metric frames')
+            key = (previous, current)
+            if key in self.stereo_motion:
+                raise ValueError('Stereo motion already recorded')
+            # Append-only evidence accompanies recorded frames, without changing geometry.
+            self.stereo_motion[key] = measurement.copy()
 
     def add_landmark(self, position, descriptor, anchor, observations):
         position = np.asarray(position, float).reshape(3)

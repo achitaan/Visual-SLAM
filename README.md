@@ -75,7 +75,7 @@ npm test
 npm run build
 ```
 
-Local backend validation passes 123 tests. The dashboard passed its 4 socket tests, type checking and production build. GitHub Actions runs backend tests on Windows/Linux and dashboard tests/build on Linux; inspect the workflow for remote results.
+Local backend validation passes 136 tests. The dashboard passed its 4 socket tests, type checking and production build. GitHub Actions runs backend tests on Windows/Linux and dashboard tests/build on Linux; inspect the workflow for remote results.
 
 The evaluator writes KITTI-format poses and JSON metrics. ATE uses explicitly labeled SE(3) alignment without scale fitting. Translation and rotation drift use the official 100–800 m segments in metric coordinates. Partial runs are labeled; insufficient segment coverage produces null drift. `--estimates-root` evaluates saved trajectories without rerunning tracking.
 

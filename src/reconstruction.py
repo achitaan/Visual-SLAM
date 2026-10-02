@@ -97,6 +97,10 @@ def export_run(slam, folder, image_paths, image_loader=None, include_images=True
         "depth_source": "geometry",
         "configuration": slam.config.__dict__,
         "loop_events": slam.loop_worker.events,
+        "independent_stereo_motion": [
+            {"previous_frame": first, "frame": second, "measurement": measurement.tolist()}
+            for (first, second), measurement in state.stereo_motion.items()
+        ],
         "verified_loops": [
             {
                 "first_keyframe": i,

@@ -107,12 +107,29 @@ class SharedSlam:
         if self.stereo is None or self.current_disparity is None or not len(pixels):
             return points, right_u
         finite = np.isfinite(pixels).all(axis=1)
-        coordinates = np.rint(np.where(finite[:, None], pixels, 0)).astype(int)
         height, width = self.current_disparity.shape
-        inside = finite & (coordinates[:, 0] >= 0) & (coordinates[:, 0] < width)
-        inside &= (coordinates[:, 1] >= 0) & (coordinates[:, 1] < height)
+        inside = finite & (pixels[:, 0] >= 0) & (pixels[:, 0] <= width-1)
+        inside &= (pixels[:, 1] >= 0) & (pixels[:, 1] <= height-1)
         ids = np.flatnonzero(inside)
-        disparity = self.current_disparity[coordinates[ids, 1], coordinates[ids, 0]]
+        if not len(ids):
+            return points, right_u
+        coordinates = np.floor(pixels[ids]).astype(int)
+        x, y = coordinates.T
+        next_x, next_y = np.minimum(x+1, width-1), np.minimum(y+1, height-1)
+        fraction = pixels[ids] - coordinates
+        dx, dy = fraction.T
+        weights = np.c_[(1-dx)*(1-dy), dx*(1-dy), (1-dx)*dy, dx*dy]
+        neighbors = np.c_[self.current_disparity[y, x], self.current_disparity[y, next_x],
+                          self.current_disparity[next_y, x], self.current_disparity[next_y, next_x]]
+        active = weights > 0
+        valid_neighbors = np.isfinite(neighbors) & (neighbors > 0) & (neighbors < 96)
+        # Interpolate a supported surface at the feature's actual coordinate.
+        # A disparity jump larger than the two-pixel stereo residual budget does
+        # not identify one surface; do not interpolate through that depth edge.
+        spread = (np.max(np.where(active, neighbors, -np.inf), axis=1)
+                  - np.min(np.where(active, neighbors, np.inf), axis=1))
+        supported = np.all(~active | valid_neighbors, axis=1) & (spread <= 2.)
+        disparity = np.sum(np.where(active, neighbors, 0.) * weights, axis=1)
         denominator = self.stereo.Q[3, 2] * disparity + self.stereo.Q[3, 3]
         depth = np.divide(
             self.stereo.Q[2, 3],
@@ -120,7 +137,7 @@ class SharedSlam:
             out=np.full(len(ids), np.nan),
             where=denominator > 0,
         )
-        valid = (disparity > 0) & (disparity < 96) & np.isfinite(depth)
+        valid = supported & (disparity > 0) & (disparity < 96) & np.isfinite(depth)
         valid &= (depth > 0.1) & (depth < 100)
         ids, disparity, depth = ids[valid], disparity[valid], depth[valid]
         rays = np.c_[pixels[ids], np.ones(len(ids))] @ self.inverse_K.T
@@ -601,6 +618,7 @@ class SharedSlam:
         pose = self.map.poses[-1].copy() if self.map.poses else np.eye(4)
         anchor = self.last_keyframe
         inlier_features = set()
+        verified_motion = None
         status = "initializing" if not self.map.landmarks else "lost"
         if not self.map.keyframes:
             if self.stereo is not None:
@@ -711,6 +729,8 @@ class SharedSlam:
                     if verified is not None:
                         if verified["reverse_checked"] and index-previous_index == 1:
                             self.verified_stereo_motion = (verified["measurement"].copy(), index)
+                        if verified["reverse_checked"]:
+                            verified_motion = (previous_index, verified["measurement"].copy())
                         reference_pose = (
                             self.map.poses[previous_index] @ verified["measurement"]
                         )
@@ -807,6 +827,9 @@ class SharedSlam:
             tracks.update({lid: p for lid, p in self.accepted_tracks})
             self.previous_tracks = list(tracks.items())
         self.map.record(pose, status, anchor)
+        if info["tracking_ok"] and verified_motion is not None:
+            previous_index, measurement = verified_motion
+            self.map.add_stereo_motion(previous_index, index, measurement)
         if (
             info["tracking_ok"]
             and anchor is not None

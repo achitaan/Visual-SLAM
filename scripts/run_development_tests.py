@@ -115,7 +115,7 @@ def main():
     manifest.update(profile=args.profile,budget_seconds=seconds,status='running',supervisor_pid=os.getpid())
     write_json(manifest_path,manifest)
     env={**os.environ,'OPENBLAS_NUM_THREADS':'1','OMP_NUM_THREADS':'1','PYTHONIOENCODING':'utf-8','MPLCONFIGDIR':str(REPO/'.mpl-cache')}
-    checks=run_owned([sys.executable,'-m','pytest','tests/test_shared_slam.py','tests/test_keyframe_retrieval.py','tests/test_keyframe_flow_support.py','tests/test_append_only_corrections.py','tests/test_local_bundle_landmarks.py','tests/test_bidirectional_refinement.py','tests/test_stereo_motion_prior.py','tests/test_stereo_map_refinement.py','tests/test_stereo_feature_support.py','tests/test_descriptor_fallback.py','tests/test_feature_cache.py','tests/test_test_budget.py','-q'],root/'checks.log',min(120,budget.remaining),env)
+    checks=run_owned([sys.executable,'-m','pytest','tests/test_shared_slam.py','tests/test_keyframe_retrieval.py','tests/test_keyframe_flow_support.py','tests/test_append_only_corrections.py','tests/test_local_bundle_landmarks.py','tests/test_bundle_stereo_motion.py','tests/test_stereo_subpixel_depth.py','tests/test_bidirectional_refinement.py','tests/test_stereo_motion_prior.py','tests/test_stereo_map_refinement.py','tests/test_stereo_feature_support.py','tests/test_descriptor_fallback.py','tests/test_feature_cache.py','tests/test_test_budget.py','-q'],root/'checks.log',min(120,budget.remaining),env)
     manifest['checks']=checks;write_json(manifest_path,manifest)
     if checks['exit_code'] != 0:
         manifest['status']='failed_checks';write_json(manifest_path,manifest);return 1

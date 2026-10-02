@@ -4,9 +4,82 @@ The experimental snapshot is preserved on `codex/shared-slam-reconstruction`.
 Reliability work continues on `codex/stereo-reliability-rework`. The original paired
 benchmark and its scheduler remain paused while diagnostic gates are established.
 
-## Flow-aware keyframe diagnostic
+## Paused progress checkpoint
 
-The latest revision counts verified flow tracks when deciding whether tracking
+Implementation and scheduled validation are paused at the user's request. The
+current frozen source fingerprint is `db696b4f7393`. This revision adds independent
+stereo-motion checks after local bundle adjustment and disparity sampling at the
+actual subpixel feature coordinates. The branch remains experimental; main is
+unchanged.
+
+| KITTI | Coverage | Estimator | ATE RMSE (m) | Translation drift (%) | Rotation drift (degrees/m) | Lost frames |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 01 | First 350 of 1,101 | Fresh preserved stereo VO | 21.510 | 8.357 | 0.01086 | 18 |
+| 01 | First 350 of 1,101 | Current shared stereo | 9.292 | 5.052 | 0.01059 | 1 |
+| 04 | First 80 of 271 | Retained preserved stereo VO | 0.444 | 1.673 | 0.01241 | 0 |
+| 04 | First 80 of 271 | Current shared stereo | 0.308 | 0.605 | 0.01510 | 0 |
+
+All comparisons use stereo metric scale, SE(3) alignment without scale fitting,
+loops off and estimation from images only. Reference poses are evaluator-only.
+The fresh 01 baseline matches the current source archive and input fingerprint.
+The 04 baseline is retained evidence on the same coverage, not a fresh run of the
+current archive. Current rotation drift is 21.6% higher than that baseline.
+
+Current 01 ATE improves 56.8% and translation drift 39.6% against preserved VO.
+The isolated loss at frame 334 recovers. Compared with the previous shared
+keyframe revision, ATE improves from 10.802 to 9.292 m and rotation drift from
+0.01672 to 0.01059 degrees/m. Current 04 improves translation drift but worsens
+ATE and rotation against the preceding shared revision. These prefixes do not
+establish full-sequence reliability: the earlier full 01 regression below remains
+an unresolved release hold until the current revision is evaluated in full.
+
+![Current stereo 01 prefix comparison](benchmark/plots/stereo-rework01-motion-depth.png)
+
+![Current stereo 01 input, loss and sparse map](benchmark/plots/stereo-rework01-motion-depth-overview.png)
+
+![Current stereo 04 prefix comparison](benchmark/plots/stereo-rework04-motion-depth.png)
+
+A read-only replay observer found three applied BA proposals on the preceding
+revision that broke existing independent stereo-motion agreement limits. Before
+BA, translation disagreement at frames 58, 171 and 322 was 0.108, 0.175 and
+0.146 m; afterward it was 0.563, 0.657 and 0.729 m. The observer preserved identical
+estimator outputs and used no reference poses. Local BA now checks affected
+relative motions before committing any geometry. It retains the existing 0.5 m
+and 1.5 degree limits and permits consistent common rigid motion of both anchors.
+The current exported 01 prefix passes all 340 saved independent motion checks.
+
+Stereo depth previously combined rounded-pixel disparity with fractional feature
+coordinates. Bilinear sampling now uses the actual feature location, rejects
+invalid contributing neighbors and avoids interpolation across disparity jumps
+larger than the existing two-pixel stereo residual budget. Integer pixel centers
+remain valid even when a zero-weight neighbor is invalid. Synthetic tests cover
+known depth surfaces and rectified principal-point offsets. Learned depth remains
+outside tracking.
+
+The current 01 estimator takes 348.8 seconds and peaks at 607.3 MiB; preserved VO
+takes 141.3 seconds and peaks at 235.4 MiB. The current diagnostic enables a feature
+cache with zero hits and 350 misses, including cache-write overhead. These are
+observed diagnostic costs, not an official comparable performance benchmark.
+The current 04 estimator takes 67.6 seconds and peaks at 252.7 MiB, also with zero
+cache hits. The full backend suite passes 136 tests; dashboard tests, type checking
+and build pass. The complete development cycle, including diagnosis, replays and
+reporting, stays within its one-hour budget.
+
+On resumption, investigate the 04 rotation regression and run matched current
+full 01/04 only when their predicted cost fits the declared budget. Then validate
+00/07 and wider coverage. Runtime, map growth, live correction, monocular recovery
+and dense reconstruction remain separate acceptance tasks. No more replays or
+feature work are scheduled at this checkpoint.
+
+To inspect saved independent motion without reference poses:
+
+```powershell
+.\.venv\Scripts\python scripts/verify_saved_stereo_motion.py --run $savedRun --output $verificationJson
+```
+
+## Retained flow-aware keyframe diagnostic
+
+The preceding revision counts verified flow tracks when deciding whether tracking
 support requires an early keyframe. Both short stereo replays use frozen source,
 loops off and evaluator-only reference poses. All frames are processed from zero.
 
@@ -73,7 +146,7 @@ the shared estimator takes 210.8 seconds
 and peaks at 321.7 MiB, versus 148.9 seconds and 231.4 MiB for the baseline.
 The BA solver 01 prefix uses cached extraction and takes 201 seconds under its
 supervisor; that timing is a diagnostic, not an official performance comparison.
-The complete backend suite passes 123 tests. Dashboard socket tests, type checking
+At that checkpoint the backend suite passed 123 tests. Dashboard socket tests, type checking
 and the production build pass.
 
 ![Retained full stereo 04 comparison before solver fixes](benchmark/plots/stereo-rework04-full.png)

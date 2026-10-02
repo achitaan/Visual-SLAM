@@ -1,8 +1,23 @@
 [
   {
+    "file": "stereo-rework01-motion-depth.png",
+    "label": "KITTI01 - 350 frames - fresh baseline, motion guard and subpixel depth",
+    "group": "Paused current revision - improved prefix; full validation pending"
+  },
+  {
+    "file": "stereo-rework01-motion-depth-overview.png",
+    "label": "KITTI01 - current350-frame input, trajectory, loss and sparse map",
+    "group": "Paused current revision - one recovered loss; loops off"
+  },
+  {
+    "file": "stereo-rework04-motion-depth.png",
+    "label": "KITTI04 - 80 frames - mixed accuracy including rotation regression",
+    "group": "Paused current revision - retained baseline; full validation pending"
+  },
+  {
     "file": "stereo-rework01-flow-support.png",
     "label": "KITTI 01 - first 350 frames - verified-flow keyframe support",
-    "group": "Current keyframe revision - short diagnostic; full validation pending"
+    "group": "Retained keyframe revision - short diagnostic; full validation pending"
   },
   {
     "file": "stereo-rework01-full-matched.png",

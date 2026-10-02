@@ -43,7 +43,7 @@ def test_source_contract_is_named_versioned_and_changes_with_dependencies(tmp_pa
     (tmp_path / "src" / "model.py").write_bytes(b"x=1\n")
     for name in ("run_shared_benchmark.py", "benchmark_identity.py", "evaluate_shared_slam.py",
                  "data_preflight.py", "download_kitti_sequence.py", "run_kitti_stream.py",
-                 "benchmark_telemetry.py", "test_budget.py"):
+                 "benchmark_telemetry.py", "test_budget.py", "run_development_tests.py"):
         (tmp_path / "scripts" / name).write_bytes(name.encode())
     (tmp_path / "requirements-lock.txt").write_text("numpy==1.0\n", encoding="utf-8")
     first = module.source_contract(tmp_path)
@@ -184,6 +184,111 @@ def _load_runner(monkeypatch, name):
     return runner
 
 
+def test_deadline_worker_timeout_marks_only_its_owned_manifest_and_partial(tmp_path, monkeypatch):
+    import socket
+
+    runner = _load_runner(monkeypatch, "shared_benchmark_hard_deadline_under_test")
+    output = tmp_path / "batch-output"
+    source_hash = "abcdef1234567890fedcba"
+    contract_dir = output / source_hash[:12] / "prefix2"
+    contract_dir.mkdir(parents=True)
+    worker_pid = 45231
+    run_identity = {"version": 1, "sequence": "04", "mode": "stereo"}
+    foreign_dir = output / source_hash[:12] / "prefix3"
+    report_dir = contract_dir / "kitti04-stereo"
+    report_dir.mkdir()
+    (report_dir / "evaluation.json").write_text(json.dumps({
+        "status": "running_checkpoint", "frames": 1,
+    }), encoding="utf-8")
+
+    token_holder = {}
+    def fake_worker(command, log, seconds, env, *, on_start):
+        on_start(worker_pid)
+        token = command[command.index("--_owner-token") + 1]
+        token_holder["token"] = token
+        owned = {
+            "status": "running", "source_sha256": source_hash,
+            "identity": {"code_contract_sha256": source_hash},
+            "owner": {"pid": worker_pid, "host": socket.gethostname(),
+                      "supervisor_token": token},
+            "runs": [{"sequence": "04", "mode": "stereo", "status": "running",
+                      "output": "kitti04-stereo", "identity": run_identity}],
+        }
+        (contract_dir / "batch.json").write_text(json.dumps(owned), encoding="utf-8")
+        foreign = {**owned, "owner": {"pid": worker_pid + 1, "host": socket.gethostname(),
+                                       "supervisor_token": token},
+                   "runs": [{"status": "running", "identity": {"keep": True}}]}
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "batch.json").write_text(json.dumps(foreign), encoding="utf-8")
+        return {"exit_code": -9, "elapsed_s": seconds, "timed_out": True}
+
+    result = runner._supervise_batch(output, 300, ["--budget-seconds", "300"],
+                                     run_owned_fn=fake_worker, clock=lambda: 100.0)
+    assert result == 2
+    saved = json.loads((contract_dir / "batch.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "interrupted_total_budget"
+    assert saved["runs"][0]["status"] == "interrupted_total_budget"
+    assert saved["runs"][0]["identity"] == run_identity
+    partial = json.loads((report_dir / "evaluation.json").read_text(encoding="utf-8"))
+    assert partial["benchmark_identity"] == run_identity
+    untouched = json.loads((foreign_dir / "batch.json").read_text(encoding="utf-8"))
+    assert untouched["status"] == "running"
+    assert untouched["runs"][0]["identity"] == {"keep": True}
+    assert token_holder["token"]
+
+
+def test_deadline_budget_fake_clock_and_preflight_defer(monkeypatch):
+    runner = _load_runner(monkeypatch, "shared_benchmark_fake_clock_under_test")
+    now = [10.0]
+    budget = runner.DeadlineBudget(40.0, clock=lambda: now[0])
+    assert budget.remaining == 30.0
+    estimate = runner._estimate_preflight_seconds(2, True, False)
+    with pytest.raises(runner.BudgetDeferred, match="preflight"):
+        runner._require_budget(budget, "04", None, "preflight", estimate)
+    now[0] = 20.0
+    assert budget.remaining == 20.0
+
+
+@pytest.mark.parametrize("seconds", [99, 3601])
+def test_cli_rejects_budget_outside_bounded_range(tmp_path, monkeypatch, seconds):
+    runner = _load_runner(monkeypatch, f"shared_benchmark_budget_bound_{seconds}")
+    monkeypatch.setattr(runner.sys, "argv", [
+        "benchmark", "--poses-root", str(tmp_path), "--budget-seconds", str(seconds),
+    ])
+    monkeypatch.setattr(runner, "_supervise_batch", lambda *args, **kwargs: pytest.fail(
+        "invalid budget must be rejected before starting the worker"))
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 2
+
+
+def test_timing_history_is_cost_only_and_requires_exact_run_identity(tmp_path, monkeypatch):
+    runner = _load_runner(monkeypatch, "shared_benchmark_cost_history_under_test")
+    identity = {"version": 1, "sequence": "04", "mode": "stereo", "inputs": {"x": "y"}}
+    history = tmp_path / "evaluation.json"
+    history.write_text(json.dumps({
+        "benchmark_identity": identity, "status": "completed", "frames": 2,
+        "elapsed_s": 100.0,
+    }), encoding="utf-8")
+    estimated = runner._estimate_mode_seconds(2, identity, {"runs": []}, [history])
+    assert estimated["estimated_seconds"] == 155
+    assert estimated["accepted_history"] == [str(history.resolve())]
+    assert estimated["use"] == "cost_estimate_only"
+    assert estimated["basis"] == "compatible_history"
+
+    fast = json.loads(history.read_text(encoding="utf-8"))
+    fast["elapsed_s"] = 1.0
+    history.write_text(json.dumps(fast), encoding="utf-8")
+    assert runner._estimate_mode_seconds(2, identity, {"runs": []}, [history])[
+        "estimated_seconds"] == 32
+
+    changed = {**identity, "inputs": {"x": "changed"}}
+    rejected = runner._estimate_mode_seconds(2, changed, {"runs": []}, [history])
+    assert rejected["estimated_seconds"] == 40
+    assert rejected["accepted_history"] == []
+    assert rejected["rejected_history"] == [str(history.resolve())]
+
+
 def test_non_object_json_report_is_classified_as_incomplete(tmp_path, monkeypatch):
     runner = _load_runner(monkeypatch, "shared_benchmark_non_object_under_test")
     output = tmp_path / "report"
@@ -270,6 +375,8 @@ def test_main_persists_stopped_status_and_preserves_completed_rows(
     monkeypatch.setattr(runner.sys, "argv", [
         "benchmark", "--poses-root", str(tmp_path), "--data-root", str(tmp_path),
         "--output", str(tmp_path / "results"), "--sequences", "04", "--modes", "stereo",
+        "--_deadline-worker", "--_deadline-at", str(__import__("time").monotonic() + 60),
+        "--_owner-token", "test-owner-token",
     ])
     monkeypatch.setattr(runner, "resume_manifest", lambda *args, **kwargs: {"runs": [completed.copy()]})
     def fail_sequence(*args, **kwargs):

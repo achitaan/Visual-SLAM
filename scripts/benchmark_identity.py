@@ -79,7 +79,7 @@ def source_contract(repo):
     source_paths += [repo / "scripts" / name for name in (
         "run_shared_benchmark.py", "benchmark_identity.py", "evaluate_shared_slam.py",
         "data_preflight.py", "download_kitti_sequence.py", "run_kitti_stream.py",
-        "benchmark_telemetry.py", "test_budget.py")]
+        "benchmark_telemetry.py", "test_budget.py", "run_development_tests.py")]
     source_records = []
     source_hashes = {}
     for path in sorted({p.resolve() for p in source_paths if p.is_file()}):

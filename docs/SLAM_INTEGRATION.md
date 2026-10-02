@@ -92,6 +92,37 @@ monocular/TUM and dense reconstruction remain later acceptance stages.
 
 ## Measured integration diagnostics
 
+### Independent stereo-depth experiment
+
+Commit `a275cef` adds an opt-in `--stereo-depth-policy verified_fallback`.
+The default remains `supported`. Missing depths are considered only when the
+original disparity is physically valid. Their measurements come from an
+independent full-range epipolar image search, with texture, ambiguity, subpixel
+correlation and reverse-match checks. Map poses and ground truth do not enter
+this search. This release keeps learned depth out of tracking.
+
+Uncached CPU replays used bundle adjustment, current retrieval and loops off,
+starting at frame zero. These are diagnostic prefixes, not full-sequence results.
+
+| Sequence / frames | Depth policy | ATE m | Translation % | Rotation °/m | Lost frames | Total wall s | Peak MiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 04 / 80 | Supported | 0.308 | 0.605 | 0.01510 | 0 | 45.39 | 260.38 |
+| 04 / 80 | Independently verified | 0.159 | 0.363 | 0.00954 | 0 | 39.41 | 261.98 |
+| 01 / 350 | Supported | 9.292 | 5.052 | 0.01059 | 1, recovered | 246.49 | 672.42 |
+| 01 / 350 | Independently verified | 8.223 | 4.685 | 0.01381 | 1, recovered | 215.19 | 707.75 |
+
+04 improves in all three accuracy measures. On 01, ATE and translation improve,
+but rotation drift worsens 30.4% relative to supported sampling and 27.1% relative
+to preserved stereo VO. **The focused accuracy gate fails; wider validation is
+stopped.** No acceptance threshold was relaxed. Passing image checks does not
+guarantee correct depth: an image-only temporal-flow audit of 04 finds useful
+restored geometry and residual outliers. Temporal consistency and the cause of
+01's orientation regression require further investigation before promotion.
+
+Actual plots: [01 comparison](benchmark/plots/verified-depth01-comparison.png)
+and [04 comparison](benchmark/plots/verified-depth04-comparison.png).
+Saved results and source fingerprints remain separate from the earlier revision.
+
 Frozen commit `7cc6191` was replayed from frame zero with CPU matching, current
 retrieval, bundle adjustment and loops off. Ground truth was read only after
 tracking. Source archives and finite trajectory/sparse exports were verified.

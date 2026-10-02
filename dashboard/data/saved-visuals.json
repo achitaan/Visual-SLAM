@@ -1,5 +1,15 @@
 [
   {
+    "file": "verified-depth01-comparison.png",
+    "label": "KITTI 01: verified depth improves position error but worsens rotation drift",
+    "group": "Experimental a275cef: 350 frames; failed accuracy gate; loops off"
+  },
+  {
+    "file": "verified-depth04-comparison.png",
+    "label": "KITTI 04: independently verified depth improves the 80-frame diagnostic",
+    "group": "Experimental a275cef: saved trajectory and sparse map; loops off"
+  },
+  {
     "file": "integration-runtime.png",
     "label": "Uncached CPU comparison and optional CUDA runtime/memory smoke test",
     "group": "Integration draft: CPU target unmet; CUDA04 prefix is27.9% faster with higher memory"

@@ -1,18 +1,23 @@
 [
   {
+    "file": "stereo-rework01-flow-support.png",
+    "label": "KITTI 01 - first 350 frames - verified-flow keyframe support",
+    "group": "Current keyframe revision - short diagnostic; full validation pending"
+  },
+  {
     "file": "stereo-rework01-full-matched.png",
     "label": "KITTI 01 - all 1101 frames - fresh uncached matched comparison",
-    "group": "Current solver revision - full ATE regression; release gate fails"
+    "group": "Retained BA solver revision - full ATE regression; release gate fails"
   },
   {
     "file": "stereo-rework01-full-conditioned-overview.png",
     "label": "KITTI 01 - full shared run - input, loss intervals, trajectory and sparse map",
-    "group": "Current solver revision - two recovered losses; substantial trajectory drift"
+    "group": "Retained BA solver revision - two recovered losses; substantial trajectory drift"
   },
   {
     "file": "stereo-rework01-conditioned-ba.png",
     "label": "KITTI 01 - 350 frames - geometry-based BA variable scaling",
-    "group": "Current solver revision - fewer lost frames; rotation regression remains"
+    "group": "Retained BA solver revision - fewer lost frames; rotation regression remains"
   },
   {
     "file": "stereo-rework01-jacobian.png",

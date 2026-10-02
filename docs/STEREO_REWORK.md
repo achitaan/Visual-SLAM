@@ -4,7 +4,33 @@ The experimental snapshot is preserved on `codex/shared-slam-reconstruction`.
 Reliability work continues on `codex/stereo-reliability-rework`. The original paired
 benchmark and its scheduler remain paused while diagnostic gates are established.
 
-## Current evidence
+## Flow-aware keyframe diagnostic
+
+The latest revision counts verified flow tracks when deciding whether tracking
+support requires an early keyframe. Both short stereo replays use frozen source,
+loops off and evaluator-only reference poses. All frames are processed from zero.
+
+| KITTI | Coverage | ATE RMSE (m) | Translation drift (%) | Rotation drift (degrees/m) | Lost frames |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 04 | First 80 frames | 0.247 | 0.668 | 0.00548 | 0 |
+| 01 | First 350 frames | 10.802 | 5.862 | 0.01672 | 2 |
+
+On the 01 prefix, keyframes fall from 145 to 128 and landmarks from 128,230 to
+111,439. ATE improves from 12.026 m and translation drift from 6.167%, while
+rotation drift worsens from 0.01494 degrees/m. Both losses, at frames 307 and 341,
+recover. Against preserved stereo VO on the same prefix, ATE and loss coverage
+improve, but rotation remains worse than its 0.01086 degrees/m. This is still an
+experimental revision; it has no new full-sequence validation or live-loop evidence.
+
+The 350-frame worker finishes in 176 seconds under its supervisor and peaks at
+617 MiB. Extraction is cached under matching input, calibration, implementation
+and OpenCV fingerprints. These are diagnostic timings, not release performance
+measurements. The quick replay, geometry tests, inspection and publication fit
+within a single development cycle; no full replay is launched for this push.
+
+![Flow-aware keyframe prefix comparison](benchmark/plots/stereo-rework01-flow-support.png)
+
+## Retained BA solver evidence
 
 These matched comparisons use the preserved stereo VO and the new shared tracker,
 with loops disabled. ATE uses SE(3) alignment with scale fixed to one. Reference
@@ -13,9 +39,9 @@ poses are loaded after tracking; learned depth is excluded from tracking.
 | KITTI | Coverage | Estimator | ATE RMSE (m) | Translation drift (%) | Lost frames |
 | --- | --- | --- | ---: | ---: | ---: |
 | 01 | All 1,101 frames | Preserved stereo VO | 72.293 | 9.574 | 23 |
-| 01 | All 1,101 frames | Current shared stereo | 88.682 | 9.104 | 2 |
+| 01 | All 1,101 frames | BA solver shared stereo | 88.682 | 9.104 | 2 |
 | 04 | First 80 frames | Preserved stereo VO | 0.444 | 1.673 | 0 |
-| 04 | First 80 frames | Current shared stereo | 0.357 | 0.691 | 0 |
+| 04 | First 80 frames | BA solver shared stereo | 0.357 | 0.691 | 0 |
 
 The full 01 comparison fails the release gate: shared ATE is 22.7% worse. Rotation
 drift also worsens from 0.01337 to 0.01641 degrees/m. Translation drift improves by
@@ -42,12 +68,12 @@ fewer losses. The short comparison did not predict complete-sequence behavior.
 
 The retained full 04 comparison predates the solver fixes: shared stereo scores
 0.879 m ATE and 0.908% drift, versus 1.763 m and 1.683% for preserved stereo.
-Those scores do not validate the current source. Both runs use no feature cache:
+Those scores do not validate later source revisions. Both runs use no feature cache:
 the shared estimator takes 210.8 seconds
 and peaks at 321.7 MiB, versus 148.9 seconds and 231.4 MiB for the baseline.
-The current 01 shared replay uses cached extraction and takes 201 seconds under its
+The BA solver 01 prefix uses cached extraction and takes 201 seconds under its
 supervisor; that timing is a diagnostic, not an official performance comparison.
-The complete backend suite passes 120 tests. Dashboard socket tests, type checking
+The complete backend suite passes 123 tests. Dashboard socket tests, type checking
 and the production build pass.
 
 ![Retained full stereo 04 comparison before solver fixes](benchmark/plots/stereo-rework04-full.png)
@@ -175,9 +201,13 @@ until representative larger graphs are validated.
 A posthoc 350-frame audit finds 49 early keyframes with at least 80 existing
 landmark observations. At frame 29, 122 accepted inliers coexist with only 45
 descriptor candidates. The insertion policy counts detector associations and
-omits additional verified flow support. A regression test and bounded ablation
-must establish the effect of correcting this count; it is not yet a validated
-explanation for the full trajectory error. Preserve the current failed revision.
+omitted additional verified flow support. The corrected policy counts unique live
+landmarks across detector associations and geometrically accepted flow tracks.
+Synthetic geometry tests cover the unchanged 80-landmark threshold and overlapping
+descriptor/flow support; they fail under the previous policy. Pose acceptance
+thresholds, the regular keyframe interval and forced stereo-reference keyframes
+remain unchanged. This correction is not yet a validated explanation for the full
+trajectory error. The failed solver revision remains available separately.
 
 Release runs require a reviewed gate JSON containing the exact `revision` and
 `passed`, supplied through `--profile release --release-ready`. Estimate complete

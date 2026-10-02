@@ -780,10 +780,18 @@ class SharedSlam:
                 status = "relocalized" if recovered else "tracking"
                 info["tracking_ok"] = True
                 last = self.map.keyframes[self.last_keyframe]
+                # Verified flow observations may have no current detector index.
+                # Count each live landmark once across both correspondence sources.
+                tracked_landmarks = {
+                    lid for lid in associations.values() if lid in self.map.landmarks
+                } | {
+                    lid for lid, _ in self.accepted_tracks if lid in self.map.landmarks
+                }
+                info["tracked_landmarks"] = len(tracked_landmarks)
                 if (
                     stereo_reference
                     or index - last.frame >= self.config.keyframe_interval
-                    or (index - last.frame >= 2 and len(associations) < 80)
+                    or (index - last.frame >= 2 and len(tracked_landmarks) < 80)
                 ):
                     anchor = self._keyframe(
                         index, pose, pixels, desc, points, right_u, associations

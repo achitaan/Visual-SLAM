@@ -7,7 +7,15 @@ from scipy.sparse import lil_matrix
 from mapping_geometry import project, right_pixel
 
 
-def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks=200, disparity_offset=0.0):
+def local_bundle_adjustment(
+    state,
+    matrix,
+    baseline=0.0,
+    window=5,
+    max_landmarks=200,
+    disparity_offset=0.0,
+    optimized=True,
+):
     with state.lock:
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
@@ -148,10 +156,14 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
             poses[k][:3, 3] = x[offset + 3 : offset + 6]
         return poses, x[point_offset:].reshape(-1, 3)
 
-    dimensions = [
-        3 if state.metric and o.right_u is not None else 2 for _, _, o in records
-    ]
-    held_dimensions = [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out]
+    dimensions = np.asarray(
+        [3 if state.metric and o.right_u is not None else 2 for _, _, o in records],
+        dtype=int,
+    )
+    held_dimensions = np.asarray(
+        [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out],
+        dtype=int,
+    )
     pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
     row = 0
     for (i, k, _), dim in zip(records, dimensions):
@@ -163,62 +175,128 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
         row += dim
 
-    def optimized_residual(x):
-        poses, points = unpack(x)
-        cameras = np.array([poses[k] for _, k, _ in records])
-        coordinates = points[np.array([i for i, _, _ in records])] - cameras[:, :3, 3]
-        camera = np.einsum("ni,nij->nj", coordinates, cameras[:, :3, :3])
+    # Residual rows repeatedly use the same point indices, camera indices, and
+    # measurements. Materialize those once so each solver evaluation only
+    # projects arrays instead of rebuilding them from Python observation tuples.
+    camera_ids = list(
+        dict.fromkeys(
+            [k for _, k, _ in records] + [k for _, k, _ in held_out]
+        )
+    )
+    camera_index = {k: i for i, k in enumerate(camera_ids)}
+    base_cameras = np.asarray([base[k] for k in camera_ids])
+    record_points = np.asarray([i for i, _, _ in records], dtype=np.intp)
+    record_cameras = np.asarray(
+        [camera_index[k] for _, k, _ in records], dtype=np.intp
+    )
+    measured_pixels = np.asarray([o.pixel for _, _, o in records], dtype=float)
+    measured_right = np.asarray(
+        [o.right_u if o.right_u is not None else 0.0 for _, _, o in records],
+        dtype=float,
+    )
+    dimension_mask = np.column_stack(
+        (np.ones(len(records), dtype=bool), np.ones(len(records), dtype=bool), dimensions == 3)
+    )
+    held_points = np.asarray([p for p, _, _ in held_out], dtype=float).reshape(-1, 3)
+    held_cameras = np.asarray(
+        [camera_index[k] for _, k, _ in held_out], dtype=np.intp
+    )
+    held_pixels = np.asarray([o.pixel for _, _, o in held_out], dtype=float).reshape(-1, 2)
+    held_right = np.asarray(
+        [o.right_u if o.right_u is not None else 0.0 for _, _, o in held_out],
+        dtype=float,
+    )
+    held_dimension_mask = np.column_stack(
+        (
+            np.ones(len(held_out), dtype=bool),
+            np.ones(len(held_out), dtype=bool),
+            held_dimensions == 3,
+        )
+    )
+    free_camera_ids = [k for k in free if k in camera_index]
+    free_camera_indices = np.asarray(
+        [camera_index[k] for k in free_camera_ids], dtype=np.intp
+    )
+    free_offsets = np.asarray(
+        [pose_offset[k] for k in free_camera_ids], dtype=np.intp
+    ).reshape(-1, 1) + np.arange(6, dtype=np.intp)
+
+    def camera_poses_for(x):
+        if not optimized:
+            poses, _ = unpack(x)
+            return np.asarray([poses[k] for k in camera_ids])
+        cameras = base_cameras.copy()
+        if len(free_offsets):
+            values = x[free_offsets]
+            cameras[free_camera_indices, :3, :3] = Rotation.from_rotvec(
+                values[:, :3]
+            ).as_matrix()
+            cameras[free_camera_indices, :3, 3] = values[:, 3:]
+        return cameras
+
+    def observation_residual(points, cameras, camera_indices, pixels, right, mask):
+        if not len(camera_indices):
+            return np.empty(0)
+        selected_cameras = cameras[camera_indices]
+        coordinates = points - selected_cameras[:, :3, 3]
+        camera = np.einsum("ni,nij->nj", coordinates, selected_cameras[:, :3, :3])
         homogeneous = camera @ matrix.T
         z = camera[:, 2]
-        pixels = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
-        errors = np.clip(pixels - np.array([o.pixel for _, _, o in records]), -1e4, 1e4)
+        projected = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
+        errors = np.clip(projected - pixels, -1e4, 1e4)
         errors[z <= 0] = 1e4
         if not state.metric:
             return errors.ravel()
-        values = np.zeros((len(records), 3))
+        values = np.zeros((len(camera_indices), 3))
         values[:, :2] = errors
         values[:, 2] = (
-            right_pixel(pixels[:, 0], z, matrix[0, 0], baseline, disparity_offset)
-            - np.array(
-                [o.right_u if o.right_u is not None else 0.0 for _, _, o in records]
-            )
+            right_pixel(projected[:, 0], z, matrix[0, 0], baseline, disparity_offset)
+            - right
         )
         values[z <= 0] = 1e4
-        return values[np.array([[True, True, dim == 3] for dim in dimensions])]
+        return values[mask]
+
+    def optimized_residual(x, cameras=None, points=None):
+        if points is None:
+            points = x[point_offset:].reshape(-1, 3)
+        if cameras is None:
+            cameras = camera_poses_for(x)
+        return observation_residual(
+            points[record_points],
+            cameras,
+            record_cameras,
+            measured_pixels,
+            measured_right,
+            dimension_mask,
+        )
 
     def objective(r):
         a = np.abs(r)
         return float(np.sum(np.where(a <= 2.0, 0.5 * r * r, 2.0 * (a - 1.0))))
 
-    def held_out_residual(poses):
+    def held_out_residual(cameras):
         if not held_out:
             return np.empty(0)
-        cameras = np.array([poses[k] for _, k, _ in held_out])
-        coordinates = np.array([p for p, _, _ in held_out]) - cameras[:, :3, 3]
-        camera = np.einsum("ni,nij->nj", coordinates, cameras[:, :3, :3])
-        homogeneous = camera @ matrix.T
-        pixels = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
-        errors = np.clip(pixels - np.array([o.pixel for _, _, o in held_out]), -1e4, 1e4)
-        errors[camera[:, 2] <= 0] = 1e4
-        if not state.metric:
-            return errors.ravel()
-        # Match the observation-by-observation row layout of the sparse
-        # Jacobian, including mixed left-only and stereo observations.
-        values = np.zeros((len(held_out), 3))
-        values[:, :2] = errors
-        values[:, 2] = (
-            right_pixel(pixels[:, 0], camera[:, 2], matrix[0, 0], baseline, disparity_offset)
-            - np.array([o.right_u if o.right_u is not None else 0. for _, _, o in held_out])
+        return observation_residual(
+            held_points,
+            cameras,
+            held_cameras,
+            held_pixels,
+            held_right,
+            held_dimension_mask,
         )
-        values[camera[:, 2] <= 0] = 1e4
-        return values[np.array([[True, True, dim == 3] for dim in held_dimensions])]
 
     def residual(x):
-        poses, _ = unpack(x)
-        return np.r_[optimized_residual(x), held_out_residual(poses)]
+        cameras = camera_poses_for(x)
+        points = x[point_offset:].reshape(-1, 3)
+        return np.r_[
+            optimized_residual(x, cameras, points),
+            held_out_residual(cameras),
+        ]
 
-    before = objective(optimized_residual(initial))
-    held_before = objective(held_out_residual(base))
+    initial_cameras = camera_poses_for(initial)
+    before = objective(optimized_residual(initial, initial_cameras))
+    held_before = objective(held_out_residual(initial_cameras))
     result = least_squares(
         residual,
         initial,
@@ -229,7 +307,9 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
         x_scale=variable_scale,
         tr_solver="lsmr",
     )
-    after = objective(optimized_residual(result.x))
+    result_cameras = camera_poses_for(result.x)
+    result_points = result.x[point_offset:].reshape(-1, 3)
+    after = objective(optimized_residual(result.x, result_cameras, result_points))
     report = {
         "applied": False,
         "initial_cost": before,
@@ -243,7 +323,7 @@ def local_bundle_adjustment(state, matrix, baseline=0.0, window=5, max_landmarks
     if not np.isfinite(result.x).all():
         return report
     poses, points = unpack(result.x)
-    held_after = objective(held_out_residual(poses))
+    held_after = objective(held_out_residual(result_cameras))
     report.update(
         held_out_observations=len(held_out),
         held_out_initial_cost=held_before,

@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,7 @@ VARIANTS = {
     'offline': ['--loop-mode', 'offline'],
 }
 CLEANUP_RESERVE_SECONDS = 10
+TIMING_SAFETY_MARGIN = 1.25
 CURATED_TESTS = (
     'tests/test_shared_slam.py',
     'tests/test_keyframe_retrieval.py',
@@ -43,6 +45,7 @@ CURATED_TESTS = (
     'tests/test_stereo_regression_diagnostics.py',
     'tests/test_test_budget.py',
     'tests/test_development_runner.py',
+    'tests/test_development_timing_history.py',
 )
 
 
@@ -103,6 +106,146 @@ def run_owned(command, log, seconds, env, *, on_start=None):
 def child_timeout(budget, maximum, reserve=CLEANUP_RESERVE_SECONDS):
     """Cap child runtime while leaving time for terminating it and saving results."""
     return max(0.0, min(float(maximum), budget.remaining - reserve))
+
+
+def _finite_positive(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0)
+
+
+def current_mapping_configuration(variant, stereo_depth_policy):
+    """Return the exact evaluator config represented by a development variant."""
+    if variant == 'baseline':
+        return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
+    source = str(REPO / 'src')
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    from shared_slam import MappingConfig
+    loop_mode = {'map-only': 'off', 'bundle': 'off', 'live': 'live', 'offline': 'offline'}[variant]
+    return dict(MappingConfig(bundle_enabled=variant != 'map-only', loop_mode=loop_mode,
+                              stereo_depth_policy=stereo_depth_policy).__dict__)
+
+
+def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
+    """Read explicit evaluation reports as runtime evidence only, never as reusable results."""
+    accepted, rejected = [], []
+    expected_performance = identity.get('performance')
+    for path in paths:
+        item = {'path': str(Path(path).expanduser().resolve()), 'use': 'cost_estimate_only'}
+        try:
+            evidence_path = Path(path).expanduser()
+            if not evidence_path.is_file():
+                raise ValueError('not a readable evaluation file')
+            raw = evidence_path.read_bytes()
+            item['evidence_sha256'] = hashlib.sha256(raw).hexdigest()
+            report = json.loads(raw)
+            if not isinstance(report, dict):
+                raise ValueError('evaluation root is not an object')
+            source_identity = report.get('development_identity')
+            if not isinstance(source_identity, dict):
+                raise ValueError('missing development identity')
+            if report.get('status') not in ('completed', 'completed_with_tracking_loss'):
+                raise ValueError('evaluation is incomplete')
+            for field, expected in (('sequence', identity.get('sequence')),
+                                    ('frames', identity.get('frames'))):
+                if report.get(field) != expected or source_identity.get(field) != expected:
+                    raise ValueError(f'mismatched {field}')
+            if source_identity.get('variant') != identity.get('variant'):
+                raise ValueError('mismatched variant')
+            if report.get('stereo') is not True:
+                raise ValueError('sensor mode is not stereo')
+            if report.get('coverage') != coverage:
+                raise ValueError('mismatched frame coverage')
+            if source_identity.get('cached') is not identity.get('cached'):
+                raise ValueError('mismatched feature-cache timing category')
+            cache_metadata = report.get('feature_cache')
+            if identity.get('variant') != 'baseline':
+                if not isinstance(cache_metadata, dict) or cache_metadata.get('enabled') is not identity.get('cached'):
+                    raise ValueError('missing or mismatched evaluator feature-cache metadata')
+            elif isinstance(cache_metadata, dict) and cache_metadata.get('enabled'):
+                raise ValueError('mismatched baseline feature-cache metadata')
+            if report.get('configuration') != configuration:
+                raise ValueError('mismatched evaluator configuration')
+
+            if identity.get('variant') == 'baseline':
+                historical_performance = source_identity.get('performance')
+                if historical_performance not in (None, {'preserved_defaults': True}):
+                    raise ValueError('mismatched baseline performance mode')
+            elif source_identity.get('performance') != expected_performance:
+                raise ValueError('mismatched backend/performance mode')
+            elif identity.get('variant') != 'baseline':
+                performance_metadata = report.get('performance_configuration')
+                backend_metadata = report.get('matching_backend')
+                if not isinstance(performance_metadata, dict) or any(
+                        performance_metadata.get(field) != expected_performance[field]
+                        for field in ('matching_backend', 'retrieval', 'cpu_optimizations')):
+                    raise ValueError('missing or mismatched evaluator performance configuration')
+                if performance_metadata.get('profile') is not False:
+                    raise ValueError('mismatched evaluator profiling mode')
+                if (not isinstance(backend_metadata, dict)
+                        or backend_metadata.get('requested') != expected_performance['matching_backend']):
+                    raise ValueError('missing or mismatched evaluator backend metadata')
+                if report.get('opencv_threads') != expected_performance['opencv_threads']:
+                    raise ValueError('mismatched evaluator OpenCV thread count')
+
+            expected_depth = identity.get('stereo_depth_policy')
+            if identity.get('variant') != 'baseline':
+                historical_depths = [value for value in (
+                    source_identity.get('stereo_depth_policy'), report.get('stereo_depth_policy'),
+                    report.get('configuration', {}).get('stereo_depth_policy')) if value is not None]
+                if not historical_depths or any(value != expected_depth for value in historical_depths):
+                    raise ValueError('missing or mismatched stereo-depth policy')
+
+            for field in ('input', 'reference'):
+                expected = identity.get(field)
+                historical = source_identity.get(field)
+                if expected is not None and historical is None:
+                    raise ValueError(f'missing ordered {field} fingerprint')
+                if historical is not None and expected is not None and historical != expected:
+                    raise ValueError(f'mismatched ordered {field} fingerprint')
+
+            revision = source_identity.get('revision')
+            if not isinstance(revision, str) or not revision:
+                raise ValueError('missing source revision')
+            elapsed = report.get('total_wall_seconds')
+            timing_field = 'total_wall_seconds'
+            if not _finite_positive(elapsed):
+                elapsed = report.get('elapsed_s')
+                timing_field = 'elapsed_s'
+            if not _finite_positive(elapsed):
+                raise ValueError('missing finite completed-run timing')
+            frames = identity['frames']
+            item.update(source_revision=revision,
+                        source_revision_matches=(revision == current_revision),
+                        rate_s_per_frame=float(elapsed) / frames,
+                        timing_field=timing_field, elapsed_seconds=float(elapsed),
+                        frames=frames)
+            accepted.append(item)
+        except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as error:
+            item['reason'] = str(error)
+            rejected.append(item)
+    return {'accepted': accepted, 'rejected': rejected, 'usage': 'cost_estimate_only'}
+
+
+def estimate_case_runtime(frames, existing_samples, history_paths, identity, coverage,
+                          configuration, current_revision, fallback_rate):
+    """Use the slowest compatible observed rate with margin; never infer a pass from timing."""
+    history = inspect_timing_history(history_paths, identity, coverage, configuration,
+                                     current_revision)
+    rates = [{'rate_s_per_frame': float(rate), 'source': 'current_cycle'}
+             for rate in existing_samples if _finite_positive(rate)]
+    rates.extend({'rate_s_per_frame': row['rate_s_per_frame'],
+                  'source': 'historical_evaluation', 'path': row['path'],
+                  'source_revision': row['source_revision'],
+                  'source_revision_matches': row['source_revision_matches'],
+                  'use': 'cost_estimate_only'} for row in history['accepted'])
+    if not rates:
+        rates = [{'rate_s_per_frame': float(fallback_rate), 'source': 'conservative_default'}]
+    selected = max(rates, key=lambda row: row['rate_s_per_frame'])
+    rate = selected['rate_s_per_frame']
+    return {'rate_s_per_frame': rate, 'estimated_seconds': frames * rate * TIMING_SAFETY_MARGIN,
+            'safety_margin_factor': TIMING_SAFETY_MARGIN, 'selected_rate': selected,
+            'observed_rates': rates, 'timing_history': history}
 
 
 def reusable(report, identity):
@@ -199,12 +342,15 @@ def main():
     parser.add_argument('--variants', nargs='+', choices=list(VARIANTS), default=['bundle'])
     parser.add_argument('--release-ready', type=Path, help='Exact-revision focused gate assessment required for full runs')
     parser.add_argument('--feature-cache',type=Path,help='Bounded cached diagnostics; unavailable for release performance runs')
+    parser.add_argument('--timing-history', type=Path, nargs='+', action='append', default=[],
+                        help='Explicit completed evaluation JSON files used only to estimate runtime')
     parser.add_argument('--matching-backend',choices=['cpu','cuda','auto'],default='cpu')
     parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback'],default='supported')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
     args=parser.parse_args()
+    timing_history_paths = [path for group in args.timing_history for path in group]
     if args.profile=='release' and args.feature_cache:parser.error('Release performance must use uncached extraction')
     if args.opencv_threads < 1:parser.error('--opencv-threads must be positive')
     seconds=args.budget_seconds if args.budget_seconds is not None else (300 if args.profile=='quick' else 3600)
@@ -278,10 +424,22 @@ def main():
             if report_path.exists() and reusable(json.loads(report_path.read_text(encoding='utf-8')),identity):
                 manifest['attempts'].append({'sequence':seq,'variant':variant,'output':folder.name,'status':'reused'})
                 write_json(manifest_path,manifest);continue
-            # Use the slowest observed same-case rate; budget conservatively until measured.
-            samples=[r['elapsed_s']/r['frames'] for r in manifest['attempts'] if r.get('sequence')==seq and r.get('frames',0)>0 and r.get('elapsed_s') and (r.get('variant')=='baseline')==(variant=='baseline')]
-            rate=max(samples,default=2.0 if seq=='04' else 4.0)
-            estimate=frames*rate*1.25
+            # Historical reports affect scheduling only. They never satisfy a case or supply metrics.
+            samples=[r['elapsed_s']/r['frames'] for r in manifest['attempts']
+                     if r.get('sequence') == seq and r.get('variant') == variant
+                     and r.get('frames') == frames and r.get('status') in
+                     ('completed', 'completed_with_tracking_loss')
+                     and _finite_positive(r.get('elapsed_s'))]
+            expected_coverage = 'full' if args.profile == 'release' else 'partial'
+            expected_configuration = current_mapping_configuration(variant, args.stereo_depth_policy)
+            estimate_details = estimate_case_runtime(
+                frames, samples, timing_history_paths, identity, expected_coverage,
+                expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
+            estimate=estimate_details['estimated_seconds']
+            manifest.setdefault('timing_estimates', []).append({
+                'sequence': seq, 'variant': variant, 'coverage': expected_coverage,
+                'estimate': estimate_details})
+            write_json(manifest_path, manifest)
             if not budget.permits(estimate,reserve=60):
                 manifest.update(status='deferred_budget',next_case={'sequence':seq,'variant':variant,'estimated_seconds':estimate})
                 write_json(manifest_path,manifest);print(json.dumps(manifest['next_case']),flush=True);return 2

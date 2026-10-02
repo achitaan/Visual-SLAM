@@ -30,6 +30,7 @@ from kitti import load_poses_txt, validate_sequence
 from reconstruction import export_run
 from metrics import evaluate_trajectory
 from benchmark_telemetry import SnapshotWriter, snapshot_target
+from performance import PerformanceConfig, StageProfiler, latency_stats
 
 
 def peak_memory_mb():
@@ -91,6 +92,10 @@ def main():
     parser.add_argument("--sequence", default="04")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--retrieval", choices=["indexed", "exhaustive"], default="indexed")
+    parser.add_argument("--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu")
+    parser.add_argument("--no-cpu-optimizations", action="store_true")
+    parser.add_argument("--profile", type=Path, help="Write stage wall times and operation counts")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--telemetry-file",
@@ -224,7 +229,10 @@ def main():
         vo = None
         right = None
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
-    slam = SharedSlam(matrix, stereo=camera)
+    performance = PerformanceConfig(args.retrieval, args.matching_backend, not args.no_cpu_optimizations, args.profile is not None)
+    slam = SharedSlam(matrix, stereo=camera, performance=performance)
+    profiler = getattr(slam, "profiler", StageProfiler())
+    frame_times, input_times = [], []
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -253,10 +261,16 @@ def main():
                         "required_bytes": required,
                     }
                     break
-            left_image = loader(i)
+            load_started = time.perf_counter()
+            with profiler.measure("input_loading"):
+                left_image = loader(i)
+                right_image = right[i] if right is not None else None
+            input_times.append(time.perf_counter() - load_started)
+            frame_started = time.perf_counter()
             _, info = slam.process(
-                i, left_image, right[i] if right is not None else None
+                i, left_image, right_image
             )
+            frame_times.append(time.perf_counter() - frame_started)
             if observer:
                 observer.publish(slam, i, left_image, info)
             if initialized_at is None and info["tracking_ok"]:
@@ -267,13 +281,17 @@ def main():
                     flush=True,
                 )
     finally:
-        slam.close()
+        with profiler.measure("finalization"):
+            slam.close()
     if observer and slam.map.poses:
         observer.publish(slam, len(slam.map.poses) - 1, left_image, info, force=True)
     elapsed = time.perf_counter() - started
     processed_frames = len(slam.map.poses)
     paths = paths[:processed_frames]
-    export_run(slam, args.output, paths, image_loader=loader)
+    export_started = time.perf_counter()
+    with profiler.measure("export"):
+        export_run(slam, args.output, paths, image_loader=loader)
+    export_elapsed = time.perf_counter() - export_started
     source_folder = args.output / "source"
     source_folder.mkdir(exist_ok=True)
     for name, data in source_snapshot.items():
@@ -303,6 +321,10 @@ def main():
         "configuration": slam.config.__dict__,
         "coverage": "partial" if args.max_frames or storage_interruption else "full",
         "ground_truth_used_for_estimation": False,
+        "performance_configuration": performance.__dict__,
+        "frame_latency": latency_stats(frame_times),
+        "input_loading": latency_stats(input_times),
+        "export_elapsed_s": export_elapsed,
     }
     report["source_sha256"] = source_hashes
     report["evaluator_sha256"] = hashlib.sha256(evaluator_source).hexdigest()
@@ -388,6 +410,10 @@ def main():
                 metrics["segments"] = []
                 metrics["segment_count"] = 0
             report["metrics"] = {k: v for k, v in metrics.items() if k != "segments"}
+    if args.profile:
+        args.profile.parent.mkdir(parents=True, exist_ok=True)
+        args.profile.write_text(json.dumps(profiler.report(), indent=2), encoding="utf-8")
+        report["profiling"] = profiler.report()
     (args.output / "evaluation.json").write_text(
         json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
     )

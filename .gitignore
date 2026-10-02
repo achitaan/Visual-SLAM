@@ -4,6 +4,8 @@ poses
 backup.py
 
 .venv
+.venv-performance/
+.venv-performance-gpu/
 __pycache__/
 *.pyc
 .conda_pkgs/

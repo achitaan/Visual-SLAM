@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--no-cpu-optimizations", action="store_true")
     parser.add_argument("--profile", type=Path, help="Write stage wall times and operation counts")
+    parser.add_argument("--opencv-threads", type=int, default=1, help="OpenCV workers; 1 matches the frozen benchmark")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--telemetry-file",
@@ -109,6 +110,8 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if args.opencv_threads < 1:
+        parser.error("--opencv-threads must be positive")
     if args.min_free_mb < 128:
         parser.error("--min-free-mb must be at least 128")
     if args.max_frames is not None and args.max_frames < 2:
@@ -126,7 +129,7 @@ def main():
         raise OSError(
             "Insufficient space to start: free space must cover the export reserve"
         )
-    cv.setNumThreads(1)
+    cv.setNumThreads(args.opencv_threads)
     cv.setRNGSeed(0)
     times = None
     if args.dataset == "kitti":
@@ -233,6 +236,7 @@ def main():
     setup_started = time.perf_counter()
     slam = SharedSlam(matrix, stereo=camera, performance=performance)
     setup_elapsed = time.perf_counter() - setup_started
+    setup_peak_memory = peak_memory_mb()
     profiler = getattr(slam, "profiler", StageProfiler())
     frame_times, input_times = [], []
     source_snapshot = {
@@ -328,6 +332,8 @@ def main():
         "input_loading": latency_stats(input_times),
         "export_elapsed_s": export_elapsed,
         "estimator_setup_elapsed_s": setup_elapsed,
+        "estimator_setup_peak_memory_mb": setup_peak_memory,
+        "opencv_threads": args.opencv_threads,
         "matching": slam.matcher.metadata() if hasattr(slam, "matcher") else {},
     }
     report["source_sha256"] = source_hashes

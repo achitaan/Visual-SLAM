@@ -191,3 +191,54 @@ the shared pipeline does not embed or depend on the ORB-SLAM implementation,
 DBoW2, g2o or Pangolin. Depth Anything V2 is a separately obtained third-party
 model for optional offline reconstruction, with checkpoint provenance recorded
 in the reconstruction manifest.
+
+## Performance branch
+
+`codex/slam-performance` adds indexed keyframe retrieval, map/solver allocation
+optimizations and optional CUDA descriptor matching. CPU matching remains the
+default. Accuracy thresholds, feature counts, optimization schedules and the
+300-keyframe live graph guard are unchanged. See the
+[small pilot report](docs/performance/REPORT.md) for speed, memory and quality results.
+
+Both the live `--slam` entrypoint and shared evaluator accept `--retrieval indexed`
+or `--retrieval exhaustive`, `--matching-backend cpu|cuda|auto`,
+`--no-cpu-optimizations`, `--opencv-threads` and `--profile <output.json>`.
+Profiling reports nested wall times and separate background work; do not sum
+these stages as if they were serial. The evaluator records input loading,
+exports, frame latency, source hashes and GPU memory statistics separately.
+
+```powershell
+.\.venv\Scripts\python scripts/evaluate_shared_slam.py --data-root $data --poses-root "$data/poses" --sequence 04 --stereo --output results/performance/cpu04 --profile results/performance/cpu04/profile.json
+```
+
+CUDA matching requires a separate CUDA-enabled PyTorch environment. Standard
+OpenCV wheels need no CUDA build for this backend. Create a new environment,
+install the normal requirements, then install `requirements-performance-gpu.txt`
+following the [PyTorch installation instructions](https://pytorch.org/get-started/locally/).
+Do not change an environment being used by a frozen benchmark.
+
+```powershell
+python -m venv .venv-performance-gpu
+.\.venv-performance-gpu\Scripts\python -m pip install -r requirements-lock.txt
+.\.venv-performance-gpu\Scripts\python -m pip install -r requirements-performance-gpu.txt
+.\.venv-performance-gpu\Scripts\python scripts/evaluate_shared_slam.py --data-root $data --poses-root "$data/poses" --sequence 04 --stereo --matching-backend cuda --output results/performance/gpu04
+```
+
+Explicit `cuda` fails clearly when unavailable; `auto` falls back to CPU and
+retains GPU matching only when workload calibration finds a speed benefit and
+matching agreement. CUDA processes have additional runtime memory overhead.
+OpenCV defaults to one worker; larger worker counts are an explicit experiment,
+recorded in evaluator reports.
+
+The pilot tools use a separate frozen source snapshot and candidate snapshot
+under `results/performance`, with read-only input datasets. Create them using
+`scripts/prepare_performance_pilot.py --baseline-ref 63454a0 --output results/performance`;
+existing snapshots are never overwritten. The controller expects KITTI 04 in
+this worktree's `.datasets/performance-kitti`, and KITTI 01, TUM desk and reference
+poses under the supplied `--development-root` (see controller paths). Run
+`scripts/run_performance_pilot.py --help` for the small serial comparison controller
+and use `--final-only` to repeat the five cases on the current implementation.
+Use `scripts/summarize_performance_pilot.py` to regenerate Markdown/JSON/CSV reports.
+`scripts/check_performance_retrieval.py` audits known loop candidates using saved
+input images and replays saved loop measurements against exported keyframe poses;
+that replay does not reproduce the original pre-correction optimization snapshot.

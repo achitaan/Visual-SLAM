@@ -73,3 +73,46 @@ def test_resume_keeps_history_and_rejects_incompatible_source(tmp_path,monkeypat
     assert resumed['runs']==saved['runs']
     with pytest.raises(ValueError,match='mismatched'):module.resume_manifest(p,{**initial,'source_sha256':'new'},True)
     assert json.loads(p.read_text())==saved
+
+
+def test_development_resume_validates_identity_and_preserves_interrupted_case(tmp_path,monkeypatch):
+    import json
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'scripts'))
+    module=load('run_development_tests')
+    path=tmp_path/'cycle.json'
+    requested={'variants':['bundle']}
+    saved={'revision':'abc','profile':'quick','requested':requested,'status':'running',
+           'supervisor_pid':123,'active_case':{'worker_pid':124,'output':'partial'},
+           'attempts':[{'status':'completed','output':'retained'}]}
+    path.write_text(json.dumps(saved))
+    resumed=module.resume_manifest(path,'abc','quick',requested,probe=lambda _:False)
+    assert resumed['attempts']==saved['attempts'] and 'active_case' not in resumed
+    assert resumed['interruptions'][0]['active_case']['output']=='partial'
+    assert json.loads(path.read_text())==saved
+    for field,value in [('revision','other'),('profile','focused'),('requested',{'variants':['live']})]:
+        changed={**saved,field:value};path.write_text(json.dumps(changed))
+        with pytest.raises(ValueError,match='Mismatched'):
+            module.resume_manifest(path,'abc','quick',requested,probe=lambda _:False)
+
+
+@pytest.mark.parametrize('liveness',[True,None])
+def test_development_resume_does_not_duplicate_live_or_unknown_process(tmp_path,monkeypatch,liveness):
+    import json
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'scripts'))
+    module=load('run_development_tests');path=tmp_path/'cycle.json'
+    path.write_text(json.dumps({'revision':'abc','profile':'quick','requested':{},
+                              'status':'running','supervisor_pid':123,'attempts':[]}))
+    with pytest.raises(ValueError,match='still be active'):
+        module.resume_manifest(path,'abc','quick',{},probe=lambda _:liveness)
+
+
+def test_release_gate_validation_has_no_manifest_side_effects(tmp_path,monkeypatch):
+    import json
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'scripts'))
+    module=load('run_development_tests');gate=tmp_path/'gate.json'
+    for value in [None,{'revision':'other','passed':True},{'revision':'abc','passed':False}]:
+        if value:gate.write_text(json.dumps(value))
+        with pytest.raises(ValueError):module.validate_release_gate('release',gate if value else None,'abc')
+    assert not (tmp_path/'cycle.json').exists()
+    gate.write_text(json.dumps({'revision':'abc','passed':True}))
+    module.validate_release_gate('release',gate,'abc')

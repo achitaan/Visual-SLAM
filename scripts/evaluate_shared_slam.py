@@ -32,6 +32,7 @@ from metrics import evaluate_trajectory
 from benchmark_telemetry import SnapshotWriter, snapshot_target
 from test_budget import Budget, write_json
 from feature_cache import FeatureCache, extraction_signature
+from performance import PerformanceConfig
 
 
 def peak_memory_mb():
@@ -99,6 +100,11 @@ def main():
     parser.add_argument("--disable-bundle", action="store_true")
     parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
+    parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
+    parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
+    parser.add_argument('--no-cpu-optimizations', action='store_true')
+    parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
+    parser.add_argument('--opencv-threads', type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--telemetry-file",
@@ -112,6 +118,9 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if args.opencv_threads < 1:
+        parser.error('--opencv-threads must be positive')
+    cv.setNumThreads(args.opencv_threads)
     if args.max_wall_seconds is not None and args.max_wall_seconds <= 0:
         parser.error("--max-wall-seconds must be positive")
     budget = Budget(args.max_wall_seconds)
@@ -133,7 +142,6 @@ def main():
         raise OSError(
             "Insufficient space to start: free space must cover the export reserve"
         )
-    cv.setNumThreads(1)
     cv.setRNGSeed(0)
     times = None
     if args.dataset == "kitti":
@@ -236,7 +244,10 @@ def main():
         vo = None
         right = None
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
-    slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle, loop_mode=args.loop_mode))
+    performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
+                                    cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
+    slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
+                     loop_mode=args.loop_mode), performance=performance)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -342,7 +353,7 @@ def main():
         "keyframes": len(slam.map.keyframes),
         "landmarks": len(slam.map.landmarks),
         "elapsed_s": elapsed,
-        "processing_fps": len(paths) / elapsed,
+        "processing_fps": processed_frames / elapsed,
         "peak_memory_mb": peak_memory_mb(),
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
@@ -354,6 +365,14 @@ def main():
     report["evaluator_sha256"] = hashlib.sha256(evaluator_source).hexdigest()
     report["stage_timings"] = slam.profile.report()
     report["stage_timing_semantics"] = "Inclusive timings; nested stages overlap"
+    report['performance_configuration'] = performance.__dict__
+    report['matching_backend'] = slam.matcher.metadata()
+    report['opencv_threads'] = cv.getNumThreads()
+    if args.profile:
+        profile = slam.profile.detailed_report()
+        args.profile.parent.mkdir(parents=True, exist_ok=True)
+        write_json(args.profile, profile)
+        report['performance_profile'] = profile
     report["diagnostic_overrides"] = {"disable_bundle": args.disable_bundle, "loop_mode": args.loop_mode if args.loop_mode != "live" else None}
     report["wall_budget_seconds"] = args.max_wall_seconds
     report["feature_cache"] = cache.metadata() if cache else {"enabled": False}

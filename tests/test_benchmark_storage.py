@@ -69,6 +69,7 @@ def test_low_space_exports_only_processed_frames(tmp_path, monkeypatch):
             self.closed = False
             from stage_profile import StageProfile
             self.profile = StageProfile()
+            self.matcher = SimpleNamespace(metadata=lambda: {'requested': 'cpu', 'cuda_calls': 0})
 
         def process(self, index, image, right):
             self.map.poses.append(np.eye(4))

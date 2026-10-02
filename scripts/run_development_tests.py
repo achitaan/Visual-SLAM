@@ -80,11 +80,75 @@ def reusable(report, identity):
             and report.get('frames') == identity['frames'])
 
 
+def process_running(pid):
+    """Read process liveness without signaling a potentially reused Windows PID."""
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if os.name != 'nt':
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return None
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False if ctypes.get_last_error() == 87 else None
+    code = wintypes.DWORD()
+    try:
+        return code.value == 259 if kernel.GetExitCodeProcess(handle, ctypes.byref(code)) else None
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def resume_manifest(path, revision, profile, requested, probe=process_running):
+    if not path.exists():
+        return {'revision': revision, 'profile': profile, 'requested': requested, 'attempts': []}
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    if any(manifest.get(k) != v for k, v in
+           [('revision', revision), ('profile', profile), ('requested', requested)]):
+        raise ValueError('Mismatched cycle identity; preserve this manifest and use a separate output')
+    if manifest.get('status') == 'running':
+        pids = [manifest.get('supervisor_pid')]
+        if manifest.get('active_case'):
+            pids.append(manifest['active_case'].get('worker_pid'))
+        if any(probe(pid) is not False for pid in pids):
+            raise ValueError('Existing cycle may still be active; verify it before resuming')
+        interrupted = manifest.pop('active_case', None)
+        manifest.setdefault('interruptions', []).append({
+            'status': 'interrupted_supervisor_exit', 'active_case': interrupted,
+            'previous_supervisor_pid': manifest.get('supervisor_pid'), 'observed_unix': time.time()})
+    return manifest
+
+
+def validate_release_gate(profile, gate_path, fingerprint):
+    if profile != 'release':
+        return
+    if not gate_path:
+        raise ValueError('Release runs require --release-ready')
+    gate = json.loads(gate_path.read_text(encoding='utf-8'))
+    if gate.get('revision') != fingerprint or gate.get('passed') is not True:
+        raise ValueError('Focused gate must pass for this exact revision')
+
+
+def validation_provenance():
+    return {'tests_sha256': hashlib.sha256(b''.join(
+        p.name.encode()+b'\0'+p.read_bytes() for p in sorted((REPO/'tests').glob('test_*.py')))).hexdigest()}
+
+
 def source_fingerprint():
     sources = sorted((REPO/'src').glob('*.py')) + [
         REPO/'scripts'/name for name in ('evaluate_shared_slam.py',
         'evaluate_stereo_baseline.py', 'run_development_tests.py',
-        'test_budget.py', 'data_preflight.py')]
+        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py')]
     digest = hashlib.sha256()
     for path in sources:
         digest.update(str(path.relative_to(REPO)).encode())
@@ -103,15 +167,34 @@ def main():
     parser.add_argument('--variants', nargs='+', choices=list(VARIANTS), default=['bundle'])
     parser.add_argument('--release-ready', type=Path, help='Exact-revision focused gate assessment required for full runs')
     parser.add_argument('--feature-cache',type=Path,help='Bounded cached diagnostics; unavailable for release performance runs')
+    parser.add_argument('--matching-backend',choices=['cpu','cuda','auto'],default='cpu')
+    parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
+    parser.add_argument('--no-cpu-optimizations',action='store_true')
+    parser.add_argument('--opencv-threads',type=int,default=1)
     args=parser.parse_args()
     if args.profile=='release' and args.feature_cache:parser.error('Release performance must use uncached extraction')
+    if args.opencv_threads < 1:parser.error('--opencv-threads must be positive')
     seconds=args.budget_seconds if args.budget_seconds is not None else (300 if args.profile=='quick' else 3600)
     if not 0 < seconds <= 3600:parser.error('Cycle budget must be within 1–3600 seconds')
     budget=Budget(seconds)
     fingerprint=source_fingerprint()
-    root=args.output/fingerprint[:12]/args.profile;root.mkdir(parents=True,exist_ok=True)
+    try:
+        validate_release_gate(args.profile, args.release_ready, fingerprint)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    root=args.output/fingerprint[:12]/args.profile
     manifest_path=root/'cycle.json'
-    manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {'revision':fingerprint,'attempts':[]}
+    requested={'variants': args.variants, 'data_root': str(args.data_root.resolve()),
+               'poses_root': str(args.poses_root.resolve()),
+               'feature_cache': str(args.feature_cache.resolve()) if args.feature_cache else None,
+               'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
+                               'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
+    try:
+        manifest=resume_manifest(manifest_path, fingerprint, args.profile, requested)
+    except ValueError as error:
+        parser.error(str(error))
+    root.mkdir(parents=True,exist_ok=True)
+    manifest['validation_provenance']=validation_provenance()
     manifest.update(profile=args.profile,budget_seconds=seconds,status='running',supervisor_pid=os.getpid())
     write_json(manifest_path,manifest)
     env={**os.environ,'OPENBLAS_NUM_THREADS':'1','OMP_NUM_THREADS':'1','PYTHONIOENCODING':'utf-8','MPLCONFIGDIR':str(REPO/'.mpl-cache')}
@@ -121,16 +204,17 @@ def main():
         manifest['status']='failed_checks';write_json(manifest_path,manifest);return 1
     cases=[('04',80)] if args.profile=='quick' else [('04',80),('01',350)]
     if args.profile=='release':
-        if not args.release_ready:parser.error('Release runs require --release-ready')
-        gate=json.loads(args.release_ready.read_text(encoding='utf-8'))
-        if gate.get('revision')!=fingerprint or not gate.get('passed'):parser.error('Focused gate must pass for this exact revision')
         cases=[('01',1101),('04',271),('00',4541),('07',1101)]
     for seq,frames in cases:
+        preparation_started=time.monotonic()
         try:
             inputs=preflight(args.data_root,seq,frames,budget=budget)
         except (OSError,ValueError,TimeoutError) as error:
             manifest['attempts'].append({'sequence':seq,'status':'input_failure','error_type':type(error).__name__})
             manifest['status']='input_failure';write_json(manifest_path,manifest);return 1
+        manifest.setdefault('preflight',[]).append({'sequence':seq,'frames':frames,
+            'elapsed_s':time.monotonic()-preparation_started,'input':inputs})
+        write_json(manifest_path,manifest)
         for variant in args.variants:
             if source_fingerprint() != fingerprint:
                 manifest['status']='interrupted_source_change';write_json(manifest_path,manifest);return 1
@@ -138,6 +222,7 @@ def main():
                 manifest['status']='interrupted_requested_stop';write_json(manifest_path,manifest);return 1
             identity={'revision':fingerprint,'sequence':seq,'frames':frames,'input':inputs['sha256'],'variant':variant,
                       'cached':args.feature_cache is not None and variant!='baseline',
+                      'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
             folder=root/f'{seq}-{variant}-{key}'
@@ -158,7 +243,7 @@ def main():
             samples=[r['elapsed_s']/r['frames'] for r in manifest['attempts'] if r.get('sequence')==seq and r.get('frames',0)>0 and r.get('elapsed_s') and (r.get('variant')=='baseline')==(variant=='baseline')]
             rate=max(samples,default=2.0 if seq=='04' else 4.0)
             estimate=frames*rate*1.25
-            if not budget.permits(estimate,reserve=30):
+            if not budget.permits(estimate,reserve=60):
                 manifest.update(status='deferred_budget',next_case={'sequence':seq,'variant':variant,'estimated_seconds':estimate})
                 write_json(manifest_path,manifest);print(json.dumps(manifest['next_case']),flush=True);return 2
             folder.mkdir(parents=True,exist_ok=True)
@@ -168,10 +253,14 @@ def main():
                 report_path=folder/'evaluation.json'
             command=[sys.executable,'-u',str(REPO/'scripts/evaluate_shared_slam.py'),'--stereo','--data-root',str(args.data_root),
                      '--poses-root',str(args.poses_root),'--sequence',seq,'--max-frames',str(frames),'--output',str(folder),
-                     '--max-wall-seconds',str(max(1,budget.remaining-30)),*VARIANTS[variant]]
+                     '--max-wall-seconds',str(max(1,budget.remaining-60)),*VARIANTS[variant]]
             if variant=='baseline':
                 command[2]=str(REPO/'scripts/evaluate_stereo_baseline.py');command.remove('--stereo')
-            elif args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
+            else:
+                command.extend(['--matching-backend',args.matching_backend,'--retrieval',args.retrieval,
+                                '--opencv-threads',str(args.opencv_threads)])
+                if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
+                if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])
             if args.profile=='release':
                 index=command.index('--max-frames');del command[index:index+2]
@@ -179,7 +268,7 @@ def main():
             def started(pid):
                 manifest['active_case']={'sequence':seq,'variant':variant,'output':folder.name,'worker_pid':pid,'started_unix':time.time()}
                 write_json(manifest_path,manifest)
-            result=run_owned(command,folder/'runner.log',max(1,budget.remaining-20),env,on_start=started)
+            result=run_owned(command,folder/'runner.log',max(1,budget.remaining-50),env,on_start=started)
             manifest.pop('active_case',None)
             row={'sequence':seq,'variant':variant,'output':folder.name,**result}
             if report_path.exists():

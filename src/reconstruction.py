@@ -96,6 +96,8 @@ def export_run(slam, folder, image_paths, image_loader=None, include_images=True
         "sparse_points": len(landmarks),
         "depth_source": "geometry",
         "configuration": slam.config.__dict__,
+        "performance_configuration": slam.performance.__dict__,
+        "matching_backend": slam.matcher.metadata(),
         "loop_events": slam.loop_worker.events,
         "independent_stereo_motion": [
             {"previous_frame": first, "frame": second, "measurement": measurement.tolist()}

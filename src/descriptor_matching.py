@@ -117,7 +117,9 @@ class DescriptorMatcher:
             near_tie = squared[:, 1] - squared[:, 0] <= 2 * bound
             near_ratio = np.abs(squared[:, 0] - ratio ** 2 * squared[:, 1]) <= 2 * bound
             cancellation_sensitive = squared[:, 0] <= bound
-            ambiguous = (accepted & (near_tie | near_ratio | cancellation_sensitive))
+            # Cancellation can turn a real match into a rejected GPU ratio as
+            # well as accept a false match. Recheck both kinds of uncertain row.
+            ambiguous = near_tie | near_ratio | cancellation_sensitive
             rows = np.flatnonzero(ambiguous)
             with self._lock:
                 self.ambiguous_rows += len(rows)

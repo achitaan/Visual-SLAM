@@ -17,6 +17,7 @@ node_modules/
 results/
 .test-build/
 .datasets/
+.worktrees/
 
 # Local editor and generated files
 .vscode/

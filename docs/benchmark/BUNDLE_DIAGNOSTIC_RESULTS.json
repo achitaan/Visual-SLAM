@@ -1,0 +1,94 @@
+{
+  "source_sha": "1197031c5ea1c734275ca05520d425a3392c463c",
+  "source_fingerprint": "034b2550a0ff78868b3de11c815800c24f10a630e3f7cc443e7a3045067f5d51",
+  "estimator_changed": false,
+  "release_ready": false,
+  "ground_truth_estimator_input": false,
+  "tests": {
+    "passed": 373,
+    "skipped_optional_gpu": 4,
+    "elapsed_seconds": 54.52
+  },
+  "runs": {
+    "04_capture_80": {
+      "sequence": "04",
+      "frames": 80,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.11188367637566381,
+        "raw_ate_rmse_m": 0.27379108167601507,
+        "segment_count": 1,
+        "translation_percent": 0.2807531045984703,
+        "rotation_deg_per_m": 0.005652783299876321
+      },
+      "lost_frames": 0,
+      "elapsed_s": 58.99877240002388,
+      "peak_memory_mb": 264.1015625,
+      "states": {
+        "tracking": 80
+      }
+    },
+    "01_capture_129": {
+      "sequence": "01",
+      "frames": 129,
+      "metrics": {
+        "frames": 129,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 2.5809816025799965,
+        "raw_ate_rmse_m": 6.057210385349236,
+        "segment_count": 9,
+        "translation_percent": 4.330329084456943,
+        "rotation_deg_per_m": 0.013057141295576058
+      },
+      "lost_frames": 0,
+      "elapsed_s": 117.77065589997801,
+      "peak_memory_mb": 308.31640625,
+      "states": {
+        "tracking": 129
+      }
+    },
+    "01_control_129": {
+      "sequence": "01",
+      "frames": 129,
+      "metrics": {
+        "frames": 129,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 2.5809816025799965,
+        "raw_ate_rmse_m": 6.057210385349236,
+        "segment_count": 9,
+        "translation_percent": 4.330329084456943,
+        "rotation_deg_per_m": 0.013057141295576058
+      },
+      "lost_frames": 0,
+      "elapsed_s": 124.82828410001821,
+      "peak_memory_mb": 303.24609375,
+      "states": {
+        "tracking": 129
+      }
+    }
+  },
+  "capture_control_equivalence": {
+    "poses_byte_identical": true,
+    "sparse_map_byte_identical": true,
+    "tracking_and_bundle_reports_identical": true,
+    "same_frames": 129,
+    "metrics_reused": false
+  },
+  "frame127": {
+    "eligible_landmarks": 200,
+    "selected_landmarks": 200,
+    "excluded_fixed_observation_rows": 0,
+    "latest_keyframe_observed_landmarks": 49,
+    "latest_keyframe_grid_cells": 3,
+    "initial_pose_schur_condition": 120119274.3545197,
+    "curvature_semantics": "dimensionless image GN/Huber IRLS; not calibrated covariance",
+    "cause_not_proven": true,
+    "edge_rotation_error_deg_before": 0.09849767974317579,
+    "edge_rotation_error_deg_after": 0.851596818160795,
+    "gt_edge_score_only_after_image_audit": true
+  }
+}

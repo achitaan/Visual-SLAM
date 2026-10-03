@@ -122,5 +122,8 @@ def test_release_gate_validation_has_no_manifest_side_effects(tmp_path,monkeypat
         if value:gate.write_text(json.dumps(value))
         with pytest.raises(ValueError):module.validate_release_gate('release',gate if value else None,'abc')
     assert not (tmp_path/'cycle.json').exists()
-    gate.write_text(json.dumps({'revision':'abc','passed':True}))
-    module.validate_release_gate('release',gate,'abc')
+    runtime_identity=module.dependency_runtime_identity()
+    gate.write_text(json.dumps({'revision':'abc','passed':True,
+                                'runtime_identity':runtime_identity,
+                                'runtime_identity_sha256':module._canonical_sha256(runtime_identity)}))
+    module.validate_release_gate('release',gate,'abc',runtime_identity)

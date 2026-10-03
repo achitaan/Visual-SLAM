@@ -31,6 +31,11 @@ def expected_case():
             'matching_backend': 'cpu', 'retrieval': 'current',
             'cpu_optimizations': True, 'opencv_threads': 1,
         },
+        'runtime_identity': {
+            'version': 1,
+            'dependencies_sha256': 'same-runtime-dependencies',
+            'dependencies': {'packages': {'numpy': '2.5.3'}},
+        },
     }
 
 
@@ -100,6 +105,9 @@ def test_history_is_cost_only_and_accepts_cross_revision_exact_mode(tmp_path, mo
     lambda r: r['performance_configuration'].update(cpu_optimizations=False),
     lambda r: r['performance_configuration'].update(profile=True),
     lambda r: r['matching_backend'].update(requested='cuda'),
+    lambda r: r['development_identity'].pop('runtime_identity'),
+    lambda r: r['development_identity']['runtime_identity']['dependencies']['packages'].update(
+        numpy='different-runtime-version'),
 ])
 def test_incompatible_or_incomplete_history_uses_conservative_default(tmp_path, monkeypatch, change):
     module = load_runner(monkeypatch)

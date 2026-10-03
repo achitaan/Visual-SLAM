@@ -8,6 +8,12 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from benchmark_identity import (
+    _finite_numeric_file,
+    _finite_ply,
+    _load_finite_json,
+    source_contract,
+)
 from test_budget import Budget, write_json
 from data_preflight import preflight
 
@@ -116,6 +122,22 @@ def _finite_positive(value):
             and math.isfinite(value) and value > 0)
 
 
+def _canonical_sha256(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def dependency_runtime_identity(repo=None):
+    """Expose the lockfiles and installed runtime versions used by this cycle."""
+    repo = REPO if repo is None else repo
+    contract = source_contract(repo)
+    return {
+        'version': 1,
+        'dependencies': contract['dependencies'],
+        'dependencies_sha256': contract['dependencies_sha256'],
+    }
+
+
 def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False):
     """Return the exact evaluator config represented by a development variant."""
     if variant == 'baseline':
@@ -148,6 +170,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
             source_identity = report.get('development_identity')
             if not isinstance(source_identity, dict):
                 raise ValueError('missing development identity')
+            runtime_identity = identity.get('runtime_identity')
+            if (not isinstance(runtime_identity, dict)
+                    or source_identity.get('runtime_identity') != runtime_identity):
+                raise ValueError('mismatched dependency/runtime identity')
             if report.get('status') not in ('completed', 'completed_with_tracking_loss'):
                 raise ValueError('evaluation is incomplete')
             for field, expected in (('sequence', identity.get('sequence')),
@@ -262,6 +288,164 @@ def reusable(report, identity):
             and report.get('frames') == identity['frames'])
 
 
+def _source_archive_hashes(repo=None):
+    repo = REPO if repo is None else repo
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((Path(repo) / 'src').glob('*.py'))
+    }
+
+
+def _poses_are_so3(path, frames, tolerance=1e-3):
+    """Use the same SO(3) tolerance as kitti.validate_pose for saved rows."""
+    if not _finite_numeric_file(path, pose_rows=frames):
+        return False
+    try:
+        rows = [[float(token) for token in line.split()]
+                for line in Path(path).read_text(encoding='ascii').splitlines()
+                if line.strip()]
+    except (OSError, UnicodeError, ValueError):
+        return False
+    for values in rows:
+        rotation = (values[0:3], values[4:7], values[8:11])
+        for first in range(3):
+            for second in range(3):
+                dot = sum(rotation[first][axis] * rotation[second][axis]
+                          for axis in range(3))
+                expected = 1.0 if first == second else 0.0
+                if abs(dot - expected) > tolerance:
+                    return False
+        a, b, c = rotation
+        determinant = (
+            a[0] * (b[1] * c[2] - b[2] * c[1])
+            - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0])
+        )
+        if abs(determinant - 1.0) > tolerance:
+            return False
+    return True
+
+
+def _finite_vector(values, size):
+    return (isinstance(values, list) and len(values) == size
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) for value in values))
+
+
+def _ply_vertex_count(path):
+    try:
+        with Path(path).open(encoding='ascii') as stream:
+            for line in stream:
+                line = line.strip()
+                if line == 'end_header':
+                    break
+                fields = line.split()
+                if len(fields) == 3 and fields[:2] == ['element', 'vertex']:
+                    return int(fields[2])
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return None
+
+
+def reusable_export(report_path, identity):
+    """Reuse only exact completed reports with finite poses/maps and intact source."""
+    report_path = Path(report_path)
+    output = report_path.parent
+    try:
+        report = _load_finite_json(report_path)
+        if not isinstance(report, dict) or not reusable(report, identity):
+            return False
+        frames = identity['frames']
+        if (report.get('coverage') != identity.get('coverage')
+                or report.get('sequence') != identity.get('sequence')
+                or report.get('stereo') is not True
+                or report.get('ground_truth_used_for_estimation') is not False):
+            return False
+        if not _poses_are_so3(output / 'poses.txt', frames):
+            return False
+        if identity.get('variant') != 'baseline':
+            expected_configuration = current_mapping_configuration(
+                identity['variant'], identity['stereo_depth_policy'],
+                identity['stereo_pose_arbitration'])
+            run = _load_finite_json(output / 'run.json')
+            preview = _load_finite_json(output / 'preview.json')
+            if not isinstance(run, dict) or not isinstance(preview, dict):
+                return False
+            if (report.get('configuration') != expected_configuration
+                    or run.get('configuration') != expected_configuration):
+                return False
+            tracking = run.get('tracking')
+            if not isinstance(tracking, list) or len(tracking) != frames:
+                return False
+            state_counts = {}
+            for frame_index, item in enumerate(tracking):
+                if not isinstance(item, dict):
+                    return False
+                frame = item.get('frame')
+                if (not isinstance(frame, int) or isinstance(frame, bool)
+                        or frame != frame_index):
+                    return False
+                state = item.get('state')
+                if state not in {'initializing', 'tracking', 'lost', 'relocalized'}:
+                    return False
+                state_counts[state] = state_counts.get(state, 0) + 1
+            lost_frames = state_counts.get('lost', 0)
+            if (report.get('states') != state_counts
+                    or report.get('lost_frames') != lost_frames):
+                return False
+            sparse_path = output / 'sparse.ply'
+            if not _finite_ply(sparse_path):
+                return False
+            vertex_count = _ply_vertex_count(sparse_path)
+            if (not isinstance(vertex_count, int) or vertex_count < 0
+                    or run.get('sparse_points') != vertex_count
+                    or report.get('landmarks') != vertex_count):
+                return False
+            trajectory = preview.get('trajectory')
+            sparse_preview = preview.get('sparse')
+            if (not isinstance(trajectory, list) or len(trajectory) != frames
+                    or any(not _finite_vector(pose, 3) for pose in trajectory)
+                    or not isinstance(sparse_preview, list)
+                    or len(sparse_preview) > min(vertex_count, 20000)
+                    or any(not _finite_vector(point, 3) for point in sparse_preview)):
+                return False
+
+        lost_frames = report.get('lost_frames')
+        expected_status = ('completed_with_tracking_loss'
+                           if isinstance(lost_frames, int) and lost_frames > 0
+                           else 'completed')
+        if (not isinstance(lost_frames, int) or isinstance(lost_frames, bool)
+                or lost_frames < 0 or lost_frames > frames
+                or report.get('status') != expected_status):
+            return False
+
+        source_hashes = report.get('source_sha256')
+        current_hashes = _source_archive_hashes()
+        if not isinstance(source_hashes, dict) or source_hashes != current_hashes:
+            return False
+        source_dir = output / 'source'
+        archived = {path.name for path in source_dir.iterdir() if path.is_file()}
+        if archived != set(source_hashes):
+            return False
+        for name, expected_hash in source_hashes.items():
+            if (Path(name).name != name or not name.endswith('.py')
+                    or hashlib.sha256((source_dir / name).read_bytes()).hexdigest()
+                    != expected_hash):
+                return False
+        evaluator_name = ('evaluate_stereo_baseline.py'
+                          if identity.get('variant') == 'baseline'
+                          else 'evaluate_shared_slam.py')
+        evaluator_hash = hashlib.sha256(
+            (REPO / 'scripts' / evaluator_name).read_bytes()).hexdigest()
+        if (report.get('evaluator_sha256') != evaluator_hash
+                or hashlib.sha256((output / 'evaluator.py').read_bytes()).hexdigest()
+                != evaluator_hash):
+            return False
+    except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+        return False
+    return True
+
+
 def process_running(pid):
     """Read process liveness without signaling a potentially reused Windows PID."""
     if not isinstance(pid, int) or pid <= 0:
@@ -311,7 +495,7 @@ def resume_manifest(path, revision, profile, requested, probe=process_running):
     return manifest
 
 
-def validate_release_gate(profile, gate_path, fingerprint):
+def validate_release_gate(profile, gate_path, fingerprint, runtime_identity=None):
     if profile != 'release':
         return
     if not gate_path:
@@ -319,24 +503,39 @@ def validate_release_gate(profile, gate_path, fingerprint):
     gate = json.loads(gate_path.read_text(encoding='utf-8'))
     if gate.get('revision') != fingerprint or gate.get('passed') is not True:
         raise ValueError('Focused gate must pass for this exact revision')
+    runtime_identity = runtime_identity or dependency_runtime_identity()
+    if (gate.get('runtime_identity') != runtime_identity
+            or gate.get('runtime_identity_sha256') != _canonical_sha256(runtime_identity)):
+        raise ValueError('Focused gate must match this exact dependency/runtime identity')
 
 
-def validation_provenance():
-    return {'tests_sha256': hashlib.sha256(b''.join(
-        p.name.encode()+b'\0'+p.read_bytes() for p in sorted((REPO/'tests').glob('test_*.py')))).hexdigest()}
+def validation_provenance(runtime_identity=None):
+    runtime_identity = runtime_identity or dependency_runtime_identity()
+    return {
+        'tests_sha256': hashlib.sha256(b''.join(
+            p.name.encode()+b'\0'+p.read_bytes()
+            for p in sorted((REPO/'tests').glob('test_*.py')))).hexdigest(),
+        'runtime_identity': runtime_identity,
+        'runtime_identity_sha256': _canonical_sha256(runtime_identity),
+    }
 
 
-def source_fingerprint():
+def source_fingerprint(runtime_identity=None):
+    runtime_identity = runtime_identity or dependency_runtime_identity()
     sources = sorted((REPO/'src').glob('*.py')) + [
         REPO/'scripts'/name for name in ('evaluate_shared_slam.py',
         'evaluate_stereo_baseline.py', 'run_development_tests.py',
-        'test_budget.py', 'data_preflight.py', 'benchmark_telemetry.py')]
+        'benchmark_identity.py', 'test_budget.py', 'data_preflight.py',
+        'benchmark_telemetry.py')]
     sources += sorted((REPO/'tests').glob('test_*.py'))
     digest = hashlib.sha256()
     for path in sources:
         digest.update(str(path.relative_to(REPO)).encode())
         digest.update(b'\0')
         digest.update(path.read_bytes())
+    digest.update(b'\0runtime-identity\0')
+    digest.update(json.dumps(runtime_identity, sort_keys=True,
+                             separators=(',', ':')).encode('utf-8'))
     return digest.hexdigest()
 
 
@@ -366,9 +565,11 @@ def main():
     seconds=args.budget_seconds if args.budget_seconds is not None else (300 if args.profile=='quick' else 3600)
     if not 0 < seconds <= 3600:parser.error('Cycle budget must be within 1–3600 seconds')
     budget=Budget(seconds)
-    fingerprint=source_fingerprint()
+    runtime_identity = dependency_runtime_identity()
+    fingerprint=source_fingerprint(runtime_identity)
     try:
-        validate_release_gate(args.profile, args.release_ready, fingerprint)
+        validate_release_gate(args.profile, args.release_ready, fingerprint,
+                              runtime_identity)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     root=args.output/fingerprint[:12]/args.profile
@@ -385,7 +586,7 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     root.mkdir(parents=True,exist_ok=True)
-    manifest['validation_provenance']=validation_provenance()
+    manifest['validation_provenance']=validation_provenance(runtime_identity)
     manifest.update(profile=args.profile,budget_seconds=seconds,status='running',supervisor_pid=os.getpid())
     write_json(manifest_path,manifest)
     env={**os.environ,'OPENBLAS_NUM_THREADS':'1','OMP_NUM_THREADS':'1','PYTHONIOENCODING':'utf-8','MPLCONFIGDIR':str(REPO/'.mpl-cache')}
@@ -415,7 +616,10 @@ def main():
                 manifest['status']='interrupted_source_change';write_json(manifest_path,manifest);return 1
             if (root/'stop.request').exists():
                 manifest['status']='interrupted_requested_stop';write_json(manifest_path,manifest);return 1
-            identity={'revision':fingerprint,'sequence':seq,'frames':frames,'input':inputs['sha256'],'variant':variant,
+            expected_coverage = 'full' if args.profile == 'release' else 'partial'
+            identity={'revision':fingerprint,'runtime_identity':runtime_identity,
+                      'sequence':seq,'frames':frames,'coverage':expected_coverage,
+                      'input':inputs['sha256'],'variant':variant,
                       'cached':args.feature_cache is not None and variant!='baseline',
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
@@ -426,14 +630,14 @@ def main():
             report_path=folder/'evaluation.json'
             if not report_path.exists():
                 for candidate in (args.output/fingerprint[:12]).glob(f'*/{folder.name}/evaluation.json'):
-                    if reusable(json.loads(candidate.read_text(encoding='utf-8')),identity):
+                    if reusable_export(candidate, identity):
                         manifest['attempts'].append({'sequence':seq,'variant':variant,'output':str(candidate.parent.relative_to(args.output/fingerprint[:12])),'status':'reused'})
                         write_json(manifest_path,manifest)
                         break
                 else:
                     candidate=None
                 if candidate is not None:continue
-            if report_path.exists() and reusable(json.loads(report_path.read_text(encoding='utf-8')),identity):
+            if report_path.exists() and reusable_export(report_path, identity):
                 manifest['attempts'].append({'sequence':seq,'variant':variant,'output':folder.name,'status':'reused'})
                 write_json(manifest_path,manifest);continue
             # Historical reports affect scheduling only. They never satisfy a case or supply metrics.
@@ -442,7 +646,6 @@ def main():
                      and r.get('frames') == frames and r.get('status') in
                      ('completed', 'completed_with_tracking_loss')
                      and _finite_positive(r.get('elapsed_s'))]
-            expected_coverage = 'full' if args.profile == 'release' else 'partial'
             expected_configuration = current_mapping_configuration(
                 variant, args.stereo_depth_policy,
                 args.stereo_pose_arbitration and variant != 'baseline')
@@ -484,11 +687,37 @@ def main():
             result=run_owned(command,folder/'runner.log',max(1,budget.remaining-50),env,on_start=started)
             manifest.pop('active_case',None)
             row={'sequence':seq,'variant':variant,'output':folder.name,**result}
+            source_unchanged = source_fingerprint() == fingerprint
             if report_path.exists():
-                report=json.loads(report_path.read_text(encoding='utf-8'));report['development_identity']=identity;write_json(report_path,report)
-                row.update(frames=report['frames'],status=report['status'],metrics=report.get('metrics'),stage_timings=report.get('stage_timings'),lost_frames=report['lost_frames'])
+                try:
+                    report = _load_finite_json(report_path)
+                    if not isinstance(report, dict):
+                        raise ValueError('evaluation report root is not an object')
+                    report['development_identity'] = identity
+                    write_json(report_path, report)
+                    row.update(frames=report['frames'], status=report['status'],
+                               metrics=report.get('metrics'),
+                               stage_timings=report.get('stage_timings'),
+                               lost_frames=report.get('lost_frames'))
+                except (OSError, ValueError, TypeError, KeyError) as error:
+                    row.update(status='invalid_report',
+                               error=f'{type(error).__name__}: {error}')
             else:row['status']='interrupted_time_budget' if result['timed_out'] else 'worker_failure'
             manifest['attempts'].append(row);write_json(manifest_path,manifest)
+            if not source_unchanged:
+                row.update(status='invalid_source',
+                           error='Source, tests, dependencies, or runtime changed during evaluation')
+                manifest['status'] = 'invalid_source'
+                write_json(manifest_path, manifest)
+                return 1
+            if (row.get('status') in ('completed', 'completed_with_tracking_loss')
+                    and row.get('frames') == frames
+                    and not reusable_export(report_path, identity)):
+                row.update(status='invalid_artifacts',
+                           error='Completed evaluator exports failed exact finite/source validation')
+                manifest['status'] = 'invalid_artifacts'
+                write_json(manifest_path, manifest)
+                return 1
             if row['status'] not in ('completed','completed_with_tracking_loss') or row.get('frames')!=frames:
                 manifest['status']=row['status'];write_json(manifest_path,manifest);return 1
             plot_timeout=child_timeout(budget,15)

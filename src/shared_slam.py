@@ -251,6 +251,7 @@ class SharedSlam:
         self.previous_tracks = []
         self._previous_tracks_frame = None
         self._source_history_capture = None
+        self._source_history_diagnostic_cohort = None
         self.accepted_tracks = []
         self.previous_stereo_geometry = None
         self.verified_stereo_motion = None
@@ -2416,6 +2417,143 @@ class SharedSlam:
             self.bundle_diagnostic_errors.append({
                 "frame": int(frame), "phase": "skip",
                 "error_type": type(error).__name__,
+            })
+
+    def _source_history_cohort_diagnostic_state(self, current_ba_frame):
+        """Snapshot the BA69 source-history cohort without changing map state."""
+        packet = self._source_history_diagnostic_cohort
+        if not isinstance(packet, dict):
+            return None
+        cohort = packet.get("source_history_observations")
+        if not isinstance(cohort, dict):
+            return None
+        rows = cohort.get("rows", [])
+        source_frame = cohort.get("source_frame")
+        if (not isinstance(source_frame, int) or isinstance(source_frame, bool)
+                or source_frame < 0 or not isinstance(rows, list)):
+            raise ValueError("Malformed diagnostic source-history cohort")
+        cohort_ids = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Malformed source-history cohort row")
+            landmark_id = row.get("landmark_id")
+            if (not isinstance(landmark_id, int) or isinstance(landmark_id, bool)
+                    or landmark_id < 0):
+                raise ValueError("Malformed source-history landmark ID")
+            cohort_ids.append(landmark_id)
+        if len(set(cohort_ids)) != len(cohort_ids):
+            raise ValueError("Duplicate source-history cohort landmark ID")
+
+        with self.map.lock:
+            endpoint = self._source_history_endpoint(source_frame)
+            if endpoint is None:
+                source_pose = None
+                source_status = None
+                source_anchor_id = None
+                source_anchor_pose = None
+                source_reason = "source_endpoint_unavailable"
+            else:
+                source_pose = endpoint["pose"].tolist()
+                source_status = endpoint["status"]
+                source_anchor_id = endpoint["anchor_keyframe_id"]
+                source_anchor_pose = endpoint["anchor_pose"].tolist()
+                source_reason = None
+            # The prepared table binds the full owned-bundle calibration,
+            # including disparity offset; compare the same identity here.
+            current_calibration = self._live_owned_bundle_calibration()
+            same_calibration = (
+                current_calibration is not None
+                and current_calibration == cohort.get("source_calibration_identity")
+            )
+            cohort_rows = []
+            for landmark_id in cohort_ids:
+                landmark = self.map.landmarks.get(landmark_id)
+                if landmark is None:
+                    cohort_rows.append({
+                        "landmark_id": landmark_id,
+                        "available": False,
+                        "reason": "culled_or_missing",
+                        "current_world_position": None,
+                        "current_anchor_id": None,
+                        "actual_observations": [],
+                    })
+                    continue
+                position = np.asarray(landmark.position)
+                if (np.iscomplexobj(position) or position.shape != (3,)
+                        or not np.issubdtype(position.dtype, np.number)
+                        or not np.isfinite(position).all()):
+                    # Let the diagnostic sink record an error; never turn an
+                    # invalid geometric state into a plausible nullable row.
+                    raise ValueError("Non-finite source-history cohort world position")
+                observation_rows = []
+                for keyframe_id, observation in sorted(landmark.observations.items()):
+                    keyframe_id = int(keyframe_id)
+                    keyframe = self.map.keyframes.get(keyframe_id)
+                    pixel = np.asarray(observation.pixel)
+                    if (np.iscomplexobj(pixel) or pixel.shape != (2,)
+                            or not np.issubdtype(pixel.dtype, np.number)
+                            or not np.isfinite(pixel).all()):
+                        raise ValueError("Invalid stored cohort observation pixel")
+                    raw_right = observation.right_u
+                    right_valid = False
+                    right_value = None
+                    if raw_right is not None:
+                        right_array = np.asarray(raw_right)
+                        if (not np.iscomplexobj(right_array)
+                                and np.issubdtype(right_array.dtype, np.number)
+                                and right_array.shape == ()
+                                and np.isfinite(right_array).item()):
+                            right_value = float(right_array)
+                            right_valid = True
+                    observation_rows.append({
+                        "keyframe_id": keyframe_id,
+                        "image_frame": None if keyframe is None else int(keyframe.frame),
+                        "pixel": np.asarray(pixel, dtype=np.float32).tolist(),
+                        "right_u": right_value,
+                        "right_u_valid": right_valid,
+                        "dimensions": 3 if right_valid else 2,
+                    })
+                cohort_rows.append({
+                    "landmark_id": landmark_id,
+                    "available": True,
+                    "reason": None,
+                    "current_world_position": np.asarray(position, dtype=float).tolist(),
+                    "current_anchor_id": int(landmark.anchor),
+                    "actual_observations": observation_rows,
+                })
+            eligible_source = (
+                endpoint is not None
+                and source_status in ("tracking", "relocalized")
+                and cohort.get("source_snapshot_valid") is True
+                and cohort.get("status") == "active"
+                and bool(cohort_ids)
+            )
+            return _owned_diagnostic_value({
+                "schema": "source_history_cohort_state_v1",
+                "cohort_BA_frame": packet["cohort_BA_frame"],
+                "current_BA_frame": int(current_ba_frame),
+                "cohort_revision": cohort.get("revision"),
+                "cohort_geometry_revision": cohort.get("geometry_revision"),
+                "revision": int(self.map.revision),
+                "geometry_revision": int(self.map.geometry_revision),
+                "source_frame": source_frame,
+                "source_status": source_status,
+                "source_anchor_id": source_anchor_id,
+                "source_camera_to_world": source_pose,
+                "source_anchor_camera_to_world": source_anchor_pose,
+                "calibration_identity": current_calibration,
+                "cohort_calibration_identity": cohort.get("source_calibration_identity"),
+                "cross_phase_comparison_eligible": bool(eligible_source and same_calibration),
+                "cross_phase_ineligible_reason": (
+                    source_reason if endpoint is None else
+                    ("source_status_not_accepted"
+                     if source_status not in ("tracking", "relocalized") else
+                     ("source_history_table_ineligible"
+                      if cohort.get("source_snapshot_valid") is not True
+                      or cohort.get("status") != "active" or not cohort_ids else
+                      (None if same_calibration else "calibration_identity_changed")))
+                ),
+                "rows": cohort_rows,
             })
 
     def bundle_diagnostics_manifest(self):
@@ -4844,6 +4982,91 @@ class SharedSlam:
                             owned = _owned_diagnostic_value(payload)
                             if not isinstance(owned, dict):
                                 raise ValueError("Bundle diagnostic phase must be an object")
+                            selected_diagnostic_frames = tuple(
+                                getattr(self.bundle_diagnostic_writer, "frames", ())
+                            )
+                            cohort_start = min(selected_diagnostic_frames) if selected_diagnostic_frames else None
+                            cohort_finish = max(selected_diagnostic_frames) if len(selected_diagnostic_frames) > 1 else None
+                            if phase == "prepared":
+                                history_table = owned.get("source_history_observations")
+                                if isinstance(history_table, dict):
+                                    capture = source_history_capture if isinstance(source_history_capture, dict) else {}
+                                    source_frame = history_table.get("source_frame")
+                                    if source_frame is None:
+                                        source_frame = capture.get("frame")
+                                    endpoint = None
+                                    table_valid = False
+                                    table_error = "source_history_capture_unavailable"
+                                    try:
+                                        if (isinstance(source_frame, int)
+                                                and not isinstance(source_frame, bool)):
+                                            with self.map.lock:
+                                                if (self.map.revision != owned.get("revision")
+                                                        or self.map.geometry_revision
+                                                        != owned.get("geometry_revision")):
+                                                    raise ValueError("prepared_map_epoch_changed")
+                                                captured_calibration = capture.get(
+                                                    "live_calibration_identity")
+                                                if (captured_calibration is None
+                                                        or self._live_owned_bundle_calibration()
+                                                        != captured_calibration):
+                                                    raise ValueError("source_calibration_changed")
+                                                endpoint = self._source_history_endpoint(source_frame)
+                                                if endpoint is None:
+                                                    raise ValueError("source_endpoint_unavailable")
+                                                if (capture.get("source_status") != endpoint["status"]
+                                                        or capture.get("source_anchor_keyframe_id")
+                                                        != endpoint["anchor_keyframe_id"]
+                                                        or not np.array_equal(
+                                                            capture.get("source_pose"), endpoint["pose"]
+                                                        )
+                                                        or not np.array_equal(
+                                                            capture.get("source_anchor_pose"),
+                                                            endpoint["anchor_pose"]
+                                                        )):
+                                                    raise ValueError("source_endpoint_changed_since_capture")
+                                                table_valid = True
+                                                table_error = None
+                                        history_table.update({
+                                            "source_frame": source_frame,
+                                            "target_frame": int(index),
+                                            "source_calibration_identity": (
+                                                capture.get("live_calibration_identity")
+                                                or capture.get("calibration_identity")
+                                            ),
+                                            "revision": owned.get("revision"),
+                                            "geometry_revision": owned.get("geometry_revision"),
+                                            "initial_source_camera_to_world": (
+                                                None if endpoint is None else endpoint["pose"].tolist()
+                                            ),
+                                            "source_status": (
+                                                None if endpoint is None else endpoint["status"]
+                                            ),
+                                            "source_anchor_id": (
+                                                None if endpoint is None else endpoint["anchor_keyframe_id"]
+                                            ),
+                                            "initial_source_anchor_camera_to_world": (
+                                                None if endpoint is None else endpoint["anchor_pose"].tolist()
+                                            ),
+                                            "source_snapshot_valid": table_valid,
+                                            "source_snapshot_error": table_error,
+                                        })
+                                    except Exception as error:
+                                        self.bundle_diagnostic_errors.append({
+                                            "frame": int(index), "phase": "source_history_table",
+                                            "error_type": type(error).__name__,
+                                        })
+                                    if index == cohort_start:
+                                        self._source_history_diagnostic_cohort = {
+                                            "cohort_BA_frame": int(index),
+                                            "source_history_observations": _owned_diagnostic_value(history_table),
+                                        }
+                            if (phase == "prepared" and cohort_finish is not None
+                                    and index == cohort_finish
+                                    and self._source_history_diagnostic_cohort is not None):
+                                owned["source_history_cohort_state"] = (
+                                    self._source_history_cohort_diagnostic_state(index)
+                                )
                             if phase in ("prepared", "solved"):
                                 owned["shared_slam_context"] = (
                                     self._bundle_diagnostic_tracking_context(index, size)
@@ -4966,12 +5189,27 @@ class SharedSlam:
                                     diagnostic_inputs["motion_checks"],
                                 ),
                             }
+                            selected_diagnostic_frames = tuple(
+                                getattr(self.bundle_diagnostic_writer, "frames", ())
+                            )
+                            if (len(selected_diagnostic_frames) > 1
+                                    and index == max(selected_diagnostic_frames)
+                                    and self._source_history_diagnostic_cohort is not None):
+                                finished["source_history_cohort_state"] = (
+                                    self._source_history_cohort_diagnostic_state(index)
+                                )
                             self._emit_bundle_diagnostic(index, "finished", finished, size)
                         except Exception as error:
                             self.bundle_diagnostic_errors.append({
                                 "frame": int(index), "phase": "finished",
                                 "error_type": type(error).__name__,
                             })
+                        selected_diagnostic_frames = tuple(
+                            getattr(self.bundle_diagnostic_writer, "frames", ())
+                        )
+                        if (len(selected_diagnostic_frames) > 1
+                                and index == max(selected_diagnostic_frames)):
+                            self._source_history_diagnostic_cohort = None
                         try:
                             writer_frame = next(
                                 item for item in self.bundle_diagnostic_writer.manifest().get("frames", [])

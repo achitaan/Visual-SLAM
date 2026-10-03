@@ -1366,6 +1366,43 @@ def local_bundle_adjustment(
             layout["target_relative_chart"] = chart_layout
         elif provider_enabled:
             layout["coordinate_chart"] = "world_keyframe_poses_and_world_selected_points"
+        if source_history_enabled and source_history_summary is not None:
+            installed_rows = source_history_rows or []
+            table_rows = [
+                {
+                    "frame_id": int(row["frame_id"]),
+                    "landmark_id": int(row["landmark_id"]),
+                    "selected_point_index": int(row["point_index"]),
+                    "pixel_float32": np.asarray(row["pixel"], dtype=np.float32).tolist(),
+                }
+                for row in installed_rows
+            ]
+            active = bool(table_rows) and source_history_summary.get("status") == "active"
+            prepared_payload["source_history_observations"] = {
+                "schema": "source_history_image_rows_v1",
+                "status": "active" if active else "skipped",
+                "reason": None if active else source_history_summary.get("reason"),
+                "source_frame": source_history_summary.get("source_frame"),
+                "target_frame": source_history_summary.get("target_frame"),
+                "source_calibration_identity": source_history_summary.get(
+                    "source_calibration_identity"),
+                "revision": source_history_summary.get("revision"),
+                "geometry_revision": source_history_summary.get("geometry_revision"),
+                "measurement_role": "tracking_fit_consumed",
+                "selection_role": "consumed_or_unknown",
+                "independent_unused_claim": False,
+                "row_count": len(table_rows),
+                "component_count": 2 * len(table_rows),
+                "installed_landmark_ids": [row["landmark_id"] for row in table_rows],
+                "exclusions": source_history_summary.get("exclusions", {}),
+                "initial_source_camera_to_world": source_history_summary.get(
+                    "initial_source_camera_to_world"),
+                "source_status": source_history_summary.get("source_status"),
+                "source_anchor_id": source_history_summary.get("source_anchor_id"),
+                "initial_source_anchor_camera_to_world": source_history_summary.get(
+                    "initial_source_anchor_camera_to_world"),
+                "rows": table_rows,
+            }
         emit_diagnostic("prepared", prepared_payload)
 
     initial_cameras = camera_poses_for(initial)

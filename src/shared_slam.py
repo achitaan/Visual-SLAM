@@ -1074,6 +1074,193 @@ class SharedSlam:
             digest.update(np.float64(self.stereo.baseline).tobytes())
         return digest.hexdigest()
 
+    def _full_supported_match_pairs(
+        self, source, target, previous_index, index, previous_frame, measured_frame, size,
+    ):
+        """Build all mutual descriptor pairs with unique physical endpoints.
+
+        Depth availability is intentionally not a match filter: the existing
+        reference estimator independently gates forward and reverse PnP rows.
+        """
+        report = {
+            'attempted': True,
+            'fit_source': 'full_supported_reference',
+            'fit_depth_policy': 'supported_raw',
+            'held_out_arbitration_used': False,
+        }
+
+        def fail(reason):
+            return None, {**report, 'eligible': False, 'reason': reason}
+
+        if (not self._supported_record_is_well_formed(source, size)
+                or not self._supported_record_is_well_formed(target, size)):
+            return fail('malformed_supported_endpoint')
+        if (not isinstance(previous_index, (int, np.integer))
+                or isinstance(previous_index, (bool, np.bool_))
+                or not isinstance(index, (int, np.integer))
+                or isinstance(index, (bool, np.bool_))
+                or source.frame != int(previous_index) or target.frame != int(index)
+                or int(index)-int(previous_index) < 1 or int(index)-int(previous_index) > 3):
+            return fail('supported_endpoint_id_mismatch')
+        try:
+            expected_size = tuple(size)
+            live_identity = self._live_stereo_calibration_identity()
+            disparity = np.asarray(self.current_disparity)
+            source_geometry, geometry_index = self.previous_stereo_geometry
+            source_geometry_size = tuple(source_geometry.image_size)
+            fit_source_size = tuple(previous_frame.image_size)
+            fit_target_size = tuple(measured_frame.image_size)
+            source_geometry_pixels = np.asarray(source_geometry.pixels)
+            source_geometry_descriptors = np.asarray(source_geometry.descriptors)
+            fit_source_pixels = np.asarray(previous_frame.pixels)
+            fit_source_descriptors = np.asarray(previous_frame.descriptors)
+            fit_target_pixels = np.asarray(measured_frame.pixels)
+            fit_target_descriptors = np.asarray(measured_frame.descriptors)
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return fail('missing_live_supported_endpoint')
+        if (live_identity != self.stereo_calibration_identity
+                or source.calibration_identity != live_identity
+                or target.calibration_identity != live_identity):
+            return fail('stale_supported_calibration_identity')
+        if (len(expected_size) != 2 or not all(
+                    isinstance(v, (int, np.integer)) and not isinstance(v, (bool, np.bool_)) and v > 0
+                    for v in expected_size)
+                or any(value != expected_size for value in
+                       (source_geometry_size, fit_source_size, fit_target_size))
+                or not isinstance(geometry_index, (int, np.integer))
+                or isinstance(geometry_index, (bool, np.bool_))
+                or int(geometry_index) != int(previous_index)
+                or disparity.ndim != 2
+                or disparity.shape != (int(expected_size[1]), int(expected_size[0]))):
+            return fail('supported_endpoint_domain_mismatch')
+        if (not np.array_equal(source_geometry_pixels, source.pixels)
+                or not np.array_equal(source_geometry_descriptors, source.descriptors)
+                or not np.array_equal(fit_source_pixels, source.pixels)
+                or not np.array_equal(fit_source_descriptors, source.descriptors)
+                or not np.array_equal(fit_target_pixels, target.pixels)
+                or not np.array_equal(fit_target_descriptors, target.descriptors)):
+            return fail('supported_endpoint_pixels_or_descriptors_mismatch')
+        with self.map.lock:
+            poses = self.map.poses
+            statuses = self.map.statuses
+            accepted = [i for i, status in enumerate(statuses)
+                        if status in ('tracking', 'relocalized')]
+            if (len(statuses) != len(poses) or int(index) != len(poses)
+                    or int(previous_index) < 0 or int(previous_index) >= len(poses)
+                    or statuses[int(previous_index)] not in ('tracking', 'relocalized')
+                    or not accepted or accepted[-1] != int(previous_index)):
+                return fail('supported_source_not_accepted')
+        try:
+            pairs = np.asarray(self._match(source.descriptors, target.descriptors))
+        except (cv.error, TypeError, ValueError, IndexError):
+            return fail('full_supported_descriptor_match_failed')
+        if (pairs.ndim != 2 or pairs.shape[1:] != (2,)
+                or not np.issubdtype(pairs.dtype, np.integer)
+                or np.issubdtype(pairs.dtype, np.bool_)):
+            return fail('malformed_full_supported_matches')
+        if len(pairs) and (np.any(pairs < 0)
+                           or np.any(pairs[:, 0] >= len(source.pixels))
+                           or np.any(pairs[:, 1] >= len(target.pixels))):
+            return fail('full_supported_match_index_out_of_range')
+        raw_count = len(pairs)
+        if raw_count:
+            _, pair_inverse, pair_counts = np.unique(
+                pairs, axis=0, return_inverse=True, return_counts=True)
+            _, source_match_inverse, source_match_counts = np.unique(
+                pairs[:, 0], return_inverse=True, return_counts=True)
+            _, target_match_inverse, target_match_counts = np.unique(
+                pairs[:, 1], return_inverse=True, return_counts=True)
+            _, source_inverse, source_counts = np.unique(
+                np.asarray(source.pixels, np.float32), axis=0,
+                return_inverse=True, return_counts=True)
+            _, target_inverse, target_counts = np.unique(
+                np.asarray(target.pixels, np.float32), axis=0,
+                return_inverse=True, return_counts=True)
+            source_ids, target_ids = pairs.T
+            unique = (
+                (pair_counts[pair_inverse] == 1)
+                & (source_match_counts[source_match_inverse] == 1)
+                & (target_match_counts[target_match_inverse] == 1)
+                & (source_counts[source_inverse[source_ids]] == 1)
+                & (target_counts[target_inverse[target_ids]] == 1)
+            )
+            pairs = pairs[unique].copy()
+        report.update(
+            raw_mutual_matches=raw_count,
+            unique_physical_matches=len(pairs),
+            dropped_duplicate_matches=raw_count-len(pairs),
+            source_frame=int(source.frame), target_frame=int(target.frame),
+            calibration_identity=live_identity,
+        )
+        if not len(pairs):
+            return fail('no_unique_full_supported_matches')
+        return pairs, {**report, 'eligible': True, 'reason': 'full_supported_pairs_ready'}
+
+    def _estimate_full_supported_reference(
+        self, source, target, previous_index, index, previous_frame, measured_frame, size,
+    ):
+        pairs, report = self._full_supported_match_pairs(
+            source, target, previous_index, index, previous_frame, measured_frame, size)
+        if pairs is None:
+            return None, report
+        source_frame = StereoLoopFrame(source.pixels, source.points,
+                                       source.descriptors, source.image_size)
+        target_frame = StereoLoopFrame(target.pixels, target.points,
+                                       target.descriptors, target.image_size)
+        try:
+            verified = self.profile.call(
+                'stereo_pose_full_supported_fallback_fit', estimate_stereo_reference,
+                source_frame, target_frame, self.K,
+                min_inliers=self.config.min_inliers, initial_pose=None,
+                matcher=lambda first, second: pairs.copy())
+        except (cv.error, np.linalg.LinAlgError, TypeError, ValueError, IndexError):
+            return None, {**report, 'eligible': False,
+                          'reason': 'full_supported_reference_fit_error'}
+        if not isinstance(verified, dict):
+            return None, {**report, 'eligible': False,
+                          'reason': ('full_supported_reference_failed' if verified is None
+                                     else 'malformed_full_supported_reference_result'),
+                          'reverse_checked': False}
+        if verified.get('reverse_checked') is not True:
+            return None, {**report, 'eligible': False,
+                          'reason': 'full_supported_reference_not_reverse_checked',
+                          'reverse_checked': bool(verified.get('reverse_checked'))}
+        if not self._is_proper_se3(verified.get('measurement')):
+            return None, {**report, 'eligible': False,
+                          'reason': 'full_supported_reference_invalid_pose',
+                          'reverse_checked': True}
+        try:
+            matches = verified.get('matches')
+            inliers = verified.get('inliers')
+            median_error = float(verified.get('median_reprojection_px'))
+            target_features = np.asarray(verified.get('target_features'))
+        except (TypeError, ValueError, OverflowError):
+            matches = inliers = None
+            median_error = np.nan
+            target_features = np.empty(0)
+        if (not isinstance(matches, (int, np.integer))
+                or isinstance(matches, (bool, np.bool_))
+                or not isinstance(inliers, (int, np.integer))
+                or isinstance(inliers, (bool, np.bool_))
+                or matches <= 0 or inliers < self.config.min_inliers or inliers > matches
+                or not np.isfinite(median_error) or median_error < 0
+                or target_features.ndim != 1 or len(target_features) != inliers
+                or not np.issubdtype(target_features.dtype, np.integer)
+                or np.issubdtype(target_features.dtype, np.bool_)
+                or np.any(target_features < 0)
+                or np.any(target_features >= len(target.pixels))
+                or len(np.unique(target_features)) != len(target_features)):
+            return None, {**report, 'eligible': False,
+                          'reason': 'malformed_full_supported_reference_result',
+                          'reverse_checked': True}
+        return verified, {**report, 'eligible': True,
+                          'reason': 'full_supported_reference_verified',
+                          'reverse_checked': True,
+                          'reference_matches': int(matches),
+                          'reference_inliers': int(inliers),
+                          'reference_median_reprojection_px': median_error,
+                          'reference_inlier_features': target_features.astype(int).tolist()}
+
     @staticmethod
     def _supported_record_is_well_formed(record, size):
         if record is None:
@@ -1402,6 +1589,8 @@ class SharedSlam:
             info.update(stats)
             recovered = False
             stereo_reference = False
+            full_supported_fallback_attempted = False
+            full_supported_fallback_report = None
             if self.previous_stereo_geometry is not None:
                 previous_frame, previous_index = self.previous_stereo_geometry
                 if index - previous_index <= 3:
@@ -1432,47 +1621,143 @@ class SharedSlam:
                         matcher=reference_matcher,
                     ))
                     if verified is not None:
-                        if arbitration is not None:
-                            arbitration_measurement = verified['measurement'].copy()
-                        if verified["reverse_checked"] and index-previous_index == 1:
-                            self.verified_stereo_motion = (verified["measurement"].copy(), index)
-                        if verified["reverse_checked"]:
-                            verified_motion = (previous_index, verified["measurement"].copy())
                         with self.map.lock:
                             source_pose = self.map.poses[previous_index].copy()
                             source_map_revision = self.map.revision
                             reference_pose = source_pose @ verified["measurement"]
-                        info["stereo_reference_verified"] = True
-                        info["stereo_bidirectional_refinement"] = verified.get("bidirectional_refinement")
-                        info["stereo_reference_verification"] = (
-                            "bidirectional_pnp"
-                            if verified["reverse_checked"]
-                            else "source_depth_pnp"
-                        )
                         conflict = False
-                        arbitration_selected = False
+                        half_conflict = False
+                        half_translation_error = half_rotation_error = None
                         if result is not None:
                             difference = np.linalg.inv(reference_pose) @ result[0]
-                            translation_error = float(np.linalg.norm(difference[:3, 3]))
-                            rotation_error = float(
+                            half_translation_error = float(np.linalg.norm(difference[:3, 3]))
+                            half_rotation_error = float(
                                 np.degrees(
                                     np.linalg.norm(cv.Rodrigues(difference[:3, :3])[0])
                                 )
                             )
-                            info.update(
-                                map_reference_translation_error_m=translation_error,
-                                map_reference_rotation_error_deg=rotation_error,
-                            )
                             # Use the same disagreement limits as bidirectional
                             # stereo verification. A low left reprojection error
                             # cannot justify contradicting independent metric motion.
-                            conflict = translation_error > 0.5 or rotation_error > 1.5
-                            if arbitration is not None and verified['reverse_checked'] and not conflict:
+                            half_conflict = (half_translation_error > 0.5
+                                             or half_rotation_error > 1.5)
+                            conflict = half_conflict
+
+                        # A valid reserved half-pool fit can still be biased by its
+                        # partition. When it hard-conflicts with a successful map
+                        # solve, refit once on every unique physical supported row
+                        # before installing motion, BA, or held-out diagnostics.
+                        if (arbitration is not None and result is not None
+                                and verified.get('reverse_checked') is True and half_conflict):
+                            full_supported_fallback_attempted = True
+                            # The reserved holdout was consumed by the full-pool
+                            # retry. Prevent any later recovery probe in this
+                            # process call from reusing its exclusions or score.
+                            self._arbitration_context = None
+                            full_verified, full_report = self._estimate_full_supported_reference(
+                                arbitration['previous'], arbitration['current'],
+                                previous_index, index, previous_frame, measured, size)
+                            if full_verified is not None:
+                                with self.map.lock:
+                                    same_source_epoch = (
+                                        self.map.revision == source_map_revision
+                                        and np.array_equal(self.map.poses[previous_index], source_pose))
+                                if not same_source_epoch:
+                                    full_verified = None
+                                    full_report = {**full_report, 'eligible': False,
+                                                   'reason': 'source_map_epoch_changed'}
+                            full_supported_fallback_report = {
+                                **full_report,
+                                'half_pool_conflicted_with_map': True,
+                                'half_pool_translation_error_m': half_translation_error,
+                                'half_pool_rotation_error_deg': half_rotation_error,
+                                'reservation_context_available': True,
+                                'held_out_arbitration_used': False,
+                            }
+                            arbitration_measurement = None
+                            if full_verified is None:
+                                # Never fall back to the rejected half fit as a pose
+                                # or BA edge. Restore the successful map solve's
+                                # original inlier miss counts exactly once, then let
+                                # normal geometric recovery/loss proceed.
+                                self._age_provisional_map_inliers(map_inlier_miss_snapshot)
+                                result = None
+                                associations = {}
+                                self.accepted_tracks = []
+                                verified = None
+                                info['tracking_ok'] = False
+                                arbitration_report = {
+                                    'choice': 'abstain',
+                                    'reason': 'full_supported_reference_failed',
+                                    'reservation_context_available': True,
+                                    'held_out_arbitration_used': False,
+                                    'fit_source': 'full_supported_reference',
+                                    'fit_depth_policy': 'supported_raw',
+                                    'full_supported_fallback': full_supported_fallback_report,
+                                }
+                                info['full_supported_reference_fallback'] = full_supported_fallback_report
+                            else:
+                                verified = full_verified
+                                reference_pose = source_pose @ verified['measurement']
+                                difference = np.linalg.inv(reference_pose) @ result[0]
+                                translation_error = float(np.linalg.norm(difference[:3, 3]))
+                                rotation_error = float(np.degrees(
+                                    np.linalg.norm(cv.Rodrigues(difference[:3, :3])[0])))
+                                conflict = translation_error > 0.5 or rotation_error > 1.5
+                                arbitration_report = {
+                                    'choice': 'existing_reference' if conflict else 'map',
+                                    'reason': ('full_supported_reference_still_conflicts'
+                                               if conflict else
+                                               'full_supported_reference_agrees_with_map'),
+                                    'reservation_context_available': True,
+                                    'held_out_arbitration_used': False,
+                                    'fit_source': 'full_supported_reference',
+                                    'fit_depth_policy': 'supported_raw',
+                                    'full_supported_fallback': full_supported_fallback_report,
+                                }
+                                info['full_supported_reference_fallback'] = full_supported_fallback_report
+                                info.update(
+                                    map_reference_translation_error_m=translation_error,
+                                    map_reference_rotation_error_deg=rotation_error,
+                                )
+
+                        if verified is not None:
+                            if (arbitration is not None and result is not None
+                                    and not full_supported_fallback_attempted):
+                                arbitration_measurement = verified['measurement'].copy()
+                            if verified['reverse_checked'] and index-previous_index == 1:
+                                self.verified_stereo_motion = (verified['measurement'].copy(), index)
+                            if verified['reverse_checked']:
+                                verified_motion = (previous_index, verified['measurement'].copy())
+                            info['stereo_reference_verified'] = True
+                            info['stereo_bidirectional_refinement'] = verified.get('bidirectional_refinement')
+                            info['stereo_reference_verification'] = (
+                                'bidirectional_pnp' if verified['reverse_checked']
+                                else 'source_depth_pnp')
+                            arbitration_selected = False
+                            if result is not None and not full_supported_fallback_attempted:
+                                translation_error = half_translation_error
+                                rotation_error = half_rotation_error
+                                info.update(
+                                    map_reference_translation_error_m=translation_error,
+                                    map_reference_rotation_error_deg=rotation_error,
+                                )
+                            if (arbitration is not None and result is not None
+                                    and not full_supported_fallback_attempted
+                                    and verified['reverse_checked'] and not conflict):
                                 arbitration_report = self._arbitrate_supported_pose(
                                     arbitration, result[0], verified['measurement'])
                                 arbitration_selected = arbitration_report['choice'] == 'independent'
-                        if result is None or conflict or arbitration_selected:
-                            if arbitration is not None and not arbitration_selected:
+                        if verified is not None and (result is None or conflict or arbitration_selected):
+                            if full_supported_fallback_attempted:
+                                arbitration_report = {
+                                    **arbitration_report,
+                                    'choice': 'existing_reference' if conflict else 'map',
+                                    'reason': ('full_supported_reference_still_conflicts'
+                                               if conflict else
+                                               'full_supported_reference_selected'),
+                                }
+                            elif arbitration is not None and not arbitration_selected:
                                 arbitration_report = {**arbitration['report'], 'choice': 'existing_reference',
                                                       'reason': ('hard_disagreement_fallback' if conflict
                                                                  else 'missing_map_hypothesis')}
@@ -1549,17 +1834,23 @@ class SharedSlam:
                                             self.current_supported_stereo, 'calibration_identity', None),
                                         'reference_reverse_checked': bool(verified.get('reverse_checked')),
                                         'reservation_context_available': reservation_context,
+                                        'held_out_arbitration_used': False,
                                         'independent_fit_source': (
-                                            'reserved_supported_training_rows' if reservation_context
+                                            'full_supported_reference' if full_supported_fallback_attempted
+                                            else 'reserved_supported_training_rows' if reservation_context
                                             else 'map_coordinate_independent_stereo_reference'),
                                         'independent_fit_depth_policy': (
-                                            'supported_raw' if reservation_context
+                                            'supported_raw' if (reservation_context
+                                                                or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'fit_depth_policy': (
-                                            'supported_raw' if reservation_context
+                                            'supported_raw' if (reservation_context
+                                                                or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'map_fit_depth_policy': self.config.stereo_depth_policy,
-                                        'prediction_seed_supplied': not reservation_context,
+                                        'prediction_seed_supplied': (
+                                            False if full_supported_fallback_attempted
+                                            else not reservation_context),
                                         'current_right_measurement': (
                                             'supported_only_raw_disparity_at_actual_observation'
                                             if connection is not None else 'not_remeasured_guard_rejected'),

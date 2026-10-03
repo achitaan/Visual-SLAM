@@ -24,8 +24,7 @@ keyframe anchors during optimization; both image and augmented objectives must
 strictly improve before correction. Existing 0.5 m / 1.5 degree agreement gates,
 map revision checks and the fixed origin remain in effect.
 
-Enable this experiment with `--stereo-motion-regularizer` alongside `--slam
---stereo` in the normal command, or `--stereo` in the shared evaluator. Saved
+Enable this experiment with `--stereo-motion-regularizer` alongside `--slam --stereo` in the normal command, or `--stereo` in the shared evaluator. Saved
 runs include active/skipped factors, objectives, fit-row IDs and frozen factor
 provenance. Invalid unused training depth is explicitly null with validity masks;
 information rows, poses and map exports must remain finite.
@@ -36,3 +35,18 @@ arrays, invalid inputs, delayed anchor corrections, unchanged hard gates, stale
 calibration, and an actual SciPy solve with competing image/motion evidence.
 These checks do not establish KITTI accuracy. The affected 01 prefix and wider
 stereo/monocular, loop and reconstruction acceptance checks remain required.
+
+## Validation checkpoint
+
+The frozen estimator fingerprint is
+`d620886b6cb4e01651b02595b8bf28ce7e6a51c5658cc8f533413c9cb02dc295`.
+The full backend suite passes: 381 tests, with four optional GPU skips. The run
+completed in 56.62 seconds and source/runtime fingerprints remained unchanged.
+
+No KITTI score is attributed to this revision yet. The first 04/80 diagnostic
+was deferred: its conservative preparation, replay and reporting estimate was
+246 seconds, exceeding the remaining bounded cycle allowance. Begin the next
+cycle with that smoke gate, then the stateful 01/350 diagnostic if the correctness
+and runtime gates permit. Do not use scores from the previous raw-reference
+revision as validation of this experiment. The known rotation regression,
+coherent raw-motion bias and full-sequence reliability requirements remain open.

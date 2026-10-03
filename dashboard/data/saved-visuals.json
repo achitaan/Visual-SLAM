@@ -1,5 +1,15 @@
 [
   {
+    "file": "reserved-stereo-validation.png",
+    "label": "Reserved stereo validation: fresh VO comparison",
+    "group": "04/80 and 01/350; saved uncached diagnostics; 01 rotation gate failed"
+  },
+  {
+    "file": "reserved-stereo01-overview.png",
+    "label": "Reserved stereo KITTI 01: trajectory and sparse map",
+    "group": "350 frames, zero lost; loops off; saved experiment, not active video"
+  },
+  {
     "file": "fresh-stereo-baseline-comparison.png",
     "label": "Fresh preserved stereo VO vs shared SLAM",
     "group": "Identical 04/80 and 01/350 inputs; saved uncached diagnostics; 01 rotation gate still fails"
@@ -11,7 +21,7 @@
   },
   {
     "file": "full-supported-stereo01-overview.png",
-    "label": "Current KITTI 01: trajectory, loss and sparse map",
+    "label": "Earlier full-pool KITTI 01: trajectory, loss and sparse map",
     "group": "350 frames, one recovered lost frame; loops off; saved evidence, not active video"
   },
   {

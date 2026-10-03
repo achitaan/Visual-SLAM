@@ -140,6 +140,11 @@ The [stereo reliability workflow](docs/STEREO_REWORK.md) provides bounded quick,
 focused and release profiles, controlled ablations and exact-fingerprint resume
 checks. Full validation and a release review remain pending.
 
+[Reserved stereo validation](docs/benchmark/reserved-stereo-validation.md) includes
+fresh VO comparisons, trajectories and sparse maps for 04/80 and 01/350. The
+latest diagnostic removes the lost frame on 01 but fails the rotation regression
+gate; full-sequence testing remains paused.
+
 Use `--slam` to select persistent landmark tracking and local bundle adjustment;
 add `--stereo` for calibrated stereo input. Commands without `--slam` retain the
 original VO implementations for comparison. Monocular initialization uses two-view

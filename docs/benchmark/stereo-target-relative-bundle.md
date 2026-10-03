@@ -56,4 +56,10 @@ The full CUDA-environment suite passed 435 tests with no skips in 75.57 seconds;
 24 focused chart/commit/recovery tests passed. Structured synthetic evidence is
 in [the checkpoint](TARGET_RELATIVE_BUNDLE_CHECKPOINT.json). No dataset accuracy
 result is claimed yet; the next step is a fresh matched ON/OFF comparison.
-Full validation remains paused.
+Full validation remains paused. The source checkpoint was pushed as
+`9046493772c6131e242cb9e076aa6303e03a35e3`. The supervisor deferred the first
+paired replay before launching an evaluator: its conservative estimate, input
+preparation and reporting reserve no longer fit the current 60-minute cycle.
+No new trajectory scores were produced or reused. The next cycle starts with
+fresh CUDA-matched stereo 04/80 ON/OFF runs, then expands only if the correctness,
+accuracy and time-budget gates pass.

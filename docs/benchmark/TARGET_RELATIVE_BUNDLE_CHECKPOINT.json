@@ -169,5 +169,16 @@
   },
   "accuracy_improvement_on_dataset": false,
   "release_ready": false,
-  "source_or_runtime_mixed_with_prior_results": false
+  "source_or_runtime_mixed_with_prior_results": false,
+  "source_checkpoint_commit": "9046493772c6131e242cb9e076aa6303e03a35e3",
+  "paired_replay": {
+    "status": "deferred_before_launch_budget_gate",
+    "completed_runs": 0,
+    "estimated_pair_seconds": 500,
+    "preparation_and_reporting_reserve_seconds": 630,
+    "remaining_seconds_at_decision": 1123.594959,
+    "deadline_utc": "2026-10-03T19:21:22+00:00",
+    "next_case": "fresh CUDA stereo04/80 ON/OFF",
+    "accuracy_result_claimed": false
+  }
 }

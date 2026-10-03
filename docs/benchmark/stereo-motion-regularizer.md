@@ -67,6 +67,12 @@ motions match the off control, but the regularizer suppresses useful multiview
 corrections of coherent accumulated raw-motion bias. Reducing a reprojection
 objective or preserving pairwise motions does not establish trajectory accuracy.
 
+![Cumulative relative pose errors from saved artifacts](plots/motion-regularizer-04-cumulative.png)
+
+The composed raw-motion chain is an evaluator diagnostic, not a third estimator
+run. All curves use ground truth only after estimation. The dashed vertical line
+marks the endpoint of this prefix's single eligible 100 m segment.
+
 A saved-row mathematical audit also finds that the raw motion is not a
 stationary point of the stereo-image objective used to form its Schur metric.
 The corresponding linear term is missing from the zero-centered approximation.
@@ -74,10 +80,12 @@ However, that term is much smaller than the quadratic penalty on several useful
 off-control corrections. Recentring alone is therefore not an evidenced fix;
 measurement bias and repeated sensor evidence remain material.
 
-One private supervisor's post-run reporting raised a TypeError after its worker
-completed successfully. The original manifest and logs are retained. Its saved
-estimator artifacts, source archives, finite exports and recomputed metrics were
-audited independently; the reporting error is not presented as a clean cycle.
+The on supervisor's resumed manifest retains a TypeError string from a previous
+invocation alongside its successful current attempt. Resume preserves that old
+field, and success does not clear it. No saved traceback establishes the original
+call site. The original manifest and logs are retained. The current worker's
+source archives, finite exports and recomputed metrics pass independent audits;
+the contradictory enclosing manifest is flagged separately.
 
 The regularizer stays disabled and separate from the integration branch. Next
 work should diagnose the underlying stereo observation model and landmark

@@ -82,9 +82,10 @@ reference identities, resolved configuration, exact frame coverage and finite
 artifact checks. An OS lock and owner-liveness checks prevent concurrent resume;
 incomplete attempts are retained in separate retry directories. Legacy manifests,
 diagnostic caches and mismatched completed reports cannot be reused. This runner
-still needs independent evaluator deadlines before scheduled full validation can
-restart. Use the bounded development runner, which includes tests in its gate
-fingerprint, for current diagnostic work.
+now has an owned process-tree deadline covering preparation, evaluation and
+plotting. Scheduled full validation remains paused for accuracy and coverage
+gates. The bounded development runner includes tests in its gate fingerprint;
+dependency/runtime identity and finite-artifact reuse still need hardening.
 
 Next, repair the demonstrated depth-support regression using independently
 verified geometry, profile extraction and descriptor matching, and repeat the
@@ -243,3 +244,9 @@ remain incomplete. Compatible timing history supplies cost estimates only.
 The current backend suite passes 279 tests, with four optional GPU skips. A real
 two-frame paired deadline-runner smoke completes stereo and explicitly retains
 monocular initialization failure. These checks do not replace accuracy coverage.
+
+[The current connected-stereo focused report](benchmark/connected-stereo-focused.md)
+records actual 04/80 and 01/350 results at `b01684a`. It improves 01 position,
+translation and tracking coverage, but rotation, runtime and memory still
+regress against supported mapping. The 6.5-minute cycle does not pass the release
+gate; its graphs and source groups remain separate from future repairs.

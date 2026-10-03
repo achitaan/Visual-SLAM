@@ -1,5 +1,15 @@
 [
   {
+    "file": "connected-stereo-focused-comparison.png",
+    "label": "Stereo 01/04: position, translation and rotation together",
+    "group": "Frozen b01684a prefixes, CPU uncached, loops off; 01 rotation gate fails"
+  },
+  {
+    "file": "connected-stereo01-overview.png",
+    "label": "KITTI 01: actual 350-frame trajectory, error and sparse map",
+    "group": "Frozen b01684a: no lost frames, remaining rotation/runtime regression; saved diagnostic"
+  },
+  {
     "file": "stereo-arbitration04-comparison.png",
     "label": "Stereo arbitration: accuracy, keyframes, runtime and memory",
     "group": "KITTI04 frames0-79: repaired connectivity and matched BA ablation; release gates pending"

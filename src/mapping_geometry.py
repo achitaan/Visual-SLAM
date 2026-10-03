@@ -319,7 +319,8 @@ def _estimate_pose_hypothesis(
 
 
 def estimate_stereo_reference(
-    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None
+    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
+    *, capture_rows=False,
 ):
     """Frame tracking with the map tracker's PnP checks, never a loop constraint.
 
@@ -371,7 +372,7 @@ def estimate_stereo_reference(
         )
         predicted, _ = project(source.points[a_source[valid]], measurement, matrix)
         error = float(np.median(np.linalg.norm(predicted-target.pixels[b_target[valid]], axis=1)))
-    return {
+    result = {
         "measurement": measurement,
         "matches": len(a_source),
         "inliers": len(valid),
@@ -382,6 +383,38 @@ def estimate_stereo_reference(
         "target_features": b_target[valid].tolist(),
         "bidirectional_refinement": refinement,
     }
+    if capture_rows:
+        # Keep the original matching-pool row numbers so downstream diagnostics
+        # can distinguish actual solver membership from reconstructed support.
+        # This branch is opt-in and does not participate in pose estimation.
+        forward_rows = np.flatnonzero(available)[valid]
+        reverse_rows = (
+            np.flatnonzero(reverse_available)[reverse[1]]
+            if reverse is not None else np.empty(0, dtype=np.int64)
+        )
+
+        def owned_pairs(rows):
+            owned = np.array(pairs[np.asarray(rows, dtype=np.int64)],
+                             dtype=np.int64, copy=True).reshape(-1, 2)
+            owned.setflags(write=False)
+            return owned
+
+        result["training_rows"] = {
+            "schema": "stereo_reference_training_rows_v1",
+            "fit_pairs": owned_pairs(np.arange(len(pairs), dtype=np.int64)),
+            "forward_available_pairs": owned_pairs(np.flatnonzero(available)),
+            "forward_fit_row_indices": np.array(forward_rows, dtype=np.int64, copy=True),
+            "forward_inlier_pairs": owned_pairs(forward_rows),
+            "reverse_available_pairs": owned_pairs(np.flatnonzero(reverse_available)),
+            "reverse_fit_row_indices": np.array(reverse_rows, dtype=np.int64, copy=True),
+            "reverse_inlier_pairs": owned_pairs(reverse_rows),
+            "reverse_status": "verified" if reverse is not None else "unavailable",
+            "refinement_attempted": bool(reverse is not None),
+            "refinement_applied": bool(refinement and refinement.get("applied")),
+        }
+        result["training_rows"]["forward_fit_row_indices"].setflags(write=False)
+        result["training_rows"]["reverse_fit_row_indices"].setflags(write=False)
+    return result
 
 
 def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):

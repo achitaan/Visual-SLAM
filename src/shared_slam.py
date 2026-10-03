@@ -44,6 +44,33 @@ def _owned_diagnostic_value(value):
     return str(value)
 
 
+def _reserved_training_selected_as_edge(
+    pose_source, arbitration_choice, final_source_frame,
+    reserved_source_frame, final_measurement, reserved_measurement,
+    consumed_full_pool,
+):
+    """Require source-role selection as well as equal measurement provenance."""
+    if consumed_full_pool:
+        return False
+    role_selected = (
+        pose_source == "reserved_stereo_arbitration"
+        and arbitration_choice == "independent"
+    ) or (
+        pose_source == "stereo_tracking_reference"
+        and arbitration_choice == "existing_reference"
+    )
+    if not role_selected or final_measurement is None or reserved_measurement is None:
+        return False
+    try:
+        return bool(
+            int(final_source_frame) == int(reserved_source_frame)
+            and np.array_equal(np.asarray(final_measurement),
+                               np.asarray(reserved_measurement))
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 @dataclass(frozen=True)
 class StereoCamera:
     """Calibration and disparity computation, without dataset/reference access."""
@@ -1341,7 +1368,7 @@ class SharedSlam:
                                     np.full(len(pixels), -1, int), index, size,
                                     self.stereo_calibration_identity)
 
-    def _prepare_stereo_arbitration(self, index, current):
+    def _prepare_stereo_arbitration(self, index, current, capture_rows=False):
         report = {'choice': 'map', 'reason': 'missing_previous_supported_frame'}
         previous = self.previous_supported_stereo
         if (previous is None or self.previous_stereo_geometry is None
@@ -1397,20 +1424,50 @@ class SharedSlam:
                                          previous.landmark_ids[source],
                                          'immutable_supported_extraction', previous.frame,
                                          previous.calibration_identity)
+        fit_epoch = None
+        fit_source_state = None
+        if capture_rows:
+            with self.map.lock:
+                fit_epoch = (int(self.map.revision), int(self.map.geometry_revision))
+                source_anchor = self.map.pose_anchors[previous.frame]
+                fit_source_state = {
+                    'source_pose': self.map.poses[previous.frame].copy(),
+                    'source_status': self.map.statuses[previous.frame],
+                    'source_anchor_keyframe_id': source_anchor,
+                    'source_anchor_pose': (
+                        self.map.keyframes[source_anchor].pose.copy()
+                        if source_anchor in self.map.keyframes else None
+                    ),
+                }
         context = {'previous': previous, 'current': current, 'fit': fit, 'evidence': evidence,
                    'excluded_targets': excluded_targets, 'excluded_landmarks': excluded_landmarks,
                    'excluded_target_pixels': target_pixels,
                    'map_fit_targets': set(), 'map_fit_landmarks': set(), 'report': report}
+        if capture_rows:
+            context['held_pairs'] = np.array(held, dtype=np.int64, copy=True)
         source_frame = StereoLoopFrame(previous.pixels, previous.points, previous.descriptors, previous.image_size)
         target_frame = StereoLoopFrame(current.pixels, current.points, current.descriptors, current.image_size)
-        verified = self.profile.call(
-            'stereo_pose_arbitration_fit', estimate_stereo_reference,
-            source_frame, target_frame, self.K, min_inliers=minimum,
-            initial_pose=None, matcher=lambda first, second: fit.copy())
+        if capture_rows:
+            verified = self.profile.call(
+                'stereo_pose_arbitration_fit', estimate_stereo_reference,
+                source_frame, target_frame, self.K, min_inliers=minimum,
+                initial_pose=None, matcher=lambda first, second: fit.copy(),
+                capture_rows=True,
+            )
+        else:
+            verified = self.profile.call(
+                'stereo_pose_arbitration_fit', estimate_stereo_reference,
+                source_frame, target_frame, self.K, min_inliers=minimum,
+                initial_pose=None, matcher=lambda first, second: fit.copy())
         if verified is None or not verified['reverse_checked']:
             report['reason'] = 'independent_training_failed'
             return None, report
         context['verified'] = verified
+        if capture_rows:
+            context['training_rows'] = verified.get('training_rows')
+            context['fit_source_epoch'] = fit_epoch
+            context['fit_source_state'] = fit_source_state
+            context['fit_pairs_snapshot'] = np.array(fit, dtype=np.int64, copy=True)
         report['reason'] = 'reserved_supported_evidence'
         return context, report
 
@@ -2249,6 +2306,554 @@ class SharedSlam:
                 "affected_anchor_poses": affected_anchors,
             })
 
+    def _bundle_training_observations_context(
+        self, frame, image_size, arbitration, arbitration_report, prepared_payload
+    ):
+        """Snapshot exact reserved stereo training rows for one requested BA frame."""
+        base = {
+            "schema": "stereo_training_rows_v1",
+            "frame": int(frame),
+            "status": "skipped",
+            "eligible": False,
+            "reason": "reserved_training_context_unavailable",
+        }
+        if not isinstance(arbitration, dict):
+            report = arbitration_report if isinstance(arbitration_report, dict) else {}
+            base["reason"] = report.get("reason", "reserved_training_context_unavailable")
+            return base
+        previous = arbitration.get("previous")
+        current = arbitration.get("current")
+        training = arbitration.get("training_rows")
+        fit = arbitration.get("fit_pairs_snapshot")
+        held = arbitration.get("held_pairs")
+        if (previous is None or current is None or not isinstance(training, dict)
+                or not isinstance(fit, np.ndarray) or not isinstance(held, np.ndarray)):
+            base["reason"] = "training_row_ledger_unavailable"
+            return base
+        def integer_pairs(value):
+            array = np.asarray(value)
+            if (not np.issubdtype(array.dtype, np.integer)
+                    or np.issubdtype(array.dtype, np.bool_)):
+                raise ValueError("pair IDs must be integers")
+            return np.asarray(array, dtype=np.int64).reshape(-1, 2)
+
+        def integer_vector(value):
+            array = np.asarray(value)
+            if (not np.issubdtype(array.dtype, np.integer)
+                    or np.issubdtype(array.dtype, np.bool_)):
+                raise ValueError("row IDs must be integers")
+            return np.asarray(array, dtype=np.int64).reshape(-1)
+        try:
+            fit = integer_pairs(fit)
+            held = integer_pairs(held)
+            training_fit = integer_pairs(training.get("fit_pairs", []))
+            forward = integer_pairs(training.get("forward_inlier_pairs", []))
+            reverse = integer_pairs(training.get("reverse_inlier_pairs", []))
+            forward_rows = integer_vector(training.get("forward_fit_row_indices", []))
+            reverse_rows = integer_vector(training.get("reverse_fit_row_indices", []))
+        except (TypeError, ValueError, OverflowError):
+            base["reason"] = "malformed_training_row_ledger"
+            return base
+        if not np.array_equal(fit, training_fit):
+            base["reason"] = "captured_fit_pairs_do_not_match_estimator_input"
+            return base
+        if (len(forward) != len(forward_rows) or len(reverse) != len(reverse_rows)
+                or np.any(forward_rows < 0) or np.any(forward_rows >= len(fit))
+                or np.any(reverse_rows < 0) or np.any(reverse_rows >= len(fit))
+                or (len(forward_rows) and not np.array_equal(fit[forward_rows], forward))
+                or (len(reverse_rows) and not np.array_equal(fit[reverse_rows], reverse))):
+            base["reason"] = "inlier_membership_ledger_mismatch"
+            return base
+        if (previous.pixels.ndim != 2 or previous.pixels.shape[1:] != (2,)
+                or current.pixels.ndim != 2 or current.pixels.shape[1:] != (2,)
+                or previous.points.shape != (len(previous.pixels), 3)
+                or current.points.shape != (len(current.pixels), 3)
+                or previous.right_u.shape != (len(previous.pixels),)
+                or current.right_u.shape != (len(current.pixels),)
+                or any(np.any(rows[:, 0] < 0) or np.any(rows[:, 0] >= len(previous.pixels))
+                       or np.any(rows[:, 1] < 0) or np.any(rows[:, 1] >= len(current.pixels))
+                       for rows in (fit, held, forward, reverse))):
+            base["reason"] = "malformed_raw_supported_endpoint_records"
+            return base
+
+        def maybe_vector(value):
+            try:
+                array = np.asarray(value, dtype=float).reshape(-1)
+            except (TypeError, ValueError, OverflowError):
+                return {"values": [], "valid_mask": [], "valid": False}
+            mask = np.isfinite(array)
+            return {
+                "values": [float(item) if valid else None
+                           for item, valid in zip(array, mask)],
+                "valid_mask": [bool(valid) for valid in mask],
+                "valid": bool(mask.all()),
+            }
+
+        def feature_row(source_id, target_id, roles):
+            source_id, target_id = int(source_id), int(target_id)
+            return {
+                "source_feature_id": source_id,
+                "target_feature_id": target_id,
+                "roles": roles,
+                "source_pixel": maybe_vector(previous.pixels[source_id]),
+                "target_pixel": maybe_vector(current.pixels[target_id]),
+                "source_right_u": maybe_vector([previous.right_u[source_id]]),
+                "target_right_u": maybe_vector([current.right_u[target_id]]),
+                "source_camera_point": maybe_vector(previous.points[source_id]),
+                "target_camera_point": maybe_vector(current.points[target_id]),
+                "source_depth_source": "raw_supported_stereo_disparity",
+                "target_depth_source": "raw_supported_stereo_disparity",
+                # A SupportedStereoFrame link is a claim carried forward by
+                # tracking; the authoritative observation is recorded below.
+                "source_claimed_landmark_id": int(previous.landmark_ids[source_id]),
+            }
+
+        fit_edges = [tuple(map(int, row)) for row in fit]
+        forward_edges = {tuple(map(int, row)) for row in forward}
+        reverse_edges = {tuple(map(int, row)) for row in reverse}
+        refinement_forward = forward_edges if training.get("refinement_attempted") else set()
+        refinement_reverse = reverse_edges if training.get("refinement_attempted") else set()
+        candidate_edges = sorted(forward_edges | reverse_edges)
+        if len(candidate_edges) > 256:
+            base.update({
+                "status": "skipped",
+                "reason": "candidate_inlier_row_cap_exceeded",
+                "candidate_row_cap": 256,
+                "candidate_row_count": int(len(candidate_edges)),
+                "fit_pairs": [list(map(int, pair)) for pair in fit],
+                "forward_inlier_pairs": [list(map(int, pair)) for pair in forward],
+                "reverse_inlier_pairs": [list(map(int, pair)) for pair in reverse],
+                "heldout_pairs": [list(map(int, pair)) for pair in held],
+                "excluded_target_feature_ids": sorted(
+                    map(int, arbitration.get("excluded_targets", set()))
+                ),
+                "excluded_landmark_ids": sorted(
+                    map(int, arbitration.get("excluded_landmarks", set()))
+                ),
+            })
+            return _owned_diagnostic_value(base)
+        candidate_rows = [feature_row(source_id, target_id, {
+            "fit_match": True,
+            "forward_inlier": (source_id, target_id) in forward_edges,
+            "reverse_inlier": (source_id, target_id) in reverse_edges,
+            "refinement_forward_input": (source_id, target_id) in refinement_forward,
+            "refinement_reverse_input": (source_id, target_id) in refinement_reverse,
+            "image_factor_candidate": True,
+        }) for source_id, target_id in candidate_edges]
+        fit_match_rows = [feature_row(source_id, target_id, {
+            "fit_match": True,
+            "forward_inlier": (source_id, target_id) in forward_edges,
+            "reverse_inlier": (source_id, target_id) in reverse_edges,
+            "refinement_forward_input": (source_id, target_id) in refinement_forward,
+            "refinement_reverse_input": (source_id, target_id) in refinement_reverse,
+            "image_factor_candidate": (source_id, target_id) in forward_edges
+            or (source_id, target_id) in reverse_edges,
+        }) for source_id, target_id in fit_edges]
+        held_rows = [feature_row(source_id, target_id, {
+            "fit_match": False, "forward_inlier": False, "reverse_inlier": False,
+            "held_out": True, "image_factor_candidate": False,
+        }) for source_id, target_id in held]
+
+        def pixel_keys(rows, record, column):
+            return {self._physical_pixel_key(record.pixels[int(row[column])])
+                    for row in rows}
+
+        fit_source_keys = pixel_keys(fit, previous, 0)
+        fit_target_keys = pixel_keys(fit, current, 1)
+        held_source_keys = pixel_keys(held, previous, 0)
+        held_target_keys = pixel_keys(held, current, 1)
+        overlap = sorted(("source" if side == 0 else "target", tuple(key))
+                         for side, keys in ((0, fit_source_keys & held_source_keys),
+                                            (1, fit_target_keys & held_target_keys))
+                         for key in keys)
+
+        selected_ids = {
+            int(item["landmark_id"])
+            for item in prepared_payload.get("selection", {}).get("selected_landmarks", [])
+            if isinstance(item, dict) and item.get("landmark_id") is not None
+        }
+        single_view_ids = {
+            int(item["landmark_id"])
+            for item in prepared_payload.get("single_view_propagations", [])
+            if isinstance(item, dict) and item.get("landmark_id") is not None
+        }
+
+        with self.map.lock:
+            revision = int(self.map.revision)
+            geometry_revision = int(self.map.geometry_revision)
+            target_keyframes = [
+                (int(key), keyframe) for key, keyframe in self.map.keyframes.items()
+                if int(keyframe.frame) == int(frame)
+            ]
+            prepared_source_pose = (
+                self.map.poses[previous.frame].copy()
+                if 0 <= int(previous.frame) < len(self.map.poses) else None
+            )
+            prepared_source_status = (
+                self.map.statuses[previous.frame]
+                if 0 <= int(previous.frame) < len(self.map.statuses) else None
+            )
+            prepared_source_anchor = (
+                self.map.pose_anchors[previous.frame]
+                if 0 <= int(previous.frame) < len(self.map.pose_anchors) else None
+            )
+            prepared_source_anchor_pose = (
+                self.map.keyframes[prepared_source_anchor].pose.copy()
+                if prepared_source_anchor in self.map.keyframes else None
+            )
+            target_pose = self.map.poses[int(frame)].copy() if int(frame) < len(self.map.poses) else None
+            target_status = (self.map.statuses[int(frame)]
+                             if int(frame) < len(self.map.statuses) else None)
+            target_anchor = (self.map.pose_anchors[int(frame)]
+                             if int(frame) < len(self.map.pose_anchors) else None)
+            target_anchor_pose = (
+                self.map.keyframes[target_anchor].pose.copy()
+                if target_anchor in self.map.keyframes else None
+            )
+            calibration_matrix = np.array(self.K, copy=True)
+            calibration_q = (np.array(self.stereo.Q, copy=True)
+                             if self.stereo is not None else np.empty(0))
+            calibration_baseline = (None if self.stereo is None
+                                    else float(self.stereo.baseline))
+            calibration_offset = (None if self.stereo is None
+                                  else float(self.stereo.disparity_offset))
+            digest = hashlib.sha256()
+            for value in (calibration_matrix, calibration_q):
+                digest.update(value.dtype.str.encode())
+                digest.update(value.tobytes())
+            if calibration_baseline is not None:
+                digest.update(np.float64(calibration_baseline).tobytes())
+            live_calibration = digest.hexdigest()
+            calibration_matches = bool(
+                live_calibration == previous.calibration_identity
+                == current.calibration_identity == self.stereo_calibration_identity
+            )
+
+            def target_claims(target_feature_id):
+                pixel = np.asarray(current.pixels[int(target_feature_id)], np.float32)
+                pixel_key = self._physical_pixel_key(pixel)
+                claims = []
+                for keyframe_id, keyframe in target_keyframes:
+                    keyframe_pixels = np.asarray(keyframe.pixels, np.float32)
+                    indices = [i for i, value in enumerate(keyframe_pixels)
+                               if self._physical_pixel_key(value) == pixel_key]
+                    for feature_id in indices:
+                        landmark_id = int(keyframe.landmark_ids[feature_id])
+                        landmark = self.map.landmarks.get(landmark_id)
+                        observation = (None if landmark is None else
+                                       landmark.observations.get(keyframe_id))
+                        obs_pixel = None if observation is None else maybe_vector(observation.pixel)
+                        obs_right = (None if observation is None or observation.right_u is None
+                                     else maybe_vector([observation.right_u]))
+                        exact_pixel = bool(
+                            observation is not None
+                            and np.array_equal(np.asarray(observation.pixel, np.float32), pixel)
+                        )
+                        exact_right = bool(
+                            observation is not None and observation.right_u is not None
+                            and np.isfinite(current.right_u[target_feature_id])
+                            and float(observation.right_u) == float(current.right_u[target_feature_id])
+                        )
+                        world_position = (None if landmark is None
+                                          else maybe_vector(landmark.position))
+                        certificate = None
+                        if (landmark_id >= 0 and exact_pixel and exact_right
+                                and observation is not None):
+                            world = np.asarray(landmark.position, float)
+                            certificate = {
+                                "frame_id": int(keyframe.frame),
+                                "keyframe_id": int(keyframe_id),
+                                "landmark_id": int(landmark_id),
+                                "anchor_keyframe_id": int(landmark.anchor),
+                                "pixel": np.asarray(observation.pixel, np.float32).tolist(),
+                                "right_u": float(observation.right_u),
+                                "world_position": world.tolist()
+                                if world.shape == (3,) and np.isfinite(world).all() else None,
+                            }
+                        if landmark_id < 0:
+                            classification = "unowned"
+                        elif not exact_pixel or not exact_right:
+                            classification = "ambiguous_or_measurement_mismatch"
+                        elif landmark_id in selected_ids:
+                            classification = "reusable_existing_selected_point"
+                        elif landmark_id in single_view_ids:
+                            classification = "existing_single_view_target"
+                        else:
+                            classification = "existing_owned_not_selected"
+                        claims.append({
+                            "keyframe_id": keyframe_id,
+                            "keyframe_feature_id": int(feature_id),
+                            "landmark_id": None if landmark_id < 0 else landmark_id,
+                            "anchor_keyframe_id": (None if landmark is None else int(landmark.anchor)),
+                            "world_position": world_position,
+                            "observation_pixel": obs_pixel,
+                            "observation_right_u": obs_right,
+                            "exact_pixel_match": exact_pixel,
+                            "exact_right_u_match": exact_right,
+                            "classification": classification,
+                            "existing_observation_certificate": certificate,
+                        })
+                if not claims:
+                    return {"classification": "unowned", "claims": []}
+                classes = {claim["classification"] for claim in claims}
+                classification = (next(iter(classes)) if len(classes) == 1
+                                  else "ambiguous_or_measurement_mismatch")
+                return {"classification": classification, "claims": claims}
+
+            claims_by_target = {
+                int(target_id): target_claims(int(target_id))
+                for target_id in sorted({int(pair[1]) for pair in fit_edges}
+                                        | {int(pair[1]) for pair in held})
+            }
+
+            source_ids = sorted({int(pair[0]) for pair in fit_edges}
+                                | {int(pair[0]) for pair in held})
+            source_claims_by_feature = {}
+            source_keyframes = [
+                (int(key), keyframe) for key, keyframe in self.map.keyframes.items()
+                if int(keyframe.frame) == int(previous.frame)
+            ]
+            for source_id in source_ids:
+                source_pixel = np.asarray(previous.pixels[source_id], np.float32)
+                source_key = self._physical_pixel_key(source_pixel)
+                claimed_id = int(previous.landmark_ids[source_id])
+                authoritative = []
+                for keyframe_id, keyframe in source_keyframes:
+                    for feature_id, pixel_value in enumerate(
+                        np.asarray(keyframe.pixels, np.float32)
+                    ):
+                        if self._physical_pixel_key(pixel_value) != source_key:
+                            continue
+                        landmark_id = int(keyframe.landmark_ids[feature_id])
+                        landmark = self.map.landmarks.get(landmark_id)
+                        observation = (None if landmark is None else
+                                       landmark.observations.get(keyframe_id))
+                        exact_pixel = bool(
+                            observation is not None
+                            and np.array_equal(
+                                np.asarray(observation.pixel, np.float32), source_pixel
+                            )
+                        )
+                        exact_right = bool(
+                            observation is not None and observation.right_u is not None
+                            and np.isfinite(previous.right_u[source_id])
+                            and float(observation.right_u) == float(previous.right_u[source_id])
+                        )
+                        world = (np.asarray(landmark.position, float)
+                                 if landmark is not None else np.empty(0))
+                        certificate = None
+                        if (landmark_id >= 0 and exact_pixel and exact_right
+                                and observation is not None):
+                            certificate = {
+                                "frame_id": int(keyframe.frame),
+                                "keyframe_id": int(keyframe_id),
+                                "landmark_id": int(landmark_id),
+                                "anchor_keyframe_id": int(landmark.anchor),
+                                "pixel": np.asarray(observation.pixel, np.float32).tolist(),
+                                "right_u": float(observation.right_u),
+                                "world_position": world.tolist()
+                                if world.shape == (3,) and np.isfinite(world).all() else None,
+                            }
+                        authoritative.append({
+                            "keyframe_id": keyframe_id,
+                            "keyframe_feature_id": int(feature_id),
+                            "landmark_id": None if landmark_id < 0 else landmark_id,
+                            "anchor_keyframe_id": (None if landmark is None
+                                                   else int(landmark.anchor)),
+                            "world_position": (None if landmark is None
+                                               else maybe_vector(landmark.position)),
+                            "observation_pixel": (None if observation is None
+                                                  else maybe_vector(observation.pixel)),
+                            "observation_right_u": (
+                                None if observation is None or observation.right_u is None
+                                else maybe_vector([observation.right_u])
+                            ),
+                            "exact_pixel_match": exact_pixel,
+                            "exact_right_u_match": exact_right,
+                            "existing_observation_certificate": certificate,
+                        })
+                track_claims = [
+                    {"landmark_id": int(landmark_id),
+                     "source_frame": int(previous.frame),
+                     "pixel": maybe_vector(pixel),
+                     "exact_pixel_match": bool(np.array_equal(
+                         np.asarray(pixel, np.float32), source_pixel)),
+                     "role": "previous_tracks_claim_not_observation_certificate"}
+                    for landmark_id, pixel in self.previous_tracks
+                    if int(landmark_id) == claimed_id
+                ]
+                source_claims_by_feature[source_id] = {
+                    "claimed_landmark_id": None if claimed_id < 0 else claimed_id,
+                    "authoritative_observations": authoritative,
+                    "previous_tracks_claims": track_claims,
+                    "landmark_world_position": (
+                        maybe_vector(self.map.landmarks[claimed_id].position)
+                        if claimed_id in self.map.landmarks else None
+                    ),
+                    "classification": (
+                        "exact_source_observation"
+                        if any(item["exact_pixel_match"] and item["exact_right_u_match"]
+                               for item in authoritative)
+                        else "tracker_claim_not_observation_certificate"
+                        if track_claims else
+                        "unowned" if claimed_id < 0 else
+                        "ambiguous_or_measurement_mismatch"
+                    ),
+                }
+
+        for row in fit_match_rows + candidate_rows + held_rows:
+            row["source_map_ownership"] = source_claims_by_feature.get(
+                row["source_feature_id"], {"classification": "unowned"})
+            target_id = row["target_feature_id"]
+            row["target_map_ownership"] = claims_by_target.get(
+                target_id, {"classification": "unowned", "claims": []})
+            row["target_claimed_landmark_id"] = int(current.landmark_ids[target_id])
+
+        observation_certificates = {}
+        for source_claim in source_claims_by_feature.values():
+            for claim in source_claim.get("authoritative_observations", []):
+                certificate = claim.get("existing_observation_certificate")
+                if certificate is not None:
+                    key = (certificate["frame_id"], certificate["landmark_id"],
+                           tuple(certificate["pixel"]), certificate["right_u"])
+                    observation_certificates[key] = certificate
+        for target_claim in claims_by_target.values():
+            for claim in target_claim.get("claims", []):
+                certificate = claim.get("existing_observation_certificate")
+                if certificate is not None:
+                    key = (certificate["frame_id"], certificate["landmark_id"],
+                           tuple(certificate["pixel"]), certificate["right_u"])
+                    observation_certificates[key] = certificate
+
+        fit_state = arbitration.get("fit_source_state") or {}
+        fit_epoch = arbitration.get("fit_source_epoch")
+        fit_pose = fit_state.get("source_pose")
+        source_pose_unchanged = bool(
+            fit_pose is not None and prepared_source_pose is not None
+            and np.array_equal(np.asarray(fit_pose), np.asarray(prepared_source_pose))
+        )
+        source_anchor_unchanged = (
+            fit_state.get("source_anchor_keyframe_id") == prepared_source_anchor
+        )
+        fit_anchor_pose = fit_state.get("source_anchor_pose")
+        anchor_pose_unchanged = bool(
+            fit_anchor_pose is not None and prepared_source_anchor_pose is not None
+            and np.array_equal(np.asarray(fit_anchor_pose),
+                               np.asarray(prepared_source_anchor_pose))
+        )
+        fit_geometry_revision = (None if fit_epoch is None else int(fit_epoch[1]))
+        geometry_revision_unchanged = fit_geometry_revision == geometry_revision
+        source_status_unchanged = (
+            fit_state.get("source_status") in ("tracking", "relocalized")
+            and fit_state.get("source_status") == prepared_source_status
+        )
+        target_status_accepted = target_status in ("tracking", "relocalized")
+        fit_rows_sha256 = hashlib.sha256(
+            np.ascontiguousarray(fit, dtype="<i8").tobytes()
+        ).hexdigest()
+        base.update({
+            "status": "captured",
+            "eligible": bool(not overlap and calibration_matches
+                             and source_pose_unchanged and source_anchor_unchanged
+                             and anchor_pose_unchanged and geometry_revision_unchanged
+                             and source_status_unchanged and target_status_accepted
+                             and training.get("reverse_status") == "verified"),
+            "reason": None if (not overlap and calibration_matches and source_pose_unchanged
+                               and source_anchor_unchanged and anchor_pose_unchanged
+                               and geometry_revision_unchanged and source_status_unchanged
+                               and target_status_accepted
+                               and training.get("reverse_status") == "verified")
+            else ("fit_holdout_physical_pixel_overlap" if overlap else
+                  "live_calibration_mismatch" if not calibration_matches else
+                  "source_pose_or_anchor_changed_since_fit" if not source_pose_unchanged
+                  or not source_anchor_unchanged or not anchor_pose_unchanged else
+                  "source_geometry_changed_since_fit" if not geometry_revision_unchanged else
+                  "source_or_target_not_accepted" if not source_status_unchanged
+                  or not target_status_accepted else "reverse_verification_unavailable"),
+            "fit_source": "reserved_supported_training_rows",
+            "training_role": "reserved_fit_train",
+            "partition": "source_feature_index_modulo_2",
+            "fit_pairs_sha256": fit_rows_sha256,
+            "fit_pairs": [list(map(int, pair)) for pair in fit],
+            "fit_training_matches": fit_match_rows,
+            "forward_inlier_pairs": [list(map(int, pair)) for pair in forward],
+            "reverse_inlier_pairs": [list(map(int, pair)) for pair in reverse],
+            "forward_fit_row_indices": forward_rows.tolist(),
+            "reverse_fit_row_indices": reverse_rows.tolist(),
+            "refinement_forward_pairs": [list(map(int, pair)) for pair in forward]
+            if training.get("refinement_attempted") else [],
+            "refinement_reverse_pairs": [list(map(int, pair)) for pair in reverse]
+            if training.get("refinement_attempted") else [],
+            "refinement_applied": bool(training.get("refinement_applied")),
+            "reverse_checked": training.get("reverse_status") == "verified",
+            "fit_source_epoch": None if fit_epoch is None else list(fit_epoch),
+            "prepared_epoch": [revision, geometry_revision],
+            "source_pose_at_fit": maybe_vector(fit_pose) if fit_pose is not None else None,
+            "source_pose_at_prepared": maybe_vector(prepared_source_pose)
+            if prepared_source_pose is not None else None,
+            "source_pose_unchanged_since_fit": source_pose_unchanged,
+            "source_anchor_pose_unchanged_since_fit": anchor_pose_unchanged,
+            "source_geometry_revision_unchanged_since_fit": geometry_revision_unchanged,
+            "source_status_at_fit": fit_state.get("source_status"),
+            "source_frame": {
+                "frame": int(previous.frame), "image_size": list(previous.image_size),
+                "calibration_identity": previous.calibration_identity,
+                "role": "previous_raw_supported_stereo",
+                "anchor_keyframe_id_at_fit": fit_state.get("source_anchor_keyframe_id"),
+                "anchor_pose_at_fit": (maybe_vector(fit_state["source_anchor_pose"])
+                                        if fit_state.get("source_anchor_pose") is not None else None),
+                "anchor_keyframe_id_at_prepared": prepared_source_anchor,
+                "anchor_pose_at_prepared": (maybe_vector(prepared_source_anchor_pose)
+                                             if prepared_source_anchor_pose is not None else None),
+                "pose_anchor_unchanged_since_fit": source_anchor_unchanged,
+            },
+            "target_frame": {
+                "frame": int(current.frame), "image_size": list(current.image_size),
+                "calibration_identity": current.calibration_identity,
+                "role": "current_raw_supported_stereo",
+                "state_at_prepared": target_status,
+                "camera_to_world_at_prepared": maybe_vector(target_pose)
+                if target_pose is not None else None,
+                "anchor_keyframe_id_at_prepared": target_anchor,
+                "anchor_pose_at_prepared": (maybe_vector(target_anchor_pose)
+                                             if target_anchor_pose is not None else None),
+            },
+            "calibration": {
+                "identity": live_calibration,
+                "matches_endpoints": calibration_matches,
+                "matrix": maybe_vector(calibration_matrix),
+                "matrix_shape": list(calibration_matrix.shape),
+                "rectification_q": maybe_vector(calibration_q),
+                "baseline": calibration_baseline,
+                "disparity_offset": calibration_offset,
+                "image_size": list(image_size),
+            },
+            "excluded_heldout_pairs": held_rows,
+            "existing_observations": [observation_certificates[key]
+                                      for key in sorted(observation_certificates)],
+            "candidate_row_cap": 256,
+            "candidate_row_count": int(len(candidate_rows)),
+            "fit_match_count": int(len(fit)),
+            "heldout_match_count": int(len(held)),
+            "excluded_target_feature_ids": sorted(map(int, arbitration["excluded_targets"])),
+            "excluded_landmark_ids": sorted(map(int, arbitration["excluded_landmarks"])),
+            "fit_holdout_physical_pixel_overlap": [
+                {"endpoint": endpoint, "pixel_key": list(key)}
+                for endpoint, key in overlap
+            ],
+            "rows": candidate_rows,
+            "target_map_claims_by_feature": {
+                str(target_id): claims_by_target[target_id]
+                for target_id in sorted(claims_by_target)
+            },
+            "previous_track_claims": [
+                {"landmark_id": int(landmark_id), "source_pixel": maybe_vector(pixel),
+                 "source_frame": int(previous.frame), "role": "tracker_claim_not_observation_certificate"}
+                for landmark_id, pixel in self.previous_tracks
+            ],
+        })
+        return _owned_diagnostic_value(base)
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
@@ -2269,6 +2874,8 @@ class SharedSlam:
                 })
         raw_stereo_enabled = (self.config.stereo_pose_arbitration
                               or self.config.stereo_raw_reference_retry)
+        diagnostic_training_context = None
+        diagnostic_training_report = None
         if raw_stereo_enabled:
             self._supported_extraction = None
             self._arbitration_context = None
@@ -2279,8 +2886,21 @@ class SharedSlam:
         if raw_stereo_enabled:
             self.current_supported_stereo = self._capture_supported_stereo(index, pixels, desc, size)
         if self.config.stereo_pose_arbitration:
-            self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
-                index, self.current_supported_stereo)
+            if diagnostic_capture:
+                self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
+                    index, self.current_supported_stereo, capture_rows=True)
+                diagnostic_training_context = self._arbitration_context
+                diagnostic_training_report = (
+                    dict(arbitration_report) if isinstance(arbitration_report, dict) else {}
+                )
+            else:
+                self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
+                    index, self.current_supported_stereo)
+        elif diagnostic_capture:
+            diagnostic_training_report = {
+                "reason": ("raw_stereo_disabled" if not raw_stereo_enabled
+                           else "stereo_pose_arbitration_disabled")
+            }
         info = {
             "frame": index,
             "features": len(pixels),
@@ -2988,6 +3608,68 @@ class SharedSlam:
                                     self._bundle_diagnostic_tracking_context(index, size)
                                 )
                             if phase == "prepared":
+                                training_snapshot = self._bundle_training_observations_context(
+                                    index, size, diagnostic_training_context,
+                                    diagnostic_training_report, owned,
+                                )
+                                training_snapshot["tracking_reference_status"] = (
+                                    info.get("stereo_reference_verification")
+                                )
+                                full_fallback_report = info.get(
+                                    "full_supported_reference_fallback"
+                                )
+                                training_snapshot["full_supported_reference_used"] = bool(
+                                    isinstance(full_fallback_report, dict)
+                                    and full_fallback_report.get("eligible", False)
+                                )
+                                final_reference_selected = False
+                                if (isinstance(diagnostic_training_context, dict)
+                                        and verified_motion is not None):
+                                    saved_verified = diagnostic_training_context.get("verified")
+                                    if isinstance(saved_verified, dict):
+                                        final_reference_selected = _reserved_training_selected_as_edge(
+                                            info.get("pose_source"),
+                                            arbitration_report.get("choice")
+                                            if isinstance(arbitration_report, dict) else None,
+                                            verified_motion[0],
+                                            diagnostic_training_context["previous"].frame,
+                                            verified_motion[1],
+                                            saved_verified.get("measurement"),
+                                            full_supported_fallback_attempted,
+                                        )
+                                training_snapshot["reserved_training_selected_as_edge"] = (
+                                    final_reference_selected
+                                )
+                                training_snapshot["consumed_full_pool"] = bool(
+                                    full_supported_fallback_attempted
+                                )
+                                training_snapshot["tracking_decision"] = {
+                                    "verification": info.get("stereo_reference_verification"),
+                                    "pose_source": info.get("pose_source"),
+                                    "arbitration_choice": (
+                                        arbitration_report.get("choice")
+                                        if isinstance(arbitration_report, dict) else None
+                                    ),
+                                    "final_reference_measurement": (
+                                        _owned_diagnostic_value(verified_motion[1])
+                                        if verified_motion is not None else None
+                                    ),
+                                    "final_reference_source_frame": (
+                                        int(verified_motion[0])
+                                        if verified_motion is not None else None
+                                    ),
+                                }
+                                if (training_snapshot.get("status") == "captured"
+                                        and not final_reference_selected):
+                                    training_snapshot["eligible"] = False
+                                    training_snapshot["reason"] = (
+                                        "full_supported_pool_replaced_reserved_reference"
+                                        if training_snapshot["consumed_full_pool"] else
+                                        "reserved_reference_not_selected"
+                                    )
+                                owned["shared_slam_context"]["stereo_training_observations"] = (
+                                    training_snapshot
+                                )
                                 selection = owned.get("selection", {})
                                 diagnostic_inputs["window_keyframe_ids"] = (
                                     selection.get("window_keyframe_ids", [])

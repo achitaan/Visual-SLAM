@@ -1591,6 +1591,9 @@ class SharedSlam:
             stereo_reference = False
             full_supported_fallback_attempted = False
             full_supported_fallback_report = None
+            arbitration_selected = False
+            pre_full_reserved_arbitration = None
+            reserved_arbitration_attempted = False
             if self.previous_stereo_geometry is not None:
                 previous_frame, previous_index = self.previous_stereo_geometry
                 if index - previous_index <= 3:
@@ -1649,6 +1652,53 @@ class SharedSlam:
                         # before installing motion, BA, or held-out diagnostics.
                         if (arbitration is not None and result is not None
                                 and verified.get('reverse_checked') is True and half_conflict):
+                            # Score the immutable reserved observations before
+                            # consuming them in the full-pool retry. Only a
+                            # provenance-valid strict held-out win can bypass
+                            # that retry; every other outcome follows the
+                            # established full-pool path below.
+                            with self.map.lock:
+                                source_guard = self._hard_reference_retention_guard(
+                                    index, previous_index, previous_frame, measured,
+                                    verified, source_pose, reference_pose,
+                                    source_map_revision, size)
+                                source_epoch_current = bool(source_guard['eligible'])
+                                if source_epoch_current:
+                                    pre_full_reserved_arbitration = (
+                                        self._arbitrate_supported_pose(
+                                            arbitration, result[0], verified['measurement']))
+                                    reserved_arbitration_attempted = True
+                                    source_guard = self._hard_reference_retention_guard(
+                                        index, previous_index, previous_frame, measured,
+                                        verified, source_pose, reference_pose,
+                                        source_map_revision, size)
+                                    source_epoch_current = bool(source_guard['eligible'])
+                            if pre_full_reserved_arbitration is None:
+                                pre_full_reserved_arbitration = {
+                                    'choice': 'abstain',
+                                    'reason': 'reserved_source_guard_failed_before_score',
+                                    'source_guard': source_guard,
+                                }
+                            pre_full_reserved_arbitration = {
+                                **pre_full_reserved_arbitration,
+                                'fit_source': 'reserved_supported_training_rows',
+                                'held_out_arbitration_used': reserved_arbitration_attempted,
+                                'reservation_context_available': True,
+                            }
+                            if reserved_arbitration_attempted and not source_epoch_current:
+                                pre_full_reserved_arbitration = {
+                                    **pre_full_reserved_arbitration,
+                                    'choice': 'abstain',
+                                    'reason': 'reserved_source_guard_failed_after_score',
+                                    'source_guard': source_guard,
+                                }
+                            arbitration_report = pre_full_reserved_arbitration
+                            arbitration_selected = (
+                                source_epoch_current
+                                and arbitration_report.get('choice') == 'independent')
+                        if (arbitration is not None and result is not None
+                                and verified.get('reverse_checked') is True and half_conflict
+                                and not arbitration_selected):
                             full_supported_fallback_attempted = True
                             # The reserved holdout was consumed by the full-pool
                             # retry. Prevent any later recovery probe in this
@@ -1673,6 +1723,7 @@ class SharedSlam:
                                 'half_pool_rotation_error_deg': half_rotation_error,
                                 'reservation_context_available': True,
                                 'held_out_arbitration_used': False,
+                                'pre_full_reserved_arbitration': pre_full_reserved_arbitration,
                             }
                             arbitration_measurement = None
                             if full_verified is None:
@@ -1734,7 +1785,6 @@ class SharedSlam:
                             info['stereo_reference_verification'] = (
                                 'bidirectional_pnp' if verified['reverse_checked']
                                 else 'source_depth_pnp')
-                            arbitration_selected = False
                             if result is not None and not full_supported_fallback_attempted:
                                 translation_error = half_translation_error
                                 rotation_error = half_rotation_error
@@ -1747,6 +1797,12 @@ class SharedSlam:
                                     and verified['reverse_checked'] and not conflict):
                                 arbitration_report = self._arbitrate_supported_pose(
                                     arbitration, result[0], verified['measurement'])
+                                arbitration_report = {
+                                    **arbitration_report,
+                                    'fit_source': 'reserved_supported_training_rows',
+                                    'held_out_arbitration_used': True,
+                                    'reservation_context_available': True,
+                                }
                                 arbitration_selected = arbitration_report['choice'] == 'independent'
                         if verified is not None and (result is None or conflict or arbitration_selected):
                             if full_supported_fallback_attempted:
@@ -1761,7 +1817,8 @@ class SharedSlam:
                                 arbitration_report = {**arbitration['report'], 'choice': 'existing_reference',
                                                       'reason': ('hard_disagreement_fallback' if conflict
                                                                  else 'missing_map_hypothesis')}
-                            elif conflict and arbitration_report is not None:
+                            elif (conflict and arbitration_report is not None
+                                  and not arbitration_selected):
                                 arbitration_report = {**arbitration_report,
                                                       'choice': 'existing_reference',
                                                       'reason': 'hard_disagreement_fallback'}
@@ -1781,6 +1838,8 @@ class SharedSlam:
                                     **arbitration_report,
                                     'association_validation': association_validation,
                                 }
+                                if conflict:
+                                    info['reference_association_validation'] = association_validation
                                 if not association_validation['eligible']:
                                     # With no connected map support, preserve the
                                     # established reference-keyframe recovery path.

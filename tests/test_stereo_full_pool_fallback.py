@@ -84,16 +84,29 @@ def _run_two_frames(slam):
     return slam.process(1, image, image)
 
 
+def _force_pre_full_map_choice(slam, reason='no_strict_cost_improvement'):
+    calls = []
+
+    def score(context, map_pose, measurement):
+        calls.append((context, map_pose.copy(), measurement.copy()))
+        return {'choice': 'map', 'reason': reason,
+                'map': {'eligible': True, 'cost': 1.0},
+                'independent': {'eligible': True, 'cost': 1.0}}
+
+    slam._arbitrate_supported_pose = score
+    return calls
+
+
 def test_wrong_half_pool_is_replaced_when_full_pool_agrees_with_map(monkeypatch):
     slam = camera()
     truth, calls = _install_process_case(
         slam, monkeypatch, map_z=.5, half_z=1.25, full_result=_pose_with_depth(.5))
-    slam._arbitrate_supported_pose = lambda *args: pytest.fail(
-        'full-pool retry must not run held-out arbitration')
+    reserved_calls = _force_pre_full_map_choice(slam)
     try:
         pose, info = _run_two_frames(slam)
         np.testing.assert_allclose(pose, truth, atol=1e-12)
         assert [call['count'] for call in calls] == [24, 48]
+        assert len(reserved_calls) == 1
         assert all(call['initial_pose'] is None for call in calls)
         report = info['stereo_pose_arbitration']
         assert report['reason'] == 'full_supported_reference_agrees_with_map'
@@ -101,6 +114,10 @@ def test_wrong_half_pool_is_replaced_when_full_pool_agrees_with_map(monkeypatch)
         assert report['fit_depth_policy'] == 'supported_raw'
         assert report['held_out_arbitration_used'] is False
         assert info['full_supported_reference_fallback']['half_pool_conflicted_with_map']
+        pre_score = info['full_supported_reference_fallback']['pre_full_reserved_arbitration']
+        assert pre_score['reason'] == 'no_strict_cost_improvement'
+        assert pre_score['fit_source'] == 'reserved_supported_training_rows'
+        assert pre_score['held_out_arbitration_used'] is True
         assert 'stereo_pose_arbitration_before_bundle' not in info
         assert 'stereo_pose_arbitration_after_bundle' not in info
         np.testing.assert_allclose(slam.map.stereo_motion[(0, 1)], truth, atol=1e-12)
@@ -113,12 +130,12 @@ def test_conflicting_full_pool_pose_uses_fixed_pose_connection_guard(monkeypatch
     slam = camera()
     truth, calls = _install_process_case(
         slam, monkeypatch, map_z=1.2, half_z=1.9, full_result=_pose_with_depth(.5))
-    slam._arbitrate_supported_pose = lambda *args: pytest.fail(
-        'consumed holdout rows cannot score the full-pool result')
+    reserved_calls = _force_pre_full_map_choice(slam)
     try:
         pose, info = _run_two_frames(slam)
         np.testing.assert_allclose(pose, truth, atol=1e-12)
         assert [call['count'] for call in calls] == [24, 48]
+        assert len(reserved_calls) == 1
         assert info['map_pose_rejected_for_stereo_conflict']
         validation = info['reference_association_validation']
         assert validation['eligible'], validation['association_validation']
@@ -129,6 +146,7 @@ def test_conflicting_full_pool_pose_uses_fixed_pose_connection_guard(monkeypatch
         assert validation['held_out_arbitration_used'] is False
         assert validation['reservation_context_available'] is True
         assert info['stereo_pose_arbitration']['held_out_arbitration_used'] is False
+        assert info['full_supported_reference_fallback']['pre_full_reserved_arbitration']['held_out_arbitration_used']
         assert slam.map.keyframes[slam.last_keyframe].frame == 0
         assert len(slam.accepted_tracks) >= 15
         np.testing.assert_allclose(slam.map.stereo_motion[(0, 1)], truth, atol=1e-12)
@@ -140,6 +158,7 @@ def test_full_pool_failure_abstains_ages_map_once_and_installs_no_half_edge(monk
     slam = camera()
     _, calls = _install_process_case(
         slam, monkeypatch, map_z=1.2, half_z=.5, full_result=None)
+    _force_pre_full_map_choice(slam, 'independent_support_not_dominant')
     slam._keyframe_stereo_reference = lambda *args, **kwargs: (None, {})
     slam._relocalize = lambda *args, **kwargs: (None, {})
     try:
@@ -169,6 +188,7 @@ def test_full_pool_failure_can_recover_geometrically_without_half_motion(monkeyp
     slam = camera()
     truth, calls = _install_process_case(
         slam, monkeypatch, map_z=1.2, half_z=.5, full_result=None)
+    _force_pre_full_map_choice(slam, 'independent_support_not_dominant')
     image = np.zeros((376, 1241), np.uint8)
     slam._keyframe_stereo_reference = lambda *args, **kwargs: (
         (truth.copy(), {}), {'pose_source': 'keyframe_stereo_reference'})
@@ -211,6 +231,38 @@ def test_missing_map_hypothesis_uses_reserved_reference_without_scoring(monkeypa
         assert 'full_supported_reference_fallback' not in info
         assert 'stereo_pose_arbitration_before_bundle' not in info
         assert 'stereo_pose_arbitration_after_bundle' not in info
+    finally:
+        slam.close()
+
+
+def test_live_calibration_change_invalidates_pre_full_reserved_win(monkeypatch):
+    slam = camera()
+    _install_process_case(
+        slam, monkeypatch, map_z=1.2, half_z=.5, full_result=_pose_with_depth(.5))
+    score_calls = []
+
+    def stale_score(context, map_pose, measurement):
+        score_calls.append(True)
+        slam.stereo.Q[3, 3] += .01
+        return {'choice': 'independent', 'reason': 'synthetic_candidate'}
+
+    slam._arbitrate_supported_pose = stale_score
+    slam._keyframe_stereo_reference = lambda *args, **kwargs: (None, {})
+    slam._relocalize = lambda *args, **kwargs: (None, {})
+    image = np.zeros((376, 1241), np.uint8)
+    try:
+        slam.process(0, image, image)
+        _, info = slam.process(1, image, image)
+        assert score_calls == [True]
+        pre_score = info['full_supported_reference_fallback']['pre_full_reserved_arbitration']
+        assert pre_score['choice'] == 'abstain'
+        assert pre_score['reason'] == 'reserved_source_guard_failed_after_score'
+        assert not pre_score['source_guard']['eligible']
+        assert info['full_supported_reference_fallback']['reason'] == \
+            'stale_supported_calibration_identity'
+        assert info['stereo_pose_arbitration']['choice'] == 'abstain'
+        assert not slam.map.stereo_motion
+        assert slam.previous_supported_stereo.frame == 0
     finally:
         slam.close()
 

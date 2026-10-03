@@ -29,6 +29,7 @@ CLEANUP_RESERVE_SECONDS = 10
 TIMING_SAFETY_MARGIN = 1.25
 CURATED_TESTS = (
     'tests/test_shared_slam.py',
+    'tests/test_physical_landmark_identity.py',
     'tests/test_keyframe_retrieval.py',
     'tests/test_keyframe_flow_support.py',
     'tests/test_append_only_corrections.py',

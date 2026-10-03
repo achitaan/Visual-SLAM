@@ -22,10 +22,15 @@ def _pose(x):
     return pose
 
 
-def _disconnected_mixed_state():
+def _disconnected_mixed_state(*, rotated=False):
     """Two observed components, one monocular component, and held-out points."""
     state = MapState(metric=True)
     poses = [_pose(0.4 * index) for index in range(6)]
+    if rotated:
+        for index, pose in enumerate(poses):
+            pose[:3, :3] = Rotation.from_euler(
+                "zyx", [0.025 * index, -0.018 * index, 0.012 * index]
+            ).as_matrix()
     for ident, pose in enumerate(poses):
         state.keyframes[ident] = MappingKeyframe(
             ident,
@@ -59,6 +64,141 @@ def _disconnected_mixed_state():
                 observations[camera_id] = Observation(pixel[0], right)
             state.add_landmark(point, np.ones(128), observers[0], observations)
     return state
+
+
+def _oracle_residual_for_record(point, pose, observation):
+    """Original scalar projection expressed directly, without bundle helpers."""
+    camera_point = pose[:3, :3].T @ (point - pose[:3, 3])
+    z = float(camera_point[2])
+    dimensions = 3 if observation.right_u is not None else 2
+    if z <= 0.0:
+        return [1e4] * dimensions
+
+    homogeneous = MATRIX @ camera_point
+    predicted = homogeneous[:2] / homogeneous[2]
+    left = np.clip(predicted - observation.pixel, -1e4, 1e4)
+    rows = [float(left[0]), float(left[1])]
+    if observation.right_u is not None:
+        # Rectified right image has a different principal point by the supplied
+        # offset: u_r = u_l - f*b/z - offset.
+        predicted_right = predicted[0] - MATRIX[0, 0] * BASELINE / z - DISPARITY_OFFSET
+        rows.append(float(predicted_right - observation.right_u))
+    return rows
+
+
+def _tuple_loop_oracle(x, state, selected_ids, free_camera_ids):
+    """Rebuild residual rows from fixture tuples and world geometry only."""
+    poses = {ident: keyframe.pose.copy()
+             for ident, keyframe in state.keyframes.items()}
+    for free_index, ident in enumerate(free_camera_ids):
+        offset = 6 * free_index
+        poses[ident][:3, :3] = Rotation.from_rotvec(x[offset:offset + 3]).as_matrix()
+        poses[ident][:3, 3] = x[offset + 3:offset + 6]
+
+    point_offset = 6 * len(free_camera_ids)
+    optimized_points = {
+        ident: x[point_offset + 3 * index:point_offset + 3 * index + 3]
+        for index, ident in enumerate(selected_ids)
+    }
+    optimized_rows = []
+    for ident in selected_ids:
+        landmark = state.landmarks[ident]
+        for camera_id, observation in landmark.observations.items():
+            if camera_id in poses:
+                optimized_rows.extend(_oracle_residual_for_record(
+                    optimized_points[ident], poses[camera_id], observation
+                ))
+
+    optimized = set(selected_ids)
+    held_out_rows = []
+    for ident, landmark in state.landmarks.items():
+        if ident in optimized or len(landmark.observations) < 2:
+            continue
+        for camera_id, observation in landmark.observations.items():
+            if camera_id in free_camera_ids:
+                held_out_rows.extend(_oracle_residual_for_record(
+                    landmark.position, poses[camera_id], observation
+                ))
+    return np.asarray([*optimized_rows, *held_out_rows], dtype=float)
+
+
+def test_solver_rows_match_independent_tuple_loop_projection_oracle(monkeypatch):
+    # The selection/gauge outcome is fixed by this fixture's two components:
+    # keyframes 2 and 5 are free, component-2 landmarks are selected first,
+    # then the first fourteen landmarks from component 1 are selected.
+    state = _disconnected_mixed_state(rotated=True)
+    free_camera_ids = (2, 5)
+    selected_ids = (*range(26, 46), *range(0, 14))
+    # Include a behind-camera point in the optimizer's initial vector; its
+    # observations remain the independently generated positive-depth pixels.
+    state.landmarks[13].position[2] = -1.0
+    point_offset = 6 * len(free_camera_ids)
+    expected_initial = np.r_[
+        *[
+            np.r_[
+                Rotation.from_matrix(state.keyframes[ident].pose[:3, :3]).as_rotvec(),
+                state.keyframes[ident].pose[:3, 3],
+            ]
+            for ident in free_camera_ids
+        ],
+        np.asarray([state.landmarks[ident].position for ident in selected_ids]).ravel(),
+    ]
+
+    optimized_dimensions = [
+        3 if observation.right_u is not None else 2
+        for ident in selected_ids
+        for observation in state.landmarks[ident].observations.values()
+    ]
+    held_out_ids = range(14, 26)
+    held_out_dimensions = [
+        3 if state.landmarks[ident].observations[2].right_u is not None else 2
+        for ident in held_out_ids
+    ]
+    assert 2 in optimized_dimensions and 3 in optimized_dimensions
+    assert 2 in held_out_dimensions and 3 in held_out_dimensions
+
+    captures = {}
+
+    def inspect_solver(residual, initial, **_kwargs):
+        np.testing.assert_allclose(initial, expected_initial, atol=1e-12)
+        shifted = initial.copy()
+        shifted[:6] += np.array([0.004, -0.003, 0.002, 0.015, -0.01, 0.005])
+        shifted[-3:] += np.array([0.02, -0.01, 0.03])
+        behind = initial.copy()
+        behind[point_offset + 3 * selected_ids.index(13) + 2] = -2.5
+        clipped = initial.copy()
+        offset_to_point = state.landmarks[0].position - state.keyframes[2].pose[:3, 3]
+        angle = -float(np.arctan2(offset_to_point[2], offset_to_point[0])) + 1e-4
+        clipped[:3] = Rotation.from_euler("y", angle).as_rotvec()
+        for name, vector in (("initial", initial), ("shifted", shifted),
+                             ("behind", behind), ("clipped", clipped)):
+            captures[name] = (vector.copy(), residual(vector))
+        return SimpleNamespace(x=initial.copy(), nfev=1, success=True)
+
+    monkeypatch.setattr(bundle, "least_squares", inspect_solver)
+    local_bundle_adjustment(
+        state,
+        MATRIX,
+        BASELINE,
+        window=5,
+        max_landmarks=34,
+        disparity_offset=DISPARITY_OFFSET,
+    )
+
+    assert set(captures) == {"initial", "shifted", "behind", "clipped"}
+    expected_row_count = sum(optimized_dimensions) + sum(held_out_dimensions)
+    for name, (vector, actual_rows) in captures.items():
+        expected_rows = _tuple_loop_oracle(vector, state, selected_ids, free_camera_ids)
+        assert actual_rows.shape == (expected_row_count,)
+        np.testing.assert_allclose(actual_rows, expected_rows, atol=1e-9, rtol=1e-12)
+    assert np.max(np.abs(captures["shifted"][1])) > 1e-3
+    assert np.count_nonzero(captures["behind"][1] == 1e4) > 0
+    # The first 120 rows belong to two-pixel component-2 tuples. Then the
+    # first selected component-1 landmark contributes camera 0 (3), camera 1
+    # (2), and camera 2 (3) rows. The chosen camera-2 orientation makes the
+    # positive-depth point's left-u row clip high; its right row stays un-clipped.
+    assert captures["clipped"][1][125] == 1e4
+    assert captures["clipped"][1][127] > 1e4
 
 
 def _snapshot(state):

@@ -1,5 +1,15 @@
 [
   {
+    "file": "reference-stereo-focused-comparison.png",
+    "label": "Stereo repair ablations: accuracy including regressions",
+    "group": "Frozen 6b3cd2b and retained earlier groups; 04/80 and 01/350, CPU uncached, loops off"
+  },
+  {
+    "file": "reference-stereo01-overview.png",
+    "label": "Reference-retention diagnostic: actual 01 trajectory, error and sparse map",
+    "group": "Frozen 6b3cd2b: tracking350/350; rotation gate fails; saved result, not live video"
+  },
+  {
     "file": "connected-stereo-focused-comparison.png",
     "label": "Stereo 01/04: position, translation and rotation together",
     "group": "Frozen b01684a prefixes, CPU uncached, loops off; 01 rotation gate fails"

@@ -71,6 +71,7 @@ class SharedSlam:
         self.performance = performance or PerformanceConfig()
         self.matcher = DescriptorMatcher(self.performance.matching_backend)
         self._landmark_cache = None
+        self._last_map_track_inlier_misses = None
         self.K = np.asarray(matrix, float).copy()
         if (
             self.K.shape != (3, 3)
@@ -437,6 +438,9 @@ class SharedSlam:
         return predicted
 
     def _track(self, pixels, desc, size, relocalize=False, candidate_ids=None):
+        # Bind any pending miss snapshot to this exact successful direct track
+        # result. Ranked recovery may call _track several times in one frame.
+        self._last_map_track_inlier_misses = None
         cache = None
         if self.performance.cpu_optimizations:
             cache = self._cached_landmarks()
@@ -638,6 +642,11 @@ class SharedSlam:
             return None, info
         pose, valid, error = result
         inlier_set = set(valid.tolist())
+        if self.config.stereo_pose_arbitration and not relocalize:
+            self._last_map_track_inlier_misses = {
+                int(ids[j]): int(self.map.landmarks[ids[j]].misses)
+                for j in inlier_set
+            }
         for j, lid in enumerate(ids):
             landmark = self.map.landmarks[lid]
             landmark.misses = 0 if j in inlier_set else landmark.misses + 1
@@ -875,7 +884,8 @@ class SharedSlam:
                 'physical_identity': 'exact_float32_pixels_duplicates_dropped'}
 
     def _validate_stereo_associations_at_pose(
-        self, pose, associations, accepted_tracks, pixels, size, final_solve_positions
+        self, pose, associations, accepted_tracks, pixels, size, final_solve_positions,
+        previous_inlier_misses=None,
     ):
         """Keep only existing map links that fit a selected fixed stereo pose.
 
@@ -994,10 +1004,24 @@ class SharedSlam:
         eligible = not failed_gates
         reason = 'retained' if eligible else failed_gates[0]
         with self.map.lock:
-            for landmark_id in candidate_ids:
-                landmark = self.map.landmarks.get(landmark_id)
-                if landmark is not None:
-                    landmark.misses = 0 if eligible and landmark_id in retained_ids else max(landmark.misses, 1)
+            if previous_inlier_misses is not None:
+                # _track provisionally reset these inliers before arbitration.
+                # Restore one outcome from their pre-frame count so repeated
+                # independent-pose rejection can reach the normal cull limit.
+                for landmark_id, previous_misses in previous_inlier_misses.items():
+                    landmark = self.map.landmarks.get(landmark_id)
+                    if landmark is not None:
+                        landmark.misses = (
+                            0 if eligible and landmark_id in retained_ids
+                            else int(previous_misses) + 1
+                        )
+            else:
+                # Direct helper calls without a successful map solve do not
+                # have a pre-frame snapshot to reconcile.
+                for landmark_id in candidate_ids:
+                    landmark = self.map.landmarks.get(landmark_id)
+                    if landmark is not None:
+                        landmark.misses = 0 if eligible and landmark_id in retained_ids else max(landmark.misses, 1)
         if eligible:
             kept_associations = {
                 feature: landmark_id for feature, landmark_id in associations.items()
@@ -1020,6 +1044,16 @@ class SharedSlam:
             'rejected': rejected,
         }
         return kept_associations, kept_tracks, diagnostics
+
+    def _age_provisional_map_inliers(self, previous_inlier_misses):
+        """Age a successful map hypothesis once when a hard stereo conflict rejects it."""
+        if previous_inlier_misses is None:
+            return
+        with self.map.lock:
+            for landmark_id, previous_misses in previous_inlier_misses.items():
+                landmark = self.map.landmarks.get(landmark_id)
+                if landmark is not None:
+                    landmark.misses = int(previous_misses) + 1
 
     def _supported_stereo_after_acceptance(self, record, associations):
         linked = np.full(len(record.pixels), -1, int)
@@ -1065,6 +1099,7 @@ class SharedSlam:
         inlier_features = set()
         verified_motion = None
         associations = {}
+        map_inlier_miss_snapshot = None
         status = "initializing" if not self.map.landmarks else "lost"
         if not self.map.keyframes:
             if self.stereo is not None:
@@ -1154,6 +1189,7 @@ class SharedSlam:
                     inlier_features = set(pairs[valid, 1].tolist())
         else:
             result, stats = self._track(pixels, desc, size)
+            map_inlier_miss_snapshot = self._last_map_track_inlier_misses
             info.update(stats)
             recovered = False
             stereo_reference = False
@@ -1239,7 +1275,8 @@ class SharedSlam:
                                 associations, retained_tracks, association_validation = (
                                     self._validate_stereo_associations_at_pose(
                                         reference_pose, map_associations, map_tracks,
-                                        pixels, size, info.get('valid_3d', 0)))
+                                        pixels, size, info.get('valid_3d', 0),
+                                        map_inlier_miss_snapshot))
                                 self.accepted_tracks = retained_tracks
                                 arbitration_report = {
                                     **arbitration_report,
@@ -1250,6 +1287,11 @@ class SharedSlam:
                                     # established reference-keyframe recovery path.
                                     stereo_reference = True
                             else:
+                                if conflict:
+                                    # The successful map result was rejected by
+                                    # the independent hard-disagreement gate.
+                                    self._age_provisional_map_inliers(
+                                        map_inlier_miss_snapshot)
                                 associations = {}
                                 self.accepted_tracks = []
                                 stereo_reference = True

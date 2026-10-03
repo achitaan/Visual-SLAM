@@ -403,6 +403,140 @@ def test_selected_pose_keeps_detector_landmarks_until_normal_keyframe_cadence(mo
         slam.close()
 
 
+def install_miss_tracking_pipeline(slam, monkeypatch, map_rotation_degrees=0.05):
+    pixels, world_points, desc = scene()
+    def extract(image, right):
+        frame = len(slam.map.poses)
+        disparity = K[0, 0] * BASELINE / 20. + OFFSET
+        slam.current_disparity = np.full(image.shape, disparity, np.float32)
+        # Current raw stereo support is recaptured from disparity. Leaving map
+        # depth empty after bootstrap prevents unassociated rows becoming new LMs.
+        points = world_points.copy() if frame == 0 else np.full_like(world_points, np.nan)
+        return pixels.copy(), desc.copy(), points, pixels[:, 0]-disparity
+
+    def map_pose(points, observations, matrix, size, min_inliers,
+                 initial_pose=None, diagnostics=None):
+        angle = np.radians(map_rotation_degrees)
+        pose = np.eye(4)
+        pose[:3, :3] = [[np.cos(angle), -np.sin(angle), 0],
+                        [np.sin(angle), np.cos(angle), 0], [0, 0, 1]]
+        return pose, np.arange(len(points)), 0.
+
+    def reference_fit(source, target, matrix, **kwargs):
+        pairs = kwargs['matcher'](source.descriptors, target.descriptors)
+        return verified(np.eye(4), pairs)
+
+    slam._extract = extract
+    slam._arbitrate_supported_pose = lambda context, map_pose, measurement: {
+        'choice': 'independent', 'reason': 'synthetic_selected',
+        'measurement_provenance': 'immutable_supported_extraction', 'cost': 0.0,
+        'map': {'cost': 0.0},
+    }
+    monkeypatch.setattr(module, 'estimate_pose', map_pose)
+    monkeypatch.setattr(module, 'refine_stereo_map_pose', lambda solution, *args: (solution, {}))
+    monkeypatch.setattr(module, 'estimate_stereo_reference', reference_fit)
+    return pixels, world_points, desc
+
+
+def test_selected_pose_miss_counts_accumulate_and_cull_rejected_map_landmark(monkeypatch):
+    slam = camera()
+    _, world_points, desc = install_miss_tracking_pipeline(slam, monkeypatch)
+    image = np.zeros((376, 1241), np.uint8)
+    try:
+        slam.process(0, image, image)
+        rejected_id, retained_id, withheld_id = 0, 2, 1
+        # Same left ray but wrong depth: each independent pose must reject this
+        # old map link on its right-image residual.
+        slam.map.landmarks[rejected_id].position *= 1.5
+        slam.map.landmarks[rejected_id].misses = 0
+        slam.map.landmarks[retained_id].misses = 4
+        slam.map.landmarks[withheld_id].misses = 4
+        unmatched_descriptor = np.zeros(128, np.float32)
+        unmatched_descriptor[48] = 1.
+        untouched_id = slam.map.add_landmark(
+            world_points[0], unmatched_descriptor, 0, {})
+        slam.map.landmarks[untouched_id].misses = 3
+
+        for frame in range(1, 6):
+            _, info = slam.process(frame, image, image)
+            if frame < 5:
+                assert slam.map.landmarks[rejected_id].misses == frame
+            assert info['stereo_pose_arbitration']['association_validation']['eligible']
+            assert slam.map.landmarks[retained_id].misses == 0
+            # Odd detector rows are reserved for holdout and never offered to
+            # map tracking; an unmatched map row is also never attempted.
+            assert slam.map.landmarks[withheld_id].misses == 4
+            assert slam.map.landmarks[untouched_id].misses == 3
+
+        assert rejected_id not in slam.map.landmarks
+        assert slam.map.keyframes[0].landmark_ids[rejected_id] == -1
+    finally:
+        slam.close()
+
+
+def test_hard_stereo_conflict_ages_provisional_map_inliers_once(monkeypatch):
+    slam = camera()
+    install_miss_tracking_pipeline(slam, monkeypatch, map_rotation_degrees=2.0)
+    image = np.zeros((376, 1241), np.uint8)
+    try:
+        slam.process(0, image, image)
+        slam.map.landmarks[0].misses = 3
+        slam.map.landmarks[2].misses = 4
+        slam.map.landmarks[1].misses = 4  # held out of the map solve
+        _, info = slam.process(1, image, image)
+        assert info['map_pose_rejected_for_stereo_conflict']
+        assert slam.map.landmarks[0].misses == 4
+        assert 2 not in slam.map.landmarks  # one age reaches the existing cull limit
+        assert slam.map.landmarks[1].misses == 4
+    finally:
+        slam.close()
+
+
+def test_context_absent_hard_conflict_uses_enabled_tracking_snapshot(monkeypatch):
+    slam = camera()
+    install_miss_tracking_pipeline(slam, monkeypatch, map_rotation_degrees=2.0)
+    image = np.zeros((376, 1241), np.uint8)
+    try:
+        slam.process(0, image, image)
+        slam.map.landmarks[0].misses = 2
+        slam._prepare_stereo_arbitration = lambda index, current: (
+            None, {'choice': 'map', 'reason': 'reserved_support_unavailable'})
+        _, info = slam.process(1, image, image)
+        assert info['map_pose_rejected_for_stereo_conflict']
+        assert slam._arbitration_context is None
+        assert slam.map.landmarks[0].misses == 3
+    finally:
+        slam.close()
+
+
+def test_failed_map_tracking_attempt_does_not_age_misses_or_geometry():
+    slam = camera()
+    pixels, points, desc = scene()
+    identifiers = [slam.map.add_landmark(point, desc[i], 0, {})
+                   for i, point in enumerate(points)]
+    slam.map.record(np.eye(4), 'tracking')
+    for i, ident in enumerate(identifiers):
+        slam.map.landmarks[ident].misses = (i % 4) + 1
+    before_misses = {ident: lm.misses for ident, lm in slam.map.landmarks.items()}
+    before_points = {ident: lm.position.copy() for ident, lm in slam.map.landmarks.items()}
+    slam.current_disparity = np.full((376, 1241), 20., np.float32)
+    slam._arbitration_context = {
+        'excluded_landmarks': set(), 'excluded_targets': set(),
+        'excluded_target_pixels': set(), 'map_fit_landmarks': set(),
+        'map_fit_targets': set(),
+    }
+    slam._match = lambda first, second: np.empty((0, 2), int)
+    try:
+        result, _ = slam._track(pixels, desc, (1241, 376))
+        assert result is None
+        assert slam._last_map_track_inlier_misses is None
+        assert {ident: lm.misses for ident, lm in slam.map.landmarks.items()} == before_misses
+        for ident, lm in slam.map.landmarks.items():
+            np.testing.assert_array_equal(lm.position, before_points[ident])
+    finally:
+        slam.close()
+
+
 def test_native_capture_precedes_restoration(monkeypatch):
     slam = camera(stereo_depth_policy='verified_fallback')
     try:

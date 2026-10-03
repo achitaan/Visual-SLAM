@@ -1,5 +1,10 @@
 [
   {
+    "file": "fresh-stereo-baseline-comparison.png",
+    "label": "Fresh preserved stereo VO vs shared SLAM",
+    "group": "Identical 04/80 and 01/350 inputs; saved uncached diagnostics; 01 rotation gate still fails"
+  },
+  {
     "file": "full-supported-stereo-comparison.png",
     "label": "Full supported-pool retry: accuracy and regressions",
     "group": "04/80 and 01/350; separate frozen revisions; saved diagnostics; acceptance gates failed"

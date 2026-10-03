@@ -1,5 +1,15 @@
 [
   {
+    "file": "raw-stereo-reference-comparison.png",
+    "label": "Raw reference retry: measured gains and regressions",
+    "group": "04/80 and 01/350; fresh 01 VO control; historical shared context separate; rotation gate failed; loops off"
+  },
+  {
+    "file": "raw-stereo-reference01-overview.png",
+    "label": "Raw reference retry: KITTI 01 trajectory and sparse map",
+    "group": "350 frames; saved uncached run; two recovered motions; zero lost; rotation gate failed; loops off"
+  },
+  {
     "file": "raw-stereo-reference04-overview.png",
     "label": "Raw reference retry: KITTI 04 regression check",
     "group": "80 frames; saved uncached run; zero lost; retry not needed; 01 validation pending; loops off"

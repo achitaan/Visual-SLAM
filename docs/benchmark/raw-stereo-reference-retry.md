@@ -51,9 +51,58 @@ source/input checks pass. The saved source fingerprint is
 
 ![Actual KITTI 04 trajectory, position error, tracking support and sparse map](plots/raw-stereo-reference04-overview.png)
 
-Stateful trajectory evaluation remains necessary. Independently supported pair
-diagnostics recover motions at 227 and 233, while 222 remains reverse-inconsistent.
-The biased relative comparison at frame 308 is a separate unresolved cause.
-Previously published accuracy and runtime results remain attached to their
-original revisions. Full paired validation, live-loop evidence, monocular/TUM
-checks and dense reconstruction remain release prerequisites.
+## KITTI 01 targeted comparison
+
+Two fresh uncached runs process frames 0–349 from the same frozen source and
+input/calibration fingerprints. The shared tracker uses the same declared stereo
+configuration as the 04 check. The preserved VO control keeps its original
+configuration. Both use evaluation-only reference poses and SE(3) alignment
+without fitting scale.
+
+| Pipeline | ATE m | Translation % | Rotation deg/m | Lost | Estimator s | Peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Fresh preserved VO | 21.509820 | 8.357439 | 0.010861 | 18 | 143.11 | 237.21 |
+| Raw reference retry | 9.017336 | 4.806658 | 0.013120 | 0 | 384.92 | 661.98 |
+
+[Machine-readable results and identities](RAW_STEREO_REFERENCE_RESULTS.json).
+
+![Actual trajectory/error comparison with fresh VO and retained shared revisions](plots/raw-stereo-reference-comparison.png)
+
+Against the preceding physical-identity revision, ATE improves 15.34% and
+translation drift improves 11.76%, while rotation drift worsens 14.22%. That
+revision is retained historical evidence, not reused as a fresh control. Against
+the fresh VO control, ATE improves 58.08% and translation drift improves 42.49%,
+but rotation drift is 20.80% worse. This exceeds the 5% regression limit, so the
+release gate remains failed. Short-prefix improvement does not establish full
+sequence reliability.
+
+Six retries are attempted. Two are installed, at frames 227 and 233, restoring
+2.6872 m and 2.6992 m steps after independent reverse verification. Their source
+guards and final motion-ledger entries agree; neither claims held-out validation.
+Four retries fail geometric verification. The stalled step at 222 remains
+unresolved. No local BA is accepted between frames 216 and 242.
+
+The map contains 151 keyframes, 110,999 landmarks and 114,345 observations, with
+zero exact-pixel groups assigned different landmark IDs. All 350 frames are
+exported: 348 tracking, two relocalized and zero lost. Finite poses, PLY/preview,
+keyframe consistency, source archives and recomputed metrics pass independent
+saved-artifact checks. Text-export rounding is checked with a declared 1e-7
+metric tolerance.
+
+The biased comparison at 308 remains: a reserved candidate can win against a
+deteriorated map while its own support cost is unchanged. Investigate that
+selection separately from BA-induced changes to verified rotations. Saved-edge
+analysis also finds post-tracking corrections increasing otherwise good stereo
+rotation errors: 126–127 changes from 0.0985 to 0.8415 degrees, and later
+corrections affect 322–323 and 325–326. These evaluator-only diagnostics motivate
+preserving independently verified motion during BA; they are not estimator
+selection criteria or sequence-specific thresholds. Runtime is
+also a blocker: the shared tracker remains about 2.7 times slower than VO in this
+diagnostic. Inclusive stage timings do not isolate individual causes.
+
+![Actual KITTI 01 trajectory, position error, tracking support and sparse map](plots/raw-stereo-reference01-overview.png)
+
+Full paired validation, live-loop evidence, monocular/TUM checks and dense
+reconstruction remain release prerequisites. Earlier results remain attached to
+their original revisions. No estimator thresholds were lowered or tuned for
+individual sequences.

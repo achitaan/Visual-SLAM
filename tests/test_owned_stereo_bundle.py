@@ -161,7 +161,8 @@ def test_optimized_single_view_position_is_applied_once_not_propagated_again(mon
         training_factor_provider=_provider_for(state, truth, single_id, calls),
     )
     assert report["applied"] is True
-    np.testing.assert_allclose(state.landmarks[single_id].position, candidate["x"][-3:],
+    point_limit = report['owned_stereo_image_bundle']['point_limit']
+    np.testing.assert_allclose(state.landmarks[single_id].position, candidate["x"][point_limit-3:point_limit],
                                rtol=0., atol=1e-12)
 
 

@@ -87,7 +87,7 @@ class MapState:
                 else pose.copy()
             )
 
-    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True, landmark_updates=None):
+    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True, landmark_updates=None, frame_updates=None):
         """Commit a complete correction atomically; reject stale snapshots and moved origin."""
         with self.lock:
             if self.revision != expected_revision or set(corrected) != set(
@@ -108,6 +108,28 @@ class MapState:
                 or abs(scales[0] - 1) > 1e-8
             ):
                 raise ValueError("Origin must remain fixed")
+            # Joint local solves may optimize an accepted intermediate camera.
+            # Validate all overrides before changing any landmark or pose. A
+            # keyframe has one authoritative pose in `corrected`, never two.
+            intermediate = {}
+            keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
+            if frame_updates is not None:
+                if not (len(self.poses) == len(self.statuses) == len(self.pose_anchors)
+                        == len(self.relative_poses)):
+                    raise ValueError('Inconsistent intermediate frame state')
+                for frame, pose in frame_updates.items():
+                    if (not isinstance(frame, (int, np.integer))
+                            or isinstance(frame, (bool, np.bool_))
+                            or not 0 < frame < min(len(self.poses), len(self.statuses), len(self.pose_anchors))
+                            or frame in keyframe_frames
+                            or self.statuses[frame] not in ('tracking', 'relocalized', 'accepted')
+                            or self.pose_anchors[frame] not in corrected):
+                        raise ValueError("Invalid intermediate frame correction")
+                    raw = np.asarray(pose)
+                    if np.iscomplexobj(raw):
+                        raise ValueError("Intermediate frame correction must be real")
+                    validate_pose(raw)
+                    intermediate[int(frame)] = np.asarray(raw, float).copy()
             corrections = {}
             for ident, keyframe in self.keyframes.items():
                 old = keyframe.pose
@@ -129,12 +151,14 @@ class MapState:
                 if not np.isfinite(positions[ident]).all():
                     raise ValueError("Nonfinite corrected landmark")
             poses = []
-            for pose, anchor in zip(self.poses, self.pose_anchors):
+            for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
                 updated = pose.copy()
                 if anchor is not None:
                     rotation, scale, translation = corrections[anchor]
                     updated[:3, :3] = rotation @ pose[:3, :3]
                     updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                if frame in intermediate:
+                    updated = intermediate[frame].copy()
                 validate_pose(updated)
                 poses.append(updated)
             for ident, position in positions.items():

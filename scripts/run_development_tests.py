@@ -65,6 +65,7 @@ CURATED_TESTS = (
     'tests/test_stereo_raw_reference_retry.py',
     'tests/test_owned_stereo_bundle_wiring.py',
     'tests/test_owned_stereo_bundle.py',
+    'tests/test_free_source_stereo_bundle.py',
     'tests/test_bundle_stereo_motion.py',
 )
 

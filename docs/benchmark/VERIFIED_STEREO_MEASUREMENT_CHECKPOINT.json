@@ -1,22 +1,141 @@
 {
-  "schema_version": 1,
-  "status": "experimental_backend_checked_dataset_validation_pending",
-  "source_fingerprint": "ba56a7277d33621256c98263d1d4aa6f43c9b9121c4c4b916fc68c2eaf0ee73b",
-  "tests_sha256": "190063e8c8f16893f4575150f8d3a43cda452b1c7a26ad1bba54918865dc78ac",
-  "evaluator_sha256": "1e91b813831bd64b2f8ae570abed796518420e7296f8826bdcc556814286d547",
-  "dependency_identity_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657",
-  "backend_tests": {
-    "passed": 414,
-    "skipped": 4,
-    "test_seconds": 62.7
+  "artifacts": {
+    "comparison_plot": "plots/verified-measurements04-failed-gate.png",
+    "cycle": "results/integration/verified-measurement-cycle/ba56a7277d33-1791047671738843300/cycle.json",
+    "gate": "results/integration/verified-measurement-cycle/ba56a7277d33-1791047671738843300/04-80-gate.json",
+    "verified_all_evaluation": "results/integration/verified-measurements/ba56a7277d33/04-verified_all1791047672422026000/run/evaluation.json",
+    "verified_all_overview": "plots/verified-measurements04-verified-all-overview.png",
+    "verified_fallback_evaluation": "results/integration/verified-measurements/ba56a7277d33/04-verified_fallback1791047778534430400/run/evaluation.json",
+    "verified_fallback_overview": "plots/verified-measurements04-verified-fallback-overview.png"
   },
-  "mode": "verified_all",
-  "default_mode_changed": false,
-  "owned_image_bundle_allowed": false,
-  "new_dataset_runs": [],
-  "accuracy_improvement_demonstrated": false,
-  "release_ready": false,
-  "ground_truth_policy": "evaluator_only",
-  "next_gate": "fresh matched04/80 verified_all versus verified_fallback, owned image augmentation OFF, loops OFF",
-  "failed_prior_experiment_source_fingerprint": "7a31a63ea1778ff76dbc0b818a1dd8984f009a7b2c6dcf5f502f1279fccd41a1"
+  "experiment": {
+    "commit": "18e79ff",
+    "control_policy": "verified_fallback",
+    "coverage": "partial",
+    "default_policy_unchanged": "supported",
+    "evaluator_sha256": "1e91b813831bd64b2f8ae570abed796518420e7296f8826bdcc556814286d547",
+    "experimental_policy": "verified_all",
+    "feature_cache_enabled": false,
+    "frame_range": [
+      0,
+      79
+    ],
+    "frames": 80,
+    "ground_truth_policy": "evaluator_only",
+    "ground_truth_used_for_estimation": false,
+    "identities_equal_except_policy": true,
+    "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+    "loop_mode": "off",
+    "metrics_reused": false,
+    "name": "verified_all_vs_verified_fallback",
+    "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+    "release_ready": false,
+    "runtime_identity": {
+      "dependencies_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657",
+      "machine": "AMD64",
+      "numpy": "2.5.3",
+      "opencv": "5.0.0.93",
+      "platform": "win32",
+      "python": "3.12.14",
+      "scipy": "1.18.1"
+    },
+    "sequence": "04",
+    "sequence_01_run": false,
+    "source_fingerprint": "ba56a7277d33621256c98263d1d4aa6f43c9b9121c4c4b916fc68c2eaf0ee73b",
+    "status": "failed_accuracy_gate",
+    "stereo_owned_image_bundle": false,
+    "stereo_pose_arbitration": true,
+    "stereo_raw_reference_retry": true
+  },
+  "gate": {
+    "failures": [
+      {
+        "metric": "ate_rmse_m",
+        "reason": "regression_exceeds_declared_five_percent_gate"
+      },
+      {
+        "metric": "translation_percent",
+        "reason": "regression_exceeds_declared_five_percent_gate"
+      }
+    ],
+    "lost_frames": {
+      "off": 0,
+      "on": 0
+    },
+    "scope": "partial_fixed_configuration_correctness_and_regression_gate",
+    "status": "fail",
+    "threshold_percent": 5.0
+  },
+  "historical_results_preserved": {
+    "7a31a63_owned_image_bundle": "/saved-visuals/owned-image-bundle-04-80-failed-gate.png remains separately listed.",
+    "a275cef_verified_depth": "VERIFIED_DEPTH_RESULTS.json remains unchanged."
+  },
+  "metrics": {
+    "ate_rmse_m": {
+      "change_percent": 40.38582283957943,
+      "label": "ATE RMSE (m)",
+      "verified_all": 0.1570688197031478,
+      "verified_fallback": 0.11188367637566381
+    },
+    "rotation_deg_per_m": {
+      "change_percent": 4.354798277047411,
+      "label": "Rotation drift (deg/m)",
+      "verified_all": 0.005898950609624558,
+      "verified_fallback": 0.005652783299876321
+    },
+    "translation_percent": {
+      "change_percent": 159.48544984769092,
+      "label": "Translation error (%)",
+      "verified_all": 0.7285134564286989,
+      "verified_fallback": 0.2807531045984703
+    }
+  },
+  "peak_memory_change_percent": -2.132058594952857,
+  "peak_memory_mb": {
+    "verified_all": 260.71484375,
+    "verified_fallback": 266.39453125
+  },
+  "runtime_change_percent": 67.46905044351593,
+  "runtime_seconds": {
+    "verified_all": 99.36750769999344,
+    "verified_fallback": 59.33484870000393
+  },
+  "schema_version": 1,
+  "stage_timing_seconds_inclusive": {
+    "semantics": "Inclusive stage timings overlap and are not additive.",
+    "verified_all": {
+      "_extract": 52.557791000028374,
+      "_keyframe": 1.2574874999409076,
+      "_track": 20.312002599908737,
+      "image_loading": 0.5897244999359827,
+      "local_bundle": 6.373356500058435,
+      "matching": 14.697649599955184,
+      "stereo_depth_verification": 42.13117440012866,
+      "stereo_pose_arbitration_fit": 0.6063503001059871
+    },
+    "verified_fallback": {
+      "_extract": 20.812087099911878,
+      "_keyframe": 1.088401499990141,
+      "_track": 16.187157500098692,
+      "image_loading": 0.5568946000712458,
+      "local_bundle": 5.612736299983226,
+      "matching": 16.367343100369908,
+      "stereo_depth_verification": 0.6280473000952043,
+      "stereo_pose_arbitration_fit": 0.5863208000082523
+    }
+  },
+  "tracking": {
+    "verified_all": {
+      "bundle_adjustments_applied": 9,
+      "keyframes": 11,
+      "lost_frames": 0,
+      "tracking_frames": 80
+    },
+    "verified_fallback": {
+      "bundle_adjustments_applied": 9,
+      "keyframes": 11,
+      "lost_frames": 0,
+      "tracking_frames": 80
+    }
+  }
 }

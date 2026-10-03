@@ -128,6 +128,11 @@ def local_bundle_adjustment(
             [np.asarray(pose).copy() for pose in state.poses]
             if provider_enabled else None
         )
+        frame_anchor_snapshot = list(state.pose_anchors) if provider_enabled else None
+        stereo_motion_snapshot = (
+            {edge: measurement.copy() for edge, measurement in state.stereo_motion.items()}
+            if provider_enabled else None
+        )
         keyframe_size_snapshot = (
             {int(key): (None if frame.image_size is None else tuple(frame.image_size))
              for key, frame in state.keyframes.items()}
@@ -327,12 +332,40 @@ def local_bundle_adjustment(
                     ],
                 })
 
+    point_limit = len(initial)
+    intermediate_pose_offsets = {}
+    frame_to_keyframe = (
+        {frame: key for key, frame in diagnostic_frame_ids.items()}
+        if provider_enabled else {}
+    )
+
     def unpack(x):
         poses = {k: p.copy() for k, p in base.items()}
         for k, offset in pose_offset.items():
             poses[k][:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
             poses[k][:3, 3] = x[offset + 3 : offset + 6]
-        return poses, x[point_offset:].reshape(-1, 3)
+        return poses, x[point_offset:point_limit].reshape(-1, 3)
+
+    def frame_pose_for(x, frame_id, poses):
+        """One camera accessor for image residuals, guards and atomic commit."""
+        if frame_id in frame_to_keyframe:
+            return poses[frame_to_keyframe[frame_id]]
+        offset = intermediate_pose_offsets.get(frame_id)
+        if offset is not None:
+            pose = np.eye(4)
+            pose[:3, :3] = Rotation.from_rotvec(x[offset:offset + 3]).as_matrix()
+            pose[:3, 3] = x[offset + 3:offset + 6]
+            return pose
+        pose = frame_pose_snapshot[frame_id]
+        anchor = frame_anchor_snapshot[frame_id]
+        return (poses[anchor] @ np.linalg.inv(base[anchor]) @ pose
+                if anchor is not None else pose.copy())
+
+    def training_endpoint_poses(x, poses):
+        frame_ids = owned_training_rows['frame_ids']
+        cameras = {int(frame): frame_pose_for(x, int(frame), poses)
+                   for frame in np.unique(frame_ids)}
+        return np.asarray([cameras[int(frame)] for frame in frame_ids])
 
     dimensions = np.asarray(
         [3 if state.metric and o.right_u is not None else 2 for _, _, o in records],
@@ -406,8 +439,7 @@ def local_bundle_adjustment(
         if rows is None or not len(rows["point_indices"]):
             return np.empty(0)
         poses, all_points = unpack(x)
-        anchors = np.asarray([poses[int(k)] for k in rows["anchor_ids"]])
-        endpoint_poses = np.einsum("nij,njk->nik", anchors, rows["relative_poses"])
+        endpoint_poses = training_endpoint_poses(x, poses)
         world = all_points[rows["point_indices"]]
         delta = world - endpoint_poses[:, :3, 3]
         camera_points = np.einsum("ni,nij->nj", delta, endpoint_poses[:, :3, :3])
@@ -457,7 +489,7 @@ def local_bundle_adjustment(
 
     def optimized_residual(x, cameras=None, points=None):
         if points is None:
-            points = x[point_offset:].reshape(-1, 3)
+            points = x[point_offset:point_limit].reshape(-1, 3)
         if cameras is None:
             cameras = camera_poses_for(x)
         return observation_residual(
@@ -487,7 +519,7 @@ def local_bundle_adjustment(
 
     def residual(x):
         cameras = camera_poses_for(x)
-        points = x[point_offset:].reshape(-1, 3)
+        points = x[point_offset:point_limit].reshape(-1, 3)
         original = np.r_[
             optimized_residual(x, cameras, points),
             held_out_residual(cameras),
@@ -628,6 +660,8 @@ def local_bundle_adjustment(
                 training_bundle_summary.update(status="rejected", reason="metric_stereo_required")
             else:
                 from stereo_training_factors import StereoTrainingFactor
+                if len(frame_to_keyframe) != len(diagnostic_frame_ids):
+                    raise ValueError('ambiguous_keyframe_image_binding')
 
                 selected_by_id = {int(item["landmark_id"]): int(item["rank"])
                                   for item in diagnostic_selected_landmarks}
@@ -686,6 +720,10 @@ def local_bundle_adjustment(
                     if (len(epoch) != 2 or epoch[1] != int(geometry_revision)
                             or epoch[0] > int(revision)):
                         raise ValueError("training_factor_source_epoch_mismatch")
+                    if any(frame >= min(len(frame_pose_snapshot), len(frame_status_snapshot),
+                                        len(frame_anchor_snapshot))
+                           for frame in (factor.source_frame, factor.target_frame)):
+                        raise ValueError('training_factor_frame_snapshot_missing')
                     for frame_id, anchor_id, frozen_pose, frozen_anchor, status in (
                         (factor.source_frame, factor.source_anchor, factor.source_pose,
                          factor.source_anchor_pose, frame_status_snapshot[factor.source_frame]),
@@ -727,6 +765,11 @@ def local_bundle_adjustment(
                         (factor.target_frame, factor.target_anchor, factor.target_anchor_relative,
                          factor.target_pixel, factor.target_right_u),
                     ):
+                        if frame_id in frame_to_keyframe:
+                            actual_keyframe = frame_to_keyframe[frame_id]
+                            if (actual_keyframe != anchor_id
+                                    or not np.allclose(relative, np.eye(4), rtol=0., atol=1e-9)):
+                                raise ValueError('training_factor_keyframe_camera_mismatch')
                         key = _training_pixel_key(frame_id, pixel)
                         right_key = _training_right_key(right_value)
                         physical = (key, right_key)
@@ -753,7 +796,8 @@ def local_bundle_adjustment(
                             continue
                         seen_rows[row_key] = value
                         candidate_rows.append((ident, int(anchor_id), np.asarray(relative).copy(),
-                                               np.asarray(pixel, dtype=float).copy(), float(right_value)))
+                                               np.asarray(pixel, dtype=float).copy(), float(right_value),
+                                               int(frame_id)))
                 if not candidate_rows:
                     raise ValueError("no_new_owned_image_rows")
                 extra_ids = sorted(used_single_ids)
@@ -768,6 +812,7 @@ def local_bundle_adjustment(
                     "relative_poses": np.asarray([row[2] for row in candidate_rows], dtype=float),
                     "pixels": np.asarray([row[3] for row in candidate_rows], dtype=float),
                     "right_u": np.asarray([row[4] for row in candidate_rows], dtype=float),
+                    "frame_ids": np.asarray([row[5] for row in candidate_rows], dtype=np.intp),
                 }
                 extra_initial = np.asarray([single_by_id[ident][1] for ident in extra_ids], dtype=float).reshape(-1)
                 if len(extra_initial):
@@ -776,12 +821,47 @@ def local_bundle_adjustment(
                 else:
                     augmented_initial = initial
                     augmented_scale = variable_scale
+                # A non-keyframe image is a camera variable, not its anchor
+                # multiplied by a supposedly exact accumulated motion. Reuse
+                # true keyframe variables and optimize intermediate poses freely.
+                intermediate_frames = sorted(set(rows['frame_ids'].tolist()) - set(frame_to_keyframe))
+                # Added cameras/points must connect to the already anchored
+                # visual graph. Never hide an orphan SE(3) gauge by attaching a
+                # camera to its recorded anchor or adding an artificial prior.
+                image_neighbors = {}
+                for ident, _anchor, _relative, _pixel, _right, frame_id in candidate_rows:
+                    camera_node, point_node = ('frame', frame_id), ('point', ident)
+                    image_neighbors.setdefault(camera_node, set()).add(point_node)
+                    image_neighbors.setdefault(point_node, set()).add(camera_node)
+                reached = {node for node in image_neighbors
+                           if node[0] == 'frame' and node[1] in frame_to_keyframe
+                           or node[0] == 'point' and node[1] in selected_by_id}
+                frontier = list(reached)
+                while frontier:
+                    for neighbor in image_neighbors[frontier.pop()] - reached:
+                        reached.add(neighbor)
+                        frontier.append(neighbor)
+                if any(frame <= 0 or ('frame', frame) not in reached
+                       for frame in intermediate_frames):
+                    raise ValueError('unanchored_intermediate_camera_component')
+                intermediate_offsets = {}
+                augmented_point_limit = len(augmented_initial)
+                for frame_id in intermediate_frames:
+                    pose = frame_pose_snapshot[frame_id]
+                    intermediate_offsets[frame_id] = len(augmented_initial)
+                    augmented_initial = np.r_[augmented_initial,
+                        Rotation.from_matrix(pose[:3, :3]).as_rotvec(), pose[:3, 3]]
+                    augmented_scale = np.r_[augmented_scale,
+                        1., 1., 1., length_scale, length_scale, length_scale]
                 augmented_pattern = lil_matrix((old_rows + 3 * len(candidate_rows), len(augmented_initial)), dtype=int)
                 augmented_pattern[:old_rows, :original_variable_count] = original_pattern
                 row = old_rows
-                for point_index, anchor_id in zip(rows["point_indices"], rows["anchor_ids"]):
-                    if int(anchor_id) in pose_offset:
-                        augmented_pattern[row:row + 3, pose_offset[int(anchor_id)]:pose_offset[int(anchor_id)] + 6] = 1
+                for point_index, frame_id in zip(rows["point_indices"], rows["frame_ids"]):
+                    camera_offset = (pose_offset.get(frame_to_keyframe[int(frame_id)])
+                                     if int(frame_id) in frame_to_keyframe
+                                     else intermediate_offsets[int(frame_id)])
+                    if camera_offset is not None:
+                        augmented_pattern[row:row + 3, camera_offset:camera_offset + 6] = 1
                     start = point_offset + 3 * int(point_index)
                     augmented_pattern[row:row + 3, start:start + 3] = 1
                     row += 3
@@ -789,6 +869,8 @@ def local_bundle_adjustment(
                 variable_scale = augmented_scale
                 pattern = augmented_pattern
                 owned_training_rows = rows
+                point_limit = augmented_point_limit
+                intermediate_pose_offsets = intermediate_offsets
                 training_bundle_summary.update({
                     "status": "active", "reason": None,
                     "selected_factors": int(len(factors)),
@@ -798,12 +880,18 @@ def local_bundle_adjustment(
                     "factor_landmark_ids": sorted(factor_ids),
                     "physical_row_identity": "exact_image_frame_float32_pixel_right_u",
                     "heldout_validation_claim": False,
+                    "intermediate_camera_model": "free_pose_no_anchor_prior",
+                    "optimized_intermediate_frames": intermediate_frames,
+                    "intermediate_pose_offsets": intermediate_offsets,
+                    "point_limit": point_limit,
                 })
         except Exception as error:
             owned_training_rows = None
             initial = original_initial
             variable_scale = original_scale
             pattern = original_pattern
+            point_limit = original_variable_count
+            intermediate_pose_offsets = {}
             training_bundle_summary.update({
                 "status": "rejected", "reason": str(error) or type(error).__name__,
                 "selected_factors": 0, "unique_image_rows_added": 0,
@@ -833,7 +921,7 @@ def local_bundle_adjustment(
         tr_solver="lsmr",
     )
     result_cameras = camera_poses_for(result.x)
-    result_points = result.x[point_offset:].reshape(-1, 3)
+    result_points = result.x[point_offset:point_limit].reshape(-1, 3)
     after = objective(optimized_residual(result.x, result_cameras, result_points))
     training_after = (
         objective(owned_training_residual(result.x))
@@ -859,6 +947,18 @@ def local_bundle_adjustment(
             "final_image_objective": float(training_after),
             "solver_status": "finite_candidate" if result_is_finite else "nonfinite_candidate",
         })
+        if result_is_finite and intermediate_pose_offsets:
+            changes = []
+            for frame in intermediate_pose_offsets:
+                candidate = frame_pose_for(result.x, frame, poses)
+                difference = np.linalg.inv(frame_pose_snapshot[frame]) @ candidate
+                changes.append({
+                    'frame_id': int(frame),
+                    'translation_change_m': float(np.linalg.norm(difference[:3, 3])),
+                    'rotation_change_deg': float(np.degrees(
+                        Rotation.from_matrix(difference[:3, :3]).magnitude())),
+                })
+            training_bundle_summary['intermediate_camera_changes'] = changes
     if diagnostics_enabled:
         invalid_report_fields = []
         report_snapshot = _diagnostic_value(report, invalid_report_fields)
@@ -881,6 +981,12 @@ def local_bundle_adjustment(
                     None if poses is None else {
                         str(key): _diagnostic_array(pose)
                         for key, pose in poses.items()
+                    }
+                ),
+                "intermediate_camera_to_world": (
+                    None if poses is None else {
+                        str(frame): _diagnostic_array(frame_pose_for(result.x, frame, poses))
+                        for frame in intermediate_pose_offsets
                     }
                 ),
                 "selected_landmark_world_positions": (
@@ -947,9 +1053,7 @@ def local_bundle_adjustment(
     ):
         return attach_diagnostic_errors(report)
     if owned_training_rows is not None:
-        training_cameras = np.asarray([poses[int(k)] for k in owned_training_rows["anchor_ids"]])
-        endpoint_poses = np.einsum("nij,njk->nik", training_cameras,
-                                   owned_training_rows["relative_poses"])
+        endpoint_poses = training_endpoint_poses(result.x, poses)
         training_world = points[owned_training_rows["point_indices"]]
         training_camera_points = np.einsum(
             "ni,nij->nj", training_world - endpoint_poses[:, :3, 3],
@@ -960,17 +1064,34 @@ def local_bundle_adjustment(
             training_bundle_summary.update(status="rejected", reason="nonpositive_factor_depth")
             return attach_diagnostic_errors({**report, "reason": "owned_stereo_nonpositive_depth"})
     motion_translation, motion_rotation = [], []
-    for measurement, anchors, recorded in motion_checks:
-        updated = [
-            poses[anchor] @ np.linalg.inv(base[anchor]) @ pose
-            if anchor is not None else pose
-            for anchor, pose in zip(anchors, recorded)
+    guarded_motion = motion_checks
+    if owned_training_rows is not None:
+        guarded_motion = [
+            (measurement, edge) for edge, measurement in stereo_motion_snapshot.items()
+            if any(frame in intermediate_pose_offsets for frame in edge)
+            or (frame_anchor_snapshot[edge[0]] != frame_anchor_snapshot[edge[1]]
+                and any(frame_anchor_snapshot[frame] in free for frame in edge))
         ]
+        training_bundle_summary['guarded_intermediate_motion_edges'] = [
+            list(edge) for _measurement, edge in guarded_motion
+            if any(frame in intermediate_pose_offsets for frame in edge)
+        ]
+    for item in guarded_motion:
+        if owned_training_rows is not None:
+            measurement, edge = item
+            updated = [frame_pose_for(result.x, int(frame), poses) for frame in edge]
+        else:
+            measurement, anchors, recorded = item
+            updated = [
+                poses[anchor] @ np.linalg.inv(base[anchor]) @ pose
+                if anchor is not None else pose
+                for anchor, pose in zip(anchors, recorded)
+            ]
         difference = np.linalg.inv(measurement) @ np.linalg.inv(updated[0]) @ updated[1]
         motion_translation.append(float(np.linalg.norm(difference[:3, 3])))
         motion_rotation.append(float(np.degrees(Rotation.from_matrix(difference[:3, :3]).magnitude())))
     report.update(
-        independent_stereo_motion_checks=len(motion_checks),
+        independent_stereo_motion_checks=len(guarded_motion),
         max_stereo_motion_translation_error_m=max(motion_translation, default=0.),
         max_stereo_motion_rotation_error_deg=max(motion_rotation, default=0.),
     )
@@ -984,6 +1105,12 @@ def local_bundle_adjustment(
         if state.revision != revision:
             return attach_diagnostic_errors({**report, "reason": "stale_revision"})
         if owned_training_rows is not None:
+            for frame in intermediate_pose_offsets:
+                if (frame >= min(len(state.poses), len(state.statuses), len(state.pose_anchors))
+                        or not np.array_equal(state.poses[frame], frame_pose_snapshot[frame])
+                        or state.statuses[frame] != frame_status_snapshot[frame]
+                        or state.pose_anchors[frame] != frame_anchor_snapshot[frame]):
+                    return attach_diagnostic_errors({**report, 'reason': 'stale_intermediate_frame'})
             validation_payload = copy.deepcopy(prepared_payload)
             validation_payload["training_factor_phase"] = "validate"
             try:
@@ -1017,7 +1144,13 @@ def local_bundle_adjustment(
                 continue
             camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])
             updates[ident] = poses[anchor][:3, :3] @ camera + poses[anchor][:3, 3]
-        if not state.apply_corrections(revision, poses, propagate_landmarks=False, landmark_updates=updates):
+        intermediate_updates = ({frame: frame_pose_for(result.x, frame, poses)
+                                 for frame in intermediate_pose_offsets}
+                                if owned_training_rows is not None else None)
+        correction_arguments = {'propagate_landmarks': False, 'landmark_updates': updates}
+        if intermediate_updates is not None:
+            correction_arguments['frame_updates'] = intermediate_updates
+        if not state.apply_corrections(revision, poses, **correction_arguments):
             if training_bundle_summary is not None and owned_training_rows is not None:
                 training_bundle_summary.update(status="rejected", reason="atomic_apply_rejected")
             return attach_diagnostic_errors(report)
@@ -1026,4 +1159,6 @@ def local_bundle_adjustment(
         report["applied"] = True
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)
+            training_bundle_summary['committed_map_revision'] = int(state.revision)
+            training_bundle_summary['committed_geometry_revision'] = int(state.geometry_revision)
     return attach_diagnostic_errors(report)

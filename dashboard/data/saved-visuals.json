@@ -1,5 +1,25 @@
 [
   {
+    "file": "full-supported-stereo-comparison.png",
+    "label": "Full supported-pool retry: accuracy and regressions",
+    "group": "04/80 and 01/350; separate frozen revisions; saved diagnostics; acceptance gates failed"
+  },
+  {
+    "file": "full-supported-stereo01-overview.png",
+    "label": "Current KITTI 01: trajectory, loss and sparse map",
+    "group": "350 frames, one recovered lost frame; loops off; saved evidence, not active video"
+  },
+  {
+    "file": "bundle-ablation-comparison.png",
+    "label": "Matched BA on/off: accuracy tradeoffs",
+    "group": "Same frozen 6b3cd2b, 04/80 and 01/350; loops off; saved CPU diagnostics"
+  },
+  {
+    "file": "bundle-off01-overview.png",
+    "label": "BA-off KITTI 01: trajectory, errors and sparse map",
+    "group": "350 frames, no loss; rotation worse than BA-on; saved diagnostic, not live video"
+  },
+  {
     "file": "reference-stereo-focused-comparison.png",
     "label": "Stereo repair ablations: accuracy including regressions",
     "group": "Frozen 6b3cd2b and retained earlier groups; 04/80 and 01/350, CPU uncached, loops off"

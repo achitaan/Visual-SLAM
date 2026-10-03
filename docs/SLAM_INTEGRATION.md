@@ -243,7 +243,7 @@ and plotting under one owned process-tree deadline. `--budget-seconds` accepts
 the remaining budget is deferred with a resumable manifest; interrupted results
 remain incomplete. Compatible timing history supplies cost estimates only.
 
-The current backend suite passes 279 tests, with four optional GPU skips. A real
+At that checkpoint, the backend suite passed 279 tests, with four optional GPU skips. A real
 two-frame paired deadline-runner smoke completes stereo and explicitly retains
 monocular initialization failure. These checks do not replace accuracy coverage.
 
@@ -261,3 +261,28 @@ support retains the established clear/forced-keyframe fallback. Context-absent
 reference fitting may use restored depth and a prediction seed; it is not a
 held-out supported-only fit. Targeted synthetic checks do not establish improved
 benchmark accuracy; a fresh frozen replay is required.
+
+## Latest focused checkpoint
+
+The opt-in hard-conflict path now retries a failed reserved-subset reference on
+the full raw-supported pool before choosing a pose. It removes duplicate physical
+correspondences, preserves bidirectional verification and suppresses held-out
+diagnostics when those observations enter the fit. Fixed-pose connection validation
+still does not refit the selected pose. Failed fits create no provisional motion
+edge; normal geometric recovery or explicit loss follows.
+
+[Fresh stereo results](benchmark/full-supported-stereo-results.md) record 04/80
+and 01/350 at `c043759`. The 5.18-minute focused cycle passes 249 focused checks;
+the full backend suite passes 325, with four optional GPU skips. Current-source
+export identities and finite geometry were independently audited. On 01, rotation
+improves 14.34% versus the preceding revision, but remains 13.91% worse than the
+supported-mapping reference. Position and translation worsen slightly, and one
+lost frame recovers. Accuracy and coverage gates still fail.
+
+[The matched BA ablation](benchmark/bundle-ablation-results.md) records mixed
+position/rotation effects and does not justify disabling BA. Next investigate
+physical feature multiplicity and spatial/depth support at the remaining reference
+error, plus the recovered lost interval. Do not accept an otherwise rejected fit
+because of its post-hoc reference score. Full coverage, live loop correction,
+monocular/TUM and dense reconstruction acceptance remain outstanding. Main and
+scheduled validation remain on hold.

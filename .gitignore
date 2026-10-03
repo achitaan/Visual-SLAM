@@ -17,9 +17,12 @@ node_modules/
 results/
 .test-build/
 .datasets/
+.worktrees/
 
 # Local editor and generated files
 .vscode/
 dashboard/AGENTS.md
 dashboard/CLAUDE.md
 trajectory.html
+dashboard/public/saved-visuals/
+dashboard/public/benchmark-graphs.html

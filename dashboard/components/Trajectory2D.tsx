@@ -8,9 +8,9 @@ export function Trajectory2D() {
   const metric = latest?.translation_scale === "metric";
   const { points, truth } = useMemo(() => {
     const position = (pose: number[][]) => [pose[0][3], pose[2][3]];
-    return { points: frames.map(f => position(f.pose_graph?.optimized_pose_T_wc ?? f.pose_T_wc)),
+    return { points: latest?.trajectory?.map(p => [p[0], p[2]]) ?? frames.map(f => position(f.pose_graph?.optimized_pose_T_wc ?? f.pose_T_wc)),
       truth: showExpected && metric ? frames.flatMap(f => f.expected_pose_T_wc ? [position(f.expected_pose_T_wc)] : []) : [] };
-  }, [frames, metric, showExpected]);
+  }, [frames, latest?.trajectory, metric, showExpected]);
   useEffect(() => {
     const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
@@ -44,6 +44,6 @@ export function Trajectory2D() {
   return <section className="panel trajectoryPanel">
     <div className="panelHeading"><div><span className="eyebrow">TOP DOWN · X / Z</span><h2>Trajectory</h2></div><div className="chartLegend"><span><i />Estimate</span>{metric && showExpected && <span><i className="truth" />Ground truth</span>}</div></div>
     <div className="chartBody"><canvas ref={canvasRef} role="img" aria-label="Top-down trajectory with equal axis scale" /></div>
-    <div className="chartFooter">{metric ? "Raw coordinates · meters · equal axis scale" : "Monocular coordinates · arbitrary scale"}</div>
+    <div className="chartFooter">{!latest ? "Awaiting live pose snapshots" : metric ? "Raw coordinates · meters · equal axis scale" : "Monocular coordinates · arbitrary scale"}</div>
   </section>;
 }

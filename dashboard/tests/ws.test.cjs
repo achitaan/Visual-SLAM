@@ -14,6 +14,24 @@ class MockWebSocket {
 }
 global.WebSocket = MockWebSocket;
 
+test('batch progress is routed separately and never creates trajectory frames', () => {
+  const socket = new TelemetrySocket('ws://localhost');
+  const frames = [], statuses = [];
+  socket.onFrame(frame => frames.push(frame));
+  socket.onBenchmark(status => statuses.push(status));
+  socket.connect();
+  const ws = MockWebSocket.instances.at(-1);
+  const status = {schema_version: 1, kind: 'benchmark_status', completed: 2, total: 22, running: true, stream_available: false, rows: [], active: {sequence: '01', sensor: 'stereo', run_id: 'kitti01-stereo'}};
+  ws.onmessage({data: JSON.stringify(status)});
+  assert.equal(statuses.length, 1);
+  assert.equal(frames.length, 0);
+  for (const invalid of [{...status, completed: -1}, {...status, total: 1}, {...status, rows: null}, {...status, active: {}}, {...status, running: 'yes'}]) ws.onmessage({data: JSON.stringify(invalid)});
+  assert.equal(statuses.length, 1);
+  ws.onmessage({data: JSON.stringify({schema_version: 1, frame_index: 3, pose_T_wc: []})});
+  assert.equal(frames.length, 1);
+  socket.close();
+});
+
 test('connection state follows events and controls require an open socket', () => {
   const socket = new TelemetrySocket('ws://localhost');
   const states = [];

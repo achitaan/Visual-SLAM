@@ -1,0 +1,4 @@
+# Optional learned-depth reconstruction; the geometric estimator does not import these.
+# Install a CPU or CUDA PyTorch build appropriate for your machine.
+torch==2.14.1
+torchvision==0.29.1

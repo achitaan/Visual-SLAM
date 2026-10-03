@@ -11,7 +11,7 @@ function extractXYZ(pose: number[][] | undefined | null) {
 }
 
 export function ErrorGraph() {
-  const { frames } = useTelemetry();
+  const { frames, latest } = useTelemetry();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const errors = useMemo(() => {
@@ -127,6 +127,7 @@ export function ErrorGraph() {
     }
   }, [errors, stats]);
 
+  if (latest?.translation_scale==='arbitrary') return <section className="panel errorPanel"><div className="panelHeading"><div><span className="eyebrow">MONOCULAR EVALUATION</span><h2>Arbitrary map scale</h2></div></div><p style={{padding:24}}>Metric drift is unavailable for this run. Evaluate the saved trajectory with Sim(3) alignment to compare its shape against reference poses.</p></section>;
   return (
     <section className="panel errorPanel">
       <div className="panelHeading"><div><span className="eyebrow">GROUND TRUTH DEVIATION</span><h2>Raw position error</h2></div><span className="pill">No alignment</span></div>

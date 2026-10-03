@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "status": "failed_accuracy_gate",
+  "source_commit": "5d056d797180998853708fd2421b5e20dadca882",
+  "source_fingerprint": "07f1952c04834c5c993ecc31b7d0d80b752aa6eb6f003dac1db9256e1b95a1e3",
+  "scope": {
+    "sequence": "04",
+    "frames_requested": 80,
+    "frame_indices": "0-79",
+    "coverage": "partial",
+    "comparison": "fresh matched uncached free-source bundle ON versus control OFF",
+    "loop_mode": "off",
+    "accuracy_gate_percent": 5.0
+  },
+  "identities": {
+    "source_fingerprint_recomputed": "07f1952c04834c5c993ecc31b7d0d80b752aa6eb6f003dac1db9256e1b95a1e3",
+    "runtime_identity_sha256": "6f83db6642c325da01bbfcd7d421b2c9564f03dcd3ef95a2b34d14ed067f7b9c",
+    "runtime": {
+      "python": "3.12.14",
+      "opencv": "5.0.0.93",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1",
+      "matching_backend": "cpu",
+      "retrieval": "current",
+      "opencv_threads": 1
+    },
+    "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+    "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+    "equal_except_experiment_flag": true,
+    "metrics_reused": false,
+    "source_unchanged": true,
+    "ground_truth_policy": "evaluator_only"
+  },
+  "export_validation": {
+    "on_and_off_reports_completed": true,
+    "on_and_off_tracking_frames": 80,
+    "lost_frames": {
+      "on": 0,
+      "off": 0
+    },
+    "loops": {
+      "on": 0,
+      "off": 0
+    },
+    "metrics_reused": false
+  },
+  "runs": {
+    "free_source_on": {
+      "relative_run": "results/integration/free-source-bundle/07f1952c0483/04-owned-on-1791050345177077400/run",
+      "stereo_owned_image_bundle": true,
+      "coverage": "partial",
+      "tracking_frames": 80,
+      "lost_frames": 0,
+      "ate_rmse_m": 0.2522132264697951,
+      "translation_percent": 0.9041189736133012,
+      "rotation_deg_per_m": 0.010177792784340205,
+      "runtime_seconds": 65.09643829998095,
+      "total_wall_seconds": 66.02946680001332,
+      "peak_memory_mib": 281.51953125,
+      "keyframes": 11,
+      "landmarks": 10365,
+      "bundle_adjustments_applied": 9,
+      "free_intermediate_corrections_applied": 9,
+      "accepted_training_factors": 1018,
+      "temporary_source_rows_persisted": false
+    },
+    "control_off": {
+      "relative_run": "results/integration/free-source-bundle/07f1952c0483/04-owned-off-1791050415871574000/run",
+      "stereo_owned_image_bundle": false,
+      "coverage": "partial",
+      "tracking_frames": 80,
+      "lost_frames": 0,
+      "ate_rmse_m": 0.11188367637566381,
+      "translation_percent": 0.2807531045984703,
+      "rotation_deg_per_m": 0.005652783299876321,
+      "runtime_seconds": 58.64634030000889,
+      "total_wall_seconds": 59.582516399997985,
+      "peak_memory_mib": 265.10546875,
+      "keyframes": 11,
+      "landmarks": 10288,
+      "bundle_adjustments_applied": 9
+    }
+  },
+  "gate": {
+    "status": "fail",
+    "release_ready": false,
+    "accuracy_improvement_demonstrated": false,
+    "change_percent_on_vs_off": {
+      "ate_rmse_m": 125.42450752418684,
+      "translation_percent": 222.03347311380978,
+      "rotation_deg_per_m": 80.04922963459238
+    },
+    "failures": [
+      "ate_rmse_m exceeded the declared 5% regression limit",
+      "translation_percent exceeded the declared 5% regression limit",
+      "rotation_deg_per_m exceeded the declared 5% regression limit"
+    ],
+    "sequence_01": {
+      "status": "not_run",
+      "reason": "the 04/80 accuracy gate failed; expansion stopped"
+    }
+  },
+  "backend_tests_at_frozen_source": {
+    "passed": 424,
+    "skipped": 4,
+    "elapsed_seconds": 65
+  },
+  "publication": {
+    "source_or_estimator_changed": false,
+    "replay_rerun": false,
+    "release_ready": false,
+    "assets": [
+      "docs/benchmark/stereo-free-source-bundle.md",
+      "docs/benchmark/plots/free-source-bundle-04-80-failed-gate.png",
+      "docs/benchmark/plots/free-source-bundle-04-on-overview.png",
+      "docs/benchmark/plots/free-source-bundle-04-off-overview.png",
+      "dashboard/public/saved-visuals/free-source-bundle-04-80-failed-gate.png",
+      "dashboard/public/saved-visuals/free-source-bundle-04-on-overview.png",
+      "dashboard/public/saved-visuals/free-source-bundle-04-off-overview.png"
+    ]
+  },
+  "first_divergence_diagnostic": {
+    "frame": 14,
+    "first_bundle_inputs_equal": true,
+    "ground_truth_used": false,
+    "pose_or_nuisance_fit_performed": false,
+    "construction": "Use original OFF KFs+selected points; G=OFF_target*inverse(ON_target); source=G*ON_source; each106 singleton=G*ON_singleton. No optimization or score-based row selection.",
+    "saved_on_original_cost": 19.672710348635313,
+    "transported_original_cost": 13.692074947786146,
+    "saved_on_augmented_cost": 34.583872007348916,
+    "transported_augmented_cost": 28.61862789,
+    "singleton_tracks": 106,
+    "shared_source_tracks": 2,
+    "singleton_row_max_projection_difference_px": 4.547473508864641e-13,
+    "positive_depth": true,
+    "finite_proper_poses": true,
+    "fixed_origin_preserved": true,
+    "all_snapshot_motion_checks": [
+      {
+        "frames": [
+          7,
+          8
+        ],
+        "translation_m": 0.1451745368011195,
+        "rotation_deg": 0.141951399793707,
+        "passed": true
+      },
+      {
+        "frames": [
+          12,
+          13
+        ],
+        "translation_m": 0.09256502924262922,
+        "rotation_deg": 0.08947906966507191,
+        "passed": true
+      },
+      {
+        "frames": [
+          13,
+          14
+        ],
+        "translation_m": 0.005282129366752325,
+        "rotation_deg": 0.01385706123491424,
+        "passed": true
+      }
+    ],
+    "interpretation": "A feasible lower objective exists at the first divergence. Capped solver numerics need investigation; this does not prove a trajectory accuracy fix.",
+    "next_experiment": "Equivalent target-relative source camera and singleton point coordinates, unchanged objective, budgets and acceptance gates."
+  }
+}

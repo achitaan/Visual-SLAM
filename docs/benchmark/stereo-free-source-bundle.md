@@ -30,32 +30,70 @@ does not address coherent disparity bias or establish a calibrated covariance.
 The independent depth-acquisition experiment also
 [failed its short comparison](stereo-verified-measurements.md).
 
-## Validation
+## Fresh matched 04/80 result: failed
 
 The frozen source `07f1952c04834c5c993ecc31b7d0d80b752aa6eb6f003dac1db9256e1b95a1e3`
-passes 424 backend tests, with four optional GPU tests skipped. The ten new
-invariants cover nonlinear gauge freedom, numerical elimination of source and
-point variables, sparse dependencies, actual SciPy source-pose correction,
-atomic application, stale frames and same-anchor motion rejection. The motion
-veto uses a controlled candidate; it is an acceptance-path check.
+was tested in two fresh, uncached runs over frames 0–79. The runs matched on
+source, runtime, input, reference, and the remaining configuration; only the
+owned-image flag differed. Both completed tracking all 80 frames, but the ON
+run regressed beyond the declared 5% gate on all three accuracy metrics.
 
-Fresh matched replay results are pending. Tests alone do not establish an
-accuracy improvement or release readiness. Evaluation uses reference poses only
-after estimation.
+| Metric | Control OFF | Free-source ON | Change ON vs OFF |
+|---|---:|---:|---:|
+| ATE RMSE (m) | 0.111884 | 0.252213 | +125.42% |
+| Translation error (%) | 0.280753 | 0.904119 | +222.03% |
+| Rotation error (deg/m) | 0.005653 | 0.010178 | +80.05% |
+| Lost frames | 0 | 0 | — |
+| Runtime (s) | 58.65 | 65.10 | descriptive only |
+| Peak memory (MiB) | 265.11 | 281.52 | descriptive only |
+| Keyframes / bundle applications | 11 / 9 | 11 / 9 | — |
 
-Compare separate outputs using the same frozen source, inputs, dependencies
-and configuration. Start at frame zero; change only the owned-image flag:
+![Matched 04/80 metrics; free-source gate failed](plots/free-source-bundle-04-80-failed-gate.png)
 
-```powershell
-python scripts/evaluate_shared_slam.py --stereo --sequence 04 --max-frames 80 `
-  --max-wall-seconds 240 --data-root <DATA_ROOT> --poses-root <POSES_ROOT> `
-  --output results/free-source04-on --stereo-depth-policy verified_fallback `
-  --stereo-pose-arbitration --stereo-raw-reference-retry `
-  --stereo-owned-image-bundle --loop-mode off `
-  --matching-backend cpu --retrieval current --opencv-threads 1
-```
+The ON run applied 9 free intermediate-camera corrections and accepted 1,018
+training factors. Their source-image rows remained temporary and were not
+persisted in the map. Both runs reported zero lost frames. These mechanism
+counts do not change the failed accuracy result. Sequence 01 was not run, and
+this partial prefix demonstrates no accuracy improvement or release readiness.
 
-Omit `--stereo-owned-image-bundle` for the control. Preserve finite exports,
-explicit tracking loss, factor provenance, actual candidate intermediate poses
-and the map revision. Expand to sequence 01 only after the short regression
-check passes and the entire comparison fits the declared time budget.
+The plots below are the actual evaluator overview exports for the two runs.
+
+**Free-source ON — rejected:**
+
+![Actual free-source ON overview](plots/free-source-bundle-04-on-overview.png)
+
+**Control OFF:**
+
+![Actual free-source OFF overview](plots/free-source-bundle-04-off-overview.png)
+
+The ON/OFF export identities matched except for `stereo_owned_image_bundle`;
+metrics were not reused, and ground truth was used only after tracking. The
+frozen source commit is `5d056d797180998853708fd2421b5e20dadca882`. Its backend
+suite passed 424 tests with 4 optional GPU tests skipped in about 65 seconds.
+That verification does not override the failed sequence-level gate. The prior
+owned-image experiment remains separately documented in
+[`stereo-owned-image-bundle.md`](stereo-owned-image-bundle.md). Structured
+identities and raw run metrics are recorded in
+[`FREE_SOURCE_BUNDLE_CHECKPOINT.json`](FREE_SOURCE_BUNDLE_CHECKPOINT.json).
+
+## First divergence and next controlled experiment
+
+The first bundle inputs at frame 14 were identical. Both solvers reached the
+30-evaluation limit. A subsequent algebraic check used only the saved image
+measurements and candidates, with no ground truth or new pose fit. It kept the
+control's original cameras and points, then transported the ON source camera
+and its 106 singleton points together into the control target camera's frame.
+
+This preserves the singleton projections within 4.6e-13 pixels. The resulting
+candidate has positive depth, finite poses, the same fixed origin, and passes
+all three retained motion checks. Its original objective is 13.6921 rather
+than 19.6727; its augmented objective is 28.6186 rather than 34.5839. The saved
+ON result therefore has an avoidable objective disadvantage at this frame.
+This is numerical evidence, not a corrected trajectory or accuracy result.
+
+The next controlled experiment is an equivalent target-relative parameterization
+for the intermediate camera and singleton points. It keeps the objective,
+robust loss, solver budget and geometric gates unchanged. Shared points must
+retain their camera and world-point dependencies. A shared trust region can
+still couple solver steps, so improved convergence and trajectory accuracy
+must both be measured in fresh tests before further expansion.

@@ -27,6 +27,23 @@ from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
 from stereo_pose_arbitration import SupportedStereoFrame, SupportedStereoHoldout, arbitrate_stereo_pose
 
 
+def _owned_diagnostic_value(value):
+    """Copy estimator values into finite JSON primitives with no live array views."""
+    if isinstance(value, np.ndarray):
+        return _owned_diagnostic_value(value.tolist())
+    if isinstance(value, np.generic):
+        return _owned_diagnostic_value(value.item())
+    if isinstance(value, dict):
+        return {str(key): _owned_diagnostic_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_owned_diagnostic_value(item) for item in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        raise ValueError("Non-finite value in bundle diagnostic snapshot")
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
 @dataclass(frozen=True)
 class StereoCamera:
     """Calibration and disparity computation, without dataset/reference access."""
@@ -68,8 +85,11 @@ class MappingConfig:
 
 
 class SharedSlam:
-    def __init__(self, matrix, stereo=None, config=None, performance=None):
+    def __init__(self, matrix, stereo=None, config=None, performance=None,
+                 bundle_diagnostic_writer=None):
         self.performance = performance or PerformanceConfig()
+        self.bundle_diagnostic_writer = bundle_diagnostic_writer
+        self.bundle_diagnostic_errors = []
         self.matcher = DescriptorMatcher(self.performance.matching_backend)
         self._landmark_cache = None
         self._identity_conflict_cache = {}
@@ -2101,6 +2121,134 @@ class SharedSlam:
                                     record.right_u, linked, record.frame, record.image_size,
                                     record.calibration_identity)
 
+    def _emit_bundle_diagnostic(self, frame, phase, payload, image_size):
+        """Isolate diagnostic I/O from estimator control flow and solver state."""
+        writer = self.bundle_diagnostic_writer
+        if writer is None:
+            return
+        try:
+            writer.emit(frame=frame, phase=phase,
+                        payload=_owned_diagnostic_value(payload),
+                        image_size=tuple(image_size))
+        except Exception as error:
+            self.bundle_diagnostic_errors.append({
+                "frame": int(frame), "phase": str(phase),
+                "error_type": type(error).__name__,
+            })
+
+    def _skip_bundle_diagnostic(self, frame, reason):
+        writer = self.bundle_diagnostic_writer
+        if writer is None:
+            return
+        try:
+            writer.mark_skipped(int(frame), str(reason))
+        except Exception as error:
+            self.bundle_diagnostic_errors.append({
+                "frame": int(frame), "phase": "skip",
+                "error_type": type(error).__name__,
+            })
+
+    def bundle_diagnostics_manifest(self):
+        writer = self.bundle_diagnostic_writer
+        if writer is None:
+            return {"enabled": False, "selected_frames": []}
+        try:
+            return _owned_diagnostic_value(writer.manifest())
+        except Exception as error:
+            self.bundle_diagnostic_errors.append({
+                "frame": None, "phase": "manifest",
+                "error_type": type(error).__name__,
+            })
+            return {
+                "schema_version": 1,
+                "enabled": True,
+                "selected_frames": list(writer.frames),
+                "frames": [
+                    {"frame": int(frame), "status": "error",
+                     "reason": "manifest_write_failed", "phases": {},
+                     "errors": [{"phase": "manifest",
+                                 "error_type": type(error).__name__}]}
+                    for frame in writer.frames
+                ],
+            }
+
+    def _bundle_diagnostic_tracking_context(self, frame, image_size):
+        """Snapshot existing predictor inputs without invoking prediction logic."""
+        with self.map.lock:
+            accepted = [
+                index for index, status in enumerate(self.map.statuses)
+                if status in ("tracking", "relocalized")
+            ]
+            recent = list(range(max(0, len(self.map.poses) - 4), len(self.map.poses)))
+            verified = self.verified_stereo_motion
+            return _owned_diagnostic_value({
+                "frame": int(frame),
+                "image_size": tuple(image_size),
+                "revision": int(self.map.revision),
+                "geometry_revision": int(self.map.geometry_revision),
+                "stereo_calibration_identity": self.stereo_calibration_identity,
+                "motion_prediction_source": self.motion_prediction_source,
+                "latest_accepted_frame": accepted[-1] if accepted else None,
+                "latest_accepted_pose": (
+                    self.map.poses[accepted[-1]].copy() if accepted else None
+                ),
+                "recent_frame_poses": [
+                    {"frame": index, "state": self.map.statuses[index],
+                     "pose_anchor_keyframe_id": self.map.pose_anchors[index],
+                     "camera_to_world": self.map.poses[index].copy()}
+                    for index in recent
+                ],
+                "verified_stereo_motion": (
+                    None if verified is None else {
+                        "measurement": verified[0].copy(),
+                        "target_frame": int(verified[1]),
+                    }
+                ),
+            })
+
+    def _bundle_diagnostic_finish_context(
+        self, frame, image_size, report, window_keyframe_ids, motion_checks
+    ):
+        with self.map.lock:
+            anchor_ids = set(int(value) for value in window_keyframe_ids)
+            for check in motion_checks:
+                if not isinstance(check, dict):
+                    continue
+                anchor_ids.update(
+                    int(value) for value in check.get("anchor_keyframe_ids", [])
+                    if value is not None
+                )
+            if 0 <= int(frame) < len(self.map.pose_anchors):
+                current_anchor = self.map.pose_anchors[int(frame)]
+                if current_anchor is not None:
+                    anchor_ids.add(int(current_anchor))
+            frame_ids = {int(frame)}
+            for check in motion_checks:
+                if isinstance(check, dict):
+                    frame_ids.update(int(value) for value in check.get("frame_ids", []))
+            affected_frames = [
+                {"frame": index, "state": self.map.statuses[index],
+                 "pose_anchor_keyframe_id": self.map.pose_anchors[index],
+                 "camera_to_world": self.map.poses[index].copy()}
+                for index in sorted(frame_ids)
+                if 0 <= index < len(self.map.poses)
+            ]
+            affected_anchors = [
+                {"keyframe_id": key, "frame": self.map.keyframes[key].frame,
+                 "camera_to_world": self.map.keyframes[key].pose.copy()}
+                for key in sorted(anchor_ids) if key in self.map.keyframes
+            ]
+            return _owned_diagnostic_value({
+                "frame": int(frame),
+                "image_size": tuple(image_size),
+                "revision": int(self.map.revision),
+                "geometry_revision": int(self.map.geometry_revision),
+                "stereo_calibration_identity": self.stereo_calibration_identity,
+                "applied": bool(report.get("applied", False)),
+                "affected_frame_poses": affected_frames,
+                "affected_anchor_poses": affected_anchors,
+            })
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
@@ -2108,6 +2256,17 @@ class SharedSlam:
             )
         self.loop_worker.poll(self.map)
         self._prepare_frame_images(image, right)
+        diagnostic_capture = False
+        if self.bundle_diagnostic_writer is not None:
+            try:
+                diagnostic_capture = bool(
+                    self.bundle_diagnostic_writer.should_capture(index)
+                )
+            except Exception as error:
+                self.bundle_diagnostic_errors.append({
+                    "frame": int(index), "phase": "select",
+                    "error_type": type(error).__name__,
+                })
         raw_stereo_enabled = (self.config.stereo_pose_arbitration
                               or self.config.stereo_raw_reference_retry)
         if raw_stereo_enabled:
@@ -2796,6 +2955,8 @@ class SharedSlam:
         if info["tracking_ok"] and verified_motion is not None:
             previous_index, measurement = verified_motion
             self.map.add_stereo_motion(previous_index, index, measurement)
+        bundle_called = False
+        bundle_skip_reason = None
         if (
             info["tracking_ok"]
             and anchor is not None
@@ -2803,17 +2964,121 @@ class SharedSlam:
             and len(self.map.keyframes) >= 3
         ):
             with self.profile.measure("local_bundle"):
-                report = local_bundle_adjustment(
-                    self.map,
-                    self.K,
-                    self.stereo.baseline if self.stereo is not None else 0.0,
-                    window=self.config.bundle_window,
-                    disparity_offset=self.stereo.disparity_offset if self.stereo is not None else 0.,
-                    optimized=self.performance.cpu_optimizations,
-                ) if self.config.bundle_enabled else {"applied": False, "reason": "diagnostic_ablation"}
+                if not self.config.bundle_enabled:
+                    report = {"applied": False, "reason": "diagnostic_ablation"}
+                    bundle_skip_reason = "bundle_disabled"
+                else:
+                    bundle_kwargs = {
+                        "window": self.config.bundle_window,
+                        "disparity_offset": self.stereo.disparity_offset if self.stereo is not None else 0.,
+                        "optimized": self.performance.cpu_optimizations,
+                    }
+                    if diagnostic_capture:
+                        diagnostic_inputs = {
+                            "window_keyframe_ids": [],
+                            "motion_checks": [],
+                        }
+
+                        def diagnostic_sink(phase, payload):
+                            owned = _owned_diagnostic_value(payload)
+                            if not isinstance(owned, dict):
+                                raise ValueError("Bundle diagnostic phase must be an object")
+                            if phase in ("prepared", "solved"):
+                                owned["shared_slam_context"] = (
+                                    self._bundle_diagnostic_tracking_context(index, size)
+                                )
+                            if phase == "prepared":
+                                selection = owned.get("selection", {})
+                                diagnostic_inputs["window_keyframe_ids"] = (
+                                    selection.get("window_keyframe_ids", [])
+                                    if isinstance(selection, dict) else []
+                                )
+                                diagnostic_inputs["motion_checks"] = owned.get(
+                                    "motion_checks", []
+                                )
+                                diagnostic_inputs["window_keyframe_ids"] = (
+                                    _owned_diagnostic_value(
+                                        diagnostic_inputs["window_keyframe_ids"]
+                                    )
+                                )
+                                diagnostic_inputs["motion_checks"] = (
+                                    _owned_diagnostic_value(
+                                        diagnostic_inputs["motion_checks"]
+                                    )
+                                )
+                            self._emit_bundle_diagnostic(index, phase, owned, size)
+
+                        bundle_kwargs["diagnostic_sink"] = diagnostic_sink
+                    report = local_bundle_adjustment(
+                        self.map,
+                        self.K,
+                        self.stereo.baseline if self.stereo is not None else 0.0,
+                        **bundle_kwargs,
+                    )
+                    bundle_called = True
+                    if diagnostic_capture:
+                        try:
+                            finished = {
+                                "schema": "local_bundle_finished_v1",
+                                "frame": int(index),
+                                "report": _owned_diagnostic_value(report),
+                                **self._bundle_diagnostic_finish_context(
+                                    index, size, report,
+                                    diagnostic_inputs["window_keyframe_ids"],
+                                    diagnostic_inputs["motion_checks"],
+                                ),
+                            }
+                            self._emit_bundle_diagnostic(index, "finished", finished, size)
+                        except Exception as error:
+                            self.bundle_diagnostic_errors.append({
+                                "frame": int(index), "phase": "finished",
+                                "error_type": type(error).__name__,
+                            })
+                        try:
+                            writer_frame = next(
+                                item for item in self.bundle_diagnostic_writer.manifest().get("frames", [])
+                                if item.get("frame") == index
+                            )
+                            phases = set(writer_frame.get("phases", {}))
+                            if "prepared" not in phases:
+                                self._skip_bundle_diagnostic(
+                                    index, report.get("reason", "prepared_phase_missing")
+                                )
+                            elif phases != {"prepared", "solved", "finished"}:
+                                self.bundle_diagnostic_errors.append({
+                                    "frame": int(index), "phase": "post_report_check",
+                                    "error_type": "IncompleteCapture",
+                                    "missing_phases": sorted(
+                                        {"prepared", "solved", "finished"} - phases
+                                    ),
+                                })
+                        except Exception as error:
+                            self.bundle_diagnostic_errors.append({
+                                "frame": int(index), "phase": "post_report_check",
+                                "error_type": type(error).__name__,
+                            })
+                        if self.bundle_diagnostic_errors:
+                            report["bundle_diagnostic_errors"] = [
+                                item for item in self.bundle_diagnostic_errors
+                                if item.get("frame") == int(index)
+                            ]
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
             self.loop_worker.schedule(self.map)
+        elif diagnostic_capture:
+            if not info["tracking_ok"]:
+                bundle_skip_reason = "tracking_not_accepted"
+            elif not self.config.bundle_enabled:
+                bundle_skip_reason = "bundle_disabled"
+            elif anchor is None or self.map.keyframes.get(anchor) is None \
+                    or self.map.keyframes[anchor].frame != index:
+                bundle_skip_reason = "not_keyframe"
+            elif len(self.map.keyframes) < 3:
+                bundle_skip_reason = "insufficient_keyframes"
+            else:
+                bundle_skip_reason = "bundle_not_invoked"
+        if diagnostic_capture and not bundle_called:
+            self._skip_bundle_diagnostic(index, bundle_skip_reason or "bundle_not_invoked")
         if arbitration_measurement is not None and info['tracking_ok']:
             with self.map.lock:
                 after_bundle = self._arbitrate_supported_pose(

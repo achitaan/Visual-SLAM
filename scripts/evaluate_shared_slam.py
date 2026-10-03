@@ -109,6 +109,10 @@ def main():
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
+    parser.add_argument('--bundle-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for selected bundle adjustment snapshots')
+    parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
+                        help='Frame IDs to capture when bundle adjustment runs')
     parser.add_argument('--opencv-threads', type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -129,6 +133,17 @@ def main():
         parser.error('--stereo-pose-arbitration requires --stereo')
     if args.stereo_raw_reference_retry and not args.stereo:
         parser.error('--stereo-raw-reference-retry requires --stereo')
+    if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
+        parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
+    if args.bundle_diagnostics_frames is not None:
+        if any(frame < 0 for frame in args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(args.bundle_diagnostics_frames)) != len(args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must not contain duplicates')
+        output_dir = args.output.resolve()
+        diagnostic_dir = args.bundle_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(output_dir):
+            parser.error('--bundle-diagnostics-dir must be inside the run output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -257,10 +272,18 @@ def main():
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
+    bundle_diagnostic_writer = None
+    if args.bundle_diagnostics_dir is not None:
+        from bundle_diagnostics import BundleDiagnosticsWriter
+        bundle_diagnostic_writer = BundleDiagnosticsWriter(
+            args.bundle_diagnostics_dir,
+            frames=tuple(args.bundle_diagnostics_frames),
+        )
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
-                     stereo_raw_reference_retry=args.stereo_raw_reference_retry), performance=performance)
+                     stereo_raw_reference_retry=args.stereo_raw_reference_retry), performance=performance,
+                     bundle_diagnostic_writer=bundle_diagnostic_writer)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -343,7 +366,21 @@ def main():
     elapsed = time.perf_counter() - started
     processed_frames = len(slam.map.poses)
     paths = paths[:processed_frames]
-    export_run(slam, args.output, paths, image_loader=loader, include_images=not bool(interruption))
+    if bundle_diagnostic_writer is not None:
+        for frame in bundle_diagnostic_writer.frames:
+            if frame >= processed_frames:
+                slam._skip_bundle_diagnostic(frame, 'frame_not_processed')
+        bundle_diagnostic_manifest = slam.bundle_diagnostics_manifest()
+        bundle_diagnostic_errors = list(slam.bundle_diagnostic_errors)
+    else:
+        bundle_diagnostic_manifest = {"enabled": False, "selected_frames": []}
+        bundle_diagnostic_errors = []
+    run_payload = export_run(slam, args.output, paths, image_loader=loader,
+                             include_images=not bool(interruption))
+    if bundle_diagnostic_writer is not None:
+        run_payload['bundle_diagnostics'] = bundle_diagnostic_manifest
+        run_payload['bundle_diagnostic_errors'] = list(slam.bundle_diagnostic_errors)
+        write_json(args.output / 'run.json', run_payload)
     source_folder = args.output / "source"
     source_folder.mkdir(exist_ok=True)
     for name, data in source_snapshot.items():
@@ -389,6 +426,8 @@ def main():
     report["diagnostic_overrides"] = {"disable_bundle": args.disable_bundle, "loop_mode": args.loop_mode if args.loop_mode != "live" else None}
     report["wall_budget_seconds"] = args.max_wall_seconds
     report["feature_cache"] = cache.metadata() if cache else {"enabled": False}
+    report['bundle_diagnostics'] = bundle_diagnostic_manifest
+    report['bundle_diagnostic_errors'] = bundle_diagnostic_errors
     report["interruption"] = interruption
     (args.output / "evaluator.py").write_bytes(evaluator_source)
     report["telemetry"] = observer.metadata() if observer else {"enabled": False}

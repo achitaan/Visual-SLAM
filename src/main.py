@@ -2,6 +2,7 @@ import argparse
 import os
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
+import json
 import time
 import uuid
 from pathlib import Path
@@ -108,6 +109,10 @@ def main() -> None:
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path)
+    parser.add_argument('--bundle-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for selected bundle adjustment snapshots')
+    parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
+                        help='Frame IDs to capture when bundle adjustment runs')
     parser.add_argument("--no-telemetry", action="store_true")
     parser.add_argument("--telemetry-port", type=int, default=TELEMETRY.port)
     parser.add_argument("--frame-delay-ms", type=float, default=TELEMETRY.frame_delay_ms)
@@ -120,6 +125,19 @@ def main() -> None:
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
     if args.stereo_raw_reference_retry and not (args.slam and args.stereo):
         parser.error('--stereo-raw-reference-retry requires --slam --stereo')
+    if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
+        parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
+    if args.bundle_diagnostics_frames is not None:
+        if not (args.slam and args.stereo):
+            parser.error('--bundle-diagnostics requires --slam --stereo')
+        if any(frame < 0 for frame in args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(args.bundle_diagnostics_frames)) != len(args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must not contain duplicates')
+        map_output = (args.output.parent / (args.output.stem + '-map')).resolve()
+        diagnostic_dir = args.bundle_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(map_output):
+            parser.error('--bundle-diagnostics-dir must be inside the map output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -192,11 +210,19 @@ def main() -> None:
     stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
+    bundle_diagnostic_writer = None
+    if args.bundle_diagnostics_dir is not None:
+        from bundle_diagnostics import BundleDiagnosticsWriter
+        bundle_diagnostic_writer = BundleDiagnosticsWriter(
+            args.bundle_diagnostics_dir,
+            frames=tuple(args.bundle_diagnostics_frames),
+        )
     shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera,
                         config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
                                              stereo_pose_arbitration=args.stereo_pose_arbitration,
                                              stereo_raw_reference_retry=args.stereo_raw_reference_retry),
-                        performance=performance) if args.slam else None
+                        performance=performance,
+                        bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
     if shared is not None:
         shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
         vo.poses = shared.map.poses
@@ -379,9 +405,19 @@ def main() -> None:
     save_poses_txt(args.output, vo.poses)
     if shared is not None:
         inputs = vo.Images_1.paths if use_stereo else vo.Images.paths
-        export_run(shared, args.output.parent / (args.output.stem + '-map'), inputs)
+        run_output = args.output.parent / (args.output.stem + '-map')
+        if bundle_diagnostic_writer is not None:
+            for frame in bundle_diagnostic_writer.frames:
+                if frame >= len(shared.map.poses):
+                    shared._skip_bundle_diagnostic(frame, 'frame_not_processed')
+            diagnostic_manifest = shared.bundle_diagnostics_manifest()
+        payload = export_run(shared, run_output, inputs)
+        if bundle_diagnostic_writer is not None:
+            payload['bundle_diagnostics'] = diagnostic_manifest
+            payload['bundle_diagnostic_errors'] = list(shared.bundle_diagnostic_errors)
+            (run_output / 'run.json').write_text(
+                json.dumps(payload, indent=2, allow_nan=False), encoding='utf-8')
         if args.profile:
-            import json
             args.profile.parent.mkdir(parents=True, exist_ok=True)
             args.profile.write_text(json.dumps(shared.profile.detailed_report(), indent=2), encoding='utf-8')
     print(f"Saved {len(vo.poses)} KITTI poses to {args.output}")

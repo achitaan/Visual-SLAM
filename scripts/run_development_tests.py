@@ -35,6 +35,8 @@ CURATED_TESTS = (
     'tests/test_append_only_corrections.py',
     'tests/test_local_bundle_landmarks.py',
     'tests/test_bundle_stereo_motion.py',
+    'tests/test_bundle_diagnostics.py',
+    'tests/test_bundle_diagnostics_cli.py',
     'tests/test_stereo_subpixel_depth.py',
     'tests/test_verified_stereo_depth.py',
     'tests/test_bidirectional_refinement.py',
@@ -197,6 +199,11 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_raw_reference_retry')
                     is not identity.get('stereo_raw_reference_retry')):
                 raise ValueError('mismatched stereo-raw-reference-retry mode')
+            historical_diagnostics = source_identity.get('bundle_diagnostics_enabled', False)
+            historical_frames = source_identity.get('bundle_diagnostics_frames', [])
+            if (historical_diagnostics is not identity.get('bundle_diagnostics_enabled', False)
+                    or historical_frames != identity.get('bundle_diagnostics_frames', [])):
+                raise ValueError('mismatched bundle-diagnostic capture mode')
             if report.get('stereo') is not True:
                 raise ValueError('sensor mode is not stereo')
             if report.get('coverage') != coverage:
@@ -358,6 +365,114 @@ def _ply_vertex_count(path):
     return None
 
 
+def _bundle_diagnostics_reusable(output, identity, report, run):
+    """Require every requested diagnostic frame to be captured or explicitly skipped."""
+    enabled = identity.get('bundle_diagnostics_enabled', False)
+    frames = identity.get('bundle_diagnostics_frames', [])
+    if not isinstance(enabled, bool) or not isinstance(frames, list):
+        return False
+    if (any(not isinstance(frame, int) or isinstance(frame, bool) or frame < 0
+            for frame in frames) or frames != sorted(set(frames))):
+        return False
+    report_manifest = report.get('bundle_diagnostics')
+    run_manifest = run.get('bundle_diagnostics')
+    if not enabled:
+        if not frames:
+            return (report_manifest is None or report_manifest == {
+                'enabled': False, 'selected_frames': []
+            }) and (run_manifest is None or run_manifest == {
+                'enabled': False, 'selected_frames': []
+            })
+        return False
+    if not frames or not isinstance(report_manifest, dict) or run_manifest != report_manifest:
+        return False
+    if report.get('bundle_diagnostic_errors') != [] or run.get('bundle_diagnostic_errors') != []:
+        return False
+    if (report_manifest.get('schema_version') != 1
+            or report_manifest.get('enabled') is not True
+            or report_manifest.get('selected_frames') != frames):
+        return False
+    max_frames = report_manifest.get('max_frames')
+    max_snapshots = report_manifest.get('max_snapshots')
+    if (not isinstance(max_frames, int) or isinstance(max_frames, bool)
+            or not isinstance(max_snapshots, int) or isinstance(max_snapshots, bool)
+            or max_frames < len(frames) or max_snapshots < 3 * len(frames)):
+        return False
+    records = report_manifest.get('frames')
+    if not isinstance(records, list) or len(records) != len(frames):
+        return False
+    by_frame = {}
+    for record in records:
+        if not isinstance(record, dict):
+            return False
+        frame = record.get('frame')
+        if not isinstance(frame, int) or isinstance(frame, bool) or frame in by_frame:
+            return False
+        by_frame[frame] = record
+    if set(by_frame) != set(frames):
+        return False
+    root = Path(output).resolve()
+    diagnostic_root = (root / 'bundle-diagnostics').resolve()
+    expected_phases = {'prepared', 'solved', 'finished'}
+    for frame in frames:
+        record = by_frame[frame]
+        status = record.get('status')
+        reason = record.get('reason')
+        phases = record.get('phases')
+        errors = record.get('errors', [])
+        if not isinstance(errors, list) or errors:
+            return False
+        if status == 'skipped':
+            if not isinstance(reason, str) or not reason.strip():
+                return False
+            if not isinstance(phases, dict):
+                return False
+            if 'prepared' in phases or 'solved' in phases:
+                return False
+        elif status == 'complete':
+            if not isinstance(phases, dict) or set(phases) != expected_phases:
+                return False
+            image_size = record.get('image_size')
+            if (not isinstance(image_size, list) or len(image_size) != 2
+                    or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0
+                           for value in image_size)):
+                return False
+        else:
+            return False
+        if not isinstance(phases, dict):
+            return False
+        for phase, artifact in phases.items():
+            if phase not in expected_phases or not isinstance(artifact, dict):
+                return False
+            relative = artifact.get('path')
+            digest = artifact.get('sha256')
+            if (artifact.get('status') != 'written'
+                    or not isinstance(relative, str)
+                    or not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(char not in '0123456789abcdef' for char in digest)):
+                return False
+            relative_path = Path(relative)
+            if relative_path.is_absolute() or '..' in relative_path.parts:
+                return False
+            path = (diagnostic_root / relative_path).resolve()
+            if not path.is_relative_to(diagnostic_root) or not path.is_file():
+                return False
+            try:
+                if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    return False
+                snapshot = _load_finite_json(path)
+            except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+                return False
+            if not isinstance(snapshot, dict):
+                return False
+            snapshot_frame = snapshot.get('frame')
+            snapshot_phase = snapshot.get('phase')
+            if (snapshot_frame != frame or snapshot_phase != phase):
+                return False
+    return True
+
+
 def reusable_export(report_path, identity):
     """Reuse only exact completed reports with finite poses/maps and intact source."""
     report_path = Path(report_path)
@@ -374,6 +489,7 @@ def reusable_export(report_path, identity):
             return False
         if not _poses_are_so3(output / 'poses.txt', frames):
             return False
+        run = {}
         if identity.get('variant') != 'baseline':
             expected_configuration = current_mapping_configuration(
                 identity['variant'], identity['stereo_depth_policy'],
@@ -421,6 +537,8 @@ def reusable_export(report_path, identity):
                     or len(sparse_preview) > min(vertex_count, 20000)
                     or any(not _finite_vector(point, 3) for point in sparse_preview)):
                 return False
+        if not _bundle_diagnostics_reusable(output, identity, report, run):
+            return False
 
         lost_frames = report.get('lost_frames')
         expected_status = ('completed_with_tracking_loss'
@@ -569,10 +687,21 @@ def main():
                         help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured references with guarded raw-supported stereo geometry')
+    parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
+                        help='Capture immutable local bundle snapshots for selected frame IDs')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
     args=parser.parse_args()
+    bundle_diagnostics_frames = (sorted(args.bundle_diagnostics_frames)
+                                 if args.bundle_diagnostics_frames is not None else [])
+    if args.bundle_diagnostics_frames is not None:
+        if any(frame < 0 for frame in bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(bundle_diagnostics_frames)) != len(bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must not contain duplicates')
+        if 'baseline' in args.variants:
+            parser.error('bundle diagnostics require SharedSlam variants; remove baseline')
     timing_history_paths = [path for group in args.timing_history for path in group]
     if args.profile=='release' and args.feature_cache:parser.error('Release performance must use uncached extraction')
     if args.opencv_threads < 1:parser.error('--opencv-threads must be positive')
@@ -594,6 +723,8 @@ def main():
                'stereo_depth_policy': args.stereo_depth_policy,
                'stereo_pose_arbitration': args.stereo_pose_arbitration,
                'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
+               'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
+               'bundle_diagnostics_frames': bundle_diagnostics_frames,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
                                'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
     try:
@@ -639,6 +770,8 @@ def main():
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
                       'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
+                      'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
+                      'bundle_diagnostics_frames': bundle_diagnostics_frames,
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
@@ -693,6 +826,11 @@ def main():
                                 '--stereo-depth-policy',args.stereo_depth_policy])
                 if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
                 if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
+                if bundle_diagnostics_frames:
+                    command.extend(['--bundle-diagnostics-dir',
+                                    str((folder / 'bundle-diagnostics').resolve()),
+                                    '--bundle-diagnostics-frames',
+                                    *map(str, bundle_diagnostics_frames)])
                 if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
                 if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])

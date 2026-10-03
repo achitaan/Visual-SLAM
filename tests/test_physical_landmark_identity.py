@@ -293,7 +293,7 @@ def test_tracking_rejects_legacy_ids_claiming_one_source_pixel(monkeypatch):
         slam.close()
 
 
-def test_stereo_reference_verification_receives_unique_geometry_rows(monkeypatch):
+def test_stereo_reference_keeps_appearance_aliases_and_unique_geometry_pairs(monkeypatch):
     slam = SharedSlam(K, stereo=stereo_camera())
     try:
         unique_pixels = np.array(
@@ -316,22 +316,217 @@ def test_stereo_reference_verification_receives_unique_geometry_rows(monkeypatch
         slam.map.keyframes[0] = keyframe
         observed = []
 
-        def verify(source, target, matrix, min_inliers):
-            observed.append((source, target))
+        def match(first, second):
+            assert len(first) == len(second) == 21
+            return np.asarray([(20, 20), *[(i, i) for i in range(1, 20)]], int)
+
+        def verify(source, target, matrix, min_inliers, pairs):
+            observed.append((source, target, pairs.copy()))
             return None
 
+        monkeypatch.setattr(slam, "_match", match)
         monkeypatch.setattr(shared_slam_module, "verify_loop", verify)
         slam._keyframe_stereo_reference(
             pixels, descriptors, points, (640, 480), ranked=[(30, 0)]
         )
 
         assert len(observed) == 1
-        source, target = observed[0]
-        assert len(source.pixels) == len(target.pixels) == 20
+        source, target, pairs = observed[0]
+        assert len(source.pixels) == len(target.pixels) == 21
         assert len({tuple(pixel) for pixel in source.pixels}) == 20
         assert len({tuple(pixel) for pixel in target.pixels}) == 20
-        # The persistent/retrieval keyframe still keeps every SIFT row.
+        assert len(pairs) == 20
+        # The otherwise unmatched orientation aliases remain available to the
+        # descriptor matcher and can contribute one physical fit row.
+        assert [20, 20] in pairs.tolist()
         assert len(keyframe.descriptors) == 21
+    finally:
+        slam.close()
+
+
+def test_close_distinct_flow_rays_keep_geometry_and_drop_shared_detector_label():
+    pixels = np.asarray([[100.0, 80.0]], np.float32)
+    candidates = {
+        4: (np.asarray([99.6, 80.0], np.float32), 0),
+        9: (np.asarray([100.4, 80.0], np.float32), 0),
+    }
+
+    collapsed = SharedSlam._collapse_track_candidates(candidates, pixels)
+
+    assert set(collapsed) == {4, 9}
+    assert np.array_equal(collapsed[4][0], candidates[4][0])
+    assert np.array_equal(collapsed[9][0], candidates[9][0])
+    assert collapsed[4][1] == collapsed[9][1] == -1
+
+
+def test_close_flow_rays_clear_labels_across_detector_orientation_aliases():
+    pixels = np.asarray([[100.0, 80.0], [100.0, 80.0]], np.float32)
+    candidates = {
+        4: (np.asarray([99.6, 80.0], np.float32), 0),
+        9: (np.asarray([100.4, 80.0], np.float32), 1),
+    }
+
+    collapsed = SharedSlam._collapse_track_candidates(candidates, pixels)
+
+    assert set(collapsed) == {4, 9}
+    assert collapsed[4][1] == collapsed[9][1] == -1
+
+    slam = SharedSlam(K, stereo=stereo_camera())
+    try:
+        first = slam.map.add_landmark([0.0, 0.0, 5.0], np.ones(128), 0, {})
+        second = slam.map.add_landmark([0.1, 0.0, 5.0], np.zeros(128), 0, {})
+        slam.accepted_tracks = [(first, collapsed[4][0]), (second, collapsed[9][0])]
+        descriptors = np.stack([np.ones(128), np.zeros(128)]).astype(np.float32)
+        points = np.full((2, 3), np.nan)
+        right_u = np.full(2, np.nan)
+
+        keyframe_id = slam._keyframe(
+            0, np.eye(4), pixels, descriptors, points, right_u, {}
+        )
+
+        keyframe = slam.map.keyframes[keyframe_id]
+        assert keyframe.landmark_ids[-2:].tolist() == [first, second]
+        assert np.array_equal(
+            slam.map.landmarks[first].observations[keyframe_id].pixel, candidates[4][0]
+        )
+        assert np.array_equal(
+            slam.map.landmarks[second].observations[keyframe_id].pixel, candidates[9][0]
+        )
+    finally:
+        slam.close()
+
+
+def test_same_actual_flow_pixel_is_ambiguous_even_with_different_detector_rows():
+    pixels = np.asarray([[100.0, 80.0], [101.0, 80.0]], np.float32)
+    actual = np.asarray([100.5, 80.0], np.float32)
+    candidates = {4: (actual, 0), 9: (actual.copy(), 1)}
+
+    assert SharedSlam._collapse_track_candidates(candidates, pixels) == {}
+
+
+def test_relocalization_subset_excludes_legacy_ambiguous_physical_ids(monkeypatch):
+    slam = SharedSlam(K, stereo=stereo_camera(), config=MappingConfig(min_inliers=1))
+    try:
+        pixel = np.asarray([320.0, 240.0], np.float32)
+        descriptor = np.ones(128, np.float32)
+        first = slam.map.add_landmark(
+            [0.0, 0.0, 5.0], descriptor, 0, {0: Observation(pixel.copy())}
+        )
+        second = slam.map.add_landmark(
+            [0.1, 0.0, 5.0], descriptor * 2, 0, {0: Observation(pixel.copy())}
+        )
+        keyframe = MappingKeyframe(
+            0, 0, np.eye(4), np.stack([pixel, pixel]),
+            np.stack([descriptor, descriptor * 2]), np.asarray([first, second]),
+        )
+        keyframe.image_size = (640, 480)
+        slam.map.keyframes[0] = keyframe
+        slam.map.record(np.eye(4), "tracking", 0)
+        monkeypatch.setattr(
+            slam, "_match", lambda *_args, **_kwargs: pytest.fail("ambiguous LM was matched")
+        )
+
+        result, _ = slam._track(
+            np.stack([pixel]), descriptor[None, :], (640, 480),
+            relocalize=True, candidate_ids={first},
+        )
+
+        assert result is None
+    finally:
+        slam.close()
+
+
+def test_legacy_ambiguous_ids_cannot_reenter_through_previous_flow_tracks(monkeypatch):
+    slam = SharedSlam(K, stereo=stereo_camera(), config=MappingConfig(min_inliers=1))
+    try:
+        duplicate_pixel = np.asarray([100.0, 100.0], np.float32)
+        live_pixel = np.asarray([200.0, 200.0], np.float32)
+        descriptors = np.stack([
+            np.zeros(128), np.ones(128), np.full(128, 2.0)
+        ]).astype(np.float32)
+        duplicate_ids = [
+            slam.map.add_landmark(
+                [0.0, 0.0, 5.0], descriptors[i], 0,
+                {0: Observation(duplicate_pixel.copy())},
+            )
+            for i in range(2)
+        ]
+        live_position = np.asarray([-2.4, -0.8, 5.0])
+        live_id = slam.map.add_landmark(
+            live_position, descriptors[2], 0,
+            {0: Observation(live_pixel.copy())},
+        )
+        keyframe = MappingKeyframe(
+            0, 0, np.eye(4), np.stack([duplicate_pixel, duplicate_pixel, live_pixel]),
+            descriptors.copy(), np.asarray([*duplicate_ids, live_id]),
+        )
+        keyframe.image_size = (640, 480)
+        slam.map.keyframes[0] = keyframe
+        slam.map.record(np.eye(4), "tracking", 0)
+        slam.previous_gray = np.zeros((480, 640), np.uint8)
+        slam.current_gray = np.zeros((480, 640), np.uint8)
+        slam.previous_tracks = [
+            (duplicate_ids[0], duplicate_pixel.copy()), (live_id, live_pixel.copy())
+        ]
+        monkeypatch.setattr(slam, "_match", lambda *_args, **_kwargs: np.empty((0, 2), int))
+        flowed_counts = []
+
+        def flow(_previous, _current, old_pixels, new_pixels=None, **_kwargs):
+            flowed_counts.append(len(old_pixels))
+            result = old_pixels if new_pixels is None else new_pixels
+            return result.copy(), np.ones((len(result), 1), np.uint8), None
+
+        monkeypatch.setattr(shared_slam_module.cv, "calcOpticalFlowPyrLK", flow)
+
+        slam._track(np.empty((0, 2), np.float32), np.empty((0, 128), np.float32),
+                    (640, 480))
+
+        assert flowed_counts == [1, 1]
+    finally:
+        slam.close()
+
+
+def test_legacy_conflict_cache_invalidates_on_landmark_ids_and_pixel_content():
+    slam = SharedSlam(K, stereo=stereo_camera())
+    try:
+        pixel = np.asarray([100.0, 80.0], np.float32)
+        first = slam.map.add_landmark(
+            [0.0, 0.0, 5.0], np.ones(128), 0, {0: Observation(pixel.copy())}
+        )
+        second = slam.map.add_landmark(
+            [0.1, 0.0, 5.0], np.zeros(128), 0, {0: Observation(pixel.copy())}
+        )
+        keyframe = MappingKeyframe(
+            0, 0, np.eye(4), np.stack([pixel, pixel]),
+            np.stack([np.ones(128), np.zeros(128)]), np.asarray([first, second]),
+        )
+        slam.map.keyframes[0] = keyframe
+
+        assert slam._landmark_pixel_identity_conflicts([slam.map.landmarks[first]]) == {
+            first, second
+        }
+        keyframe.landmark_ids[1] = -1
+        assert not slam._landmark_pixel_identity_conflicts([slam.map.landmarks[first]])
+
+        keyframe.landmark_ids[1] = second
+        replacement_pixels = np.stack([pixel, [101.0, 80.0]]).astype(np.float32)
+        replacement_pixels.setflags(write=False)
+        keyframe.pixels = replacement_pixels
+        assert not slam._landmark_pixel_identity_conflicts([slam.map.landmarks[first]])
+    finally:
+        slam.close()
+
+
+def test_empty_keyframe_is_safe_for_legacy_conflict_cache():
+    slam = SharedSlam(K, stereo=stereo_camera())
+    try:
+        slam.map.keyframes[0] = MappingKeyframe(
+            0, 0, np.eye(4), np.empty((0, 2), np.float32),
+            np.empty((0, 128), np.float32), np.empty(0, int),
+            depth_points=np.empty((0, 3), float),
+        )
+
+        assert not slam._landmark_pixel_identity_conflicts([])
     finally:
         slam.close()
 

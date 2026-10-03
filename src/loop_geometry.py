@@ -13,6 +13,31 @@ class StereoLoopFrame:
     image_size: tuple
 
 
+def _collapse_physical_pairs(pairs, first_pixels, second_pixels):
+    """Keep one unambiguous correspondence per exact float32 pixel edge."""
+    first_pixels = np.asarray(first_pixels, np.float32)
+    second_pixels = np.asarray(second_pixels, np.float32)
+    if (first_pixels.ndim != 2 or first_pixels.shape[1:] != (2,)
+            or second_pixels.ndim != 2 or second_pixels.shape[1:] != (2,)):
+        return np.empty((0, 2), int)
+    edge_rows, first_targets, second_sources = {}, {}, {}
+    for first, second in pairs:
+        first_pixel, second_pixel = first_pixels[first], second_pixels[second]
+        if not np.isfinite(first_pixel).all() or not np.isfinite(second_pixel).all():
+            continue
+        first_key = tuple(first_pixel.tolist())
+        second_key = tuple(second_pixel.tolist())
+        edge = (first_key, second_key)
+        edge_rows.setdefault(edge, []).append((int(first), int(second)))
+        first_targets.setdefault(first_key, set()).add(second_key)
+        second_sources.setdefault(second_key, set()).add(first_key)
+    ambiguous_first = {key for key, targets in first_targets.items() if len(targets) > 1}
+    ambiguous_second = {key for key, sources in second_sources.items() if len(sources) > 1}
+    selected = [min(rows) for (first_key, second_key), rows in edge_rows.items()
+                if first_key not in ambiguous_first and second_key not in ambiguous_second]
+    return np.asarray(sorted(selected), int).reshape(-1, 2)
+
+
 def extract_loop_frame(vo, index):
     left, right = vo.Images_1[index], vo.Images_2[index]
     # Bound retained descriptors for batch retrieval on memory-limited hosts.
@@ -32,16 +57,35 @@ def extract_loop_frame(vo, index):
     return StereoLoopFrame(np.asarray(pixels, np.float32).reshape(-1, 2), np.asarray(points, np.float32).reshape(-1, 3), desc, (left.shape[1], left.shape[0]))
 
 
-def verify_loop(first, second, matrix, min_inliers=30):
-    """Return Z_ij = inverse(T_wi) T_wj, or None; never uses a trajectory or GT."""
+def verify_loop(first, second, matrix, min_inliers=30, pairs=None):
+    """Return Z_ij = inverse(T_wi) T_wj, without trajectory or GT evidence.
+
+    Optional ``pairs`` are precomputed mutual descriptor rows from the complete
+    appearance arrays. They still pass through the same forward and reverse
+    geometric verification below.
+    """
     if len(first.descriptors) < min_inliers or len(second.descriptors) < min_inliers:
         return None
-    matcher = cv.BFMatcher(cv.NORM_HAMMING) if first.descriptors.dtype == np.uint8 else cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
-    def matches(a, b):
-        return {pair[0].queryIdx: pair[0].trainIdx for pair in matcher.knnMatch(a, b, k=2) if len(pair) == 2 and pair[0].distance < .7 * pair[1].distance}
-    forward = matches(first.descriptors, second.descriptors)
-    backward = matches(second.descriptors, first.descriptors)
-    pairs = [(i, j) for i, j in forward.items() if backward.get(j) == i]
+    if pairs is None:
+        matcher = cv.BFMatcher(cv.NORM_HAMMING) if first.descriptors.dtype == np.uint8 else cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
+        def matches(a, b):
+            return {pair[0].queryIdx: pair[0].trainIdx for pair in matcher.knnMatch(a, b, k=2) if len(pair) == 2 and pair[0].distance < .7 * pair[1].distance}
+        forward = matches(first.descriptors, second.descriptors)
+        backward = matches(second.descriptors, first.descriptors)
+        pairs = [(i, j) for i, j in forward.items() if backward.get(j) == i]
+    else:
+        pairs = np.asarray(pairs)
+        if (pairs.ndim != 2 or pairs.shape[1:] != (2,)
+                or not np.issubdtype(pairs.dtype, np.integer)
+                or np.issubdtype(pairs.dtype, np.bool_)
+                or np.any(pairs < 0)
+                or np.any(pairs[:, 0] >= len(first.descriptors))
+                or np.any(pairs[:, 1] >= len(second.descriptors))
+                or len(np.unique(pairs[:, 0])) != len(pairs)
+                or len(np.unique(pairs[:, 1])) != len(pairs)):
+            return None
+        pairs = np.unique(pairs.astype(int, copy=False), axis=0)
+        pairs = _collapse_physical_pairs(pairs, first.pixels, second.pixels)
     if len(pairs) < min_inliers:
         return None
     a, b = np.array(pairs).T

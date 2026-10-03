@@ -1,0 +1,154 @@
+{
+  "scope": "warmed_descriptor_matching_component_only",
+  "rows": [
+    {
+      "sequence": "04",
+      "image_frames": [
+        0,
+        1
+      ],
+      "image_sha256": [
+        "e2433bcd9d56a643f64d91cd6c30e2887f342ed9202de3bed640dd5a7e506562",
+        "a8e2533aa10317dda8fe7a36eb47598ad6d5244f2fabf8a2186a4a934045a71b"
+      ],
+      "descriptor_shapes": [
+        [
+          1500,
+          128
+        ],
+        [
+          1500,
+          128
+        ]
+      ],
+      "matching_pairs": 650,
+      "all_correspondences_equal": true,
+      "median_milliseconds": {
+        "cpu": 79.43890000751708,
+        "cuda": 7.683450006879866
+      },
+      "component_speedup": 10.338962306826543,
+      "timings_seconds": {
+        "cpu": [
+          0.08796149998670444,
+          0.07609719998436049,
+          0.07760650001000613,
+          0.07947510000667535,
+          0.0794027000083588,
+          0.07994759999564849,
+          0.08302749998983927,
+          0.07693290000315756
+        ],
+        "cuda": [
+          0.007974299980560318,
+          0.007763500005239621,
+          0.008571599988499656,
+          0.0062723000010009855,
+          0.006620900006964803,
+          0.007505499990656972,
+          0.009382699994603172,
+          0.0076034000085201114
+        ]
+      }
+    },
+    {
+      "sequence": "01",
+      "image_frames": [
+        0,
+        1
+      ],
+      "image_sha256": [
+        "6226bbb20d405b20b169225f24d4d4247571b5502288c2a7322c6704f9b54722",
+        "79a201c2f6227b40e44dfb9df131428182985ce1d85a0fa138b7c448aef4cf7b"
+      ],
+      "descriptor_shapes": [
+        [
+          1502,
+          128
+        ],
+        [
+          1500,
+          128
+        ]
+      ],
+      "matching_pairs": 563,
+      "all_correspondences_equal": true,
+      "median_milliseconds": {
+        "cpu": 84.57255001121666,
+        "cuda": 7.255150005221367
+      },
+      "component_speedup": 11.656898885667658,
+      "timings_seconds": {
+        "cpu": [
+          0.09371139999711886,
+          0.08704260000376962,
+          0.08885850000660866,
+          0.09584689998882823,
+          0.07989150000503287,
+          0.07934730002307333,
+          0.0821025000186637,
+          0.08174429999780841
+        ],
+        "cuda": [
+          0.007976099994266406,
+          0.007707999990088865,
+          0.007379500020761043,
+          0.007597999996505678,
+          0.007074399996781722,
+          0.006025499984389171,
+          0.007130799989681691,
+          0.006747100007487461
+        ]
+      }
+    }
+  ],
+  "source_files_sha256": {
+    "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+    "mapping_geometry.py": "00f6e5e896ece1583b3cf067e59a78fbeb559c40b08547dd83c31e4e7dfd34e6"
+  },
+  "cuda_metadata": {
+    "requested": "cuda",
+    "cuda_available": true,
+    "fallback_reason": null,
+    "python_version": "3.12.14",
+    "pytorch_version": "2.7.1+cu126",
+    "cuda_runtime_version": "12.6",
+    "cuda_device_index": 0,
+    "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+    "cuda_device_capability": [
+      7,
+      5
+    ],
+    "cuda_calls": 18,
+    "cpu_calls": 0,
+    "ambiguous_rows_on_cpu": 576,
+    "auto_decisions": {},
+    "peak_cuda_allocated_mb": 18.8154296875,
+    "peak_cuda_reserved_mb": 24.0
+  },
+  "excludes": [
+    "image_loading",
+    "feature_extraction",
+    "runtime_initialization",
+    "tracking",
+    "bundle_adjustment"
+  ],
+  "includes": [
+    "host_device_transfers",
+    "synchronization",
+    "ambiguous_descriptor_CPU_rechecks"
+  ],
+  "opencv_threads": 1,
+  "repetitions": 8,
+  "ordering": "alternating_CPU_GPU",
+  "ground_truth_read": false,
+  "pipeline_speedup_claim": false,
+  "host_background_load_controlled": false,
+  "matching_source_snapshot_commit": "8fd5df0ee438b79932f8a14b5f5f519c19fe7f81",
+  "feature_extractor": {
+    "name": "OpenCV SIFT",
+    "nfeatures": 1500,
+    "other_options": "OpenCV defaults",
+    "ratio": 0.7
+  }
+}

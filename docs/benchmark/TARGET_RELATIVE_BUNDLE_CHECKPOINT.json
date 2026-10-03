@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "status": "synthetic_checks_pass_replay_pending",
+  "source_runtime_fingerprint": "4c2071864e762480618faa13c1044cde9e4038b609664af6cc1167f453e74062",
+  "scope": "target-relative chart with active-augmentation-only tighter LSMR",
+  "backend_tests": {
+    "passed": 435,
+    "skipped": 0,
+    "seconds": 75.57
+  },
+  "focused_tests": {
+    "passed": 24,
+    "seconds": 7.27
+  },
+  "reviewed_local_bundle_sha256": "07c82f02e760b65009df4de9ab53ba47ab3ba986a181817b7ec92fdee5388e1a",
+  "solver_change": {
+    "when": "valid_active_augmentation_only",
+    "outer_max_nfev": 30,
+    "inner_atol": 1e-12,
+    "inner_btol": 1e-12,
+    "inner_maxiter": "max(500, variable_count)",
+    "OFF_empty_rejected_kwargs_unchanged": true
+  },
+  "synthetic_cause": {
+    "earlier_chart_source_sha256": "5bf60355808ffd9214942337875a2f8a4a6012f07caf37a18eafbbea08fc414b",
+    "diagnostic_solver_options_overridden": true,
+    "synthetic_only": true,
+    "dataset_ground_truth_read": false,
+    "modes": [
+      {
+        "mode": "default",
+        "initial_world_error": {
+          "translation_m": 0.09999999999999998,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_world_error": {
+          "translation_m": 0.09966560476113039,
+          "rotation_deg": 1.1922874650273367
+        },
+        "initial_relative_error": {
+          "translation_m": 0.020000000000000084,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_relative_error": {
+          "translation_m": 0.019771314973642155,
+          "rotation_deg": 0.6674914883017566
+        },
+        "augmented_initial_cost": 442.6317110411579,
+        "augmented_final_cost": 139.26924989993944,
+        "solver": {
+          "initial_size": 162,
+          "initial_residual_size": 342,
+          "solver_wall_s": 0.20300000000861473,
+          "nfev": 30,
+          "status": 0,
+          "success": false,
+          "optimality": 241.19436058430946,
+          "gradient_norm": 703.9566053645506,
+          "gradient_max": 241.19436058430946,
+          "scipy_cost": 139.26924989993944,
+          "message": "The maximum number of function evaluations is exceeded.",
+          "all_column_sparsity_max_undeclared_derivative": 0.0,
+          "sparsity_violation_columns": []
+        }
+      },
+      {
+        "mode": "tight10",
+        "initial_world_error": {
+          "translation_m": 0.09999999999999998,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_world_error": {
+          "translation_m": 0.09012603333001112,
+          "rotation_deg": 1.0872363902930038
+        },
+        "initial_relative_error": {
+          "translation_m": 0.020000000000000084,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_relative_error": {
+          "translation_m": 0.015856296130441885,
+          "rotation_deg": 0.5700666859943491
+        },
+        "augmented_initial_cost": 442.6317110411579,
+        "augmented_final_cost": 120.54034251933287,
+        "solver": {
+          "initial_size": 162,
+          "initial_residual_size": 342,
+          "solver_wall_s": 0.1879999999946449,
+          "nfev": 30,
+          "status": 0,
+          "success": false,
+          "optimality": 258.9018968423224,
+          "gradient_norm": 734.2559601122351,
+          "gradient_max": 258.9018968423224,
+          "scipy_cost": 120.54034251933285,
+          "message": "The maximum number of function evaluations is exceeded."
+        }
+      },
+      {
+        "mode": "tight12",
+        "initial_world_error": {
+          "translation_m": 0.09999999999999998,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_world_error": {
+          "translation_m": 1.6218757169225606e-06,
+          "rotation_deg": 1.0688674249505014e-05
+        },
+        "initial_relative_error": {
+          "translation_m": 0.020000000000000084,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_relative_error": {
+          "translation_m": 1.6216498545454755e-06,
+          "rotation_deg": 1.0686316760576315e-05
+        },
+        "augmented_initial_cost": 442.6317110411579,
+        "augmented_final_cost": 1.0659288886131085e-09,
+        "solver": {
+          "initial_size": 162,
+          "initial_residual_size": 342,
+          "solver_wall_s": 0.34400000001187436,
+          "nfev": 22,
+          "status": 1,
+          "success": true,
+          "optimality": 6.566787173712882e-09,
+          "gradient_norm": 1.6483442293338784e-08,
+          "gradient_max": 6.566787173712882e-09,
+          "scipy_cost": 1.0659288886131087e-09,
+          "message": "`gtol` termination condition is satisfied."
+        }
+      },
+      {
+        "mode": "dense",
+        "initial_world_error": {
+          "translation_m": 0.09999999999999998,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_world_error": {
+          "translation_m": 1.6224008097523323e-06,
+          "rotation_deg": 1.0692429371536625e-05
+        },
+        "initial_relative_error": {
+          "translation_m": 0.020000000000000084,
+          "rotation_deg": 2.129772756436739e-17
+        },
+        "final_relative_error": {
+          "translation_m": 1.6224008104960292e-06,
+          "rotation_deg": 1.0692429380027487e-05
+        },
+        "augmented_initial_cost": 442.6317110411579,
+        "augmented_final_cost": 1.0659285092994306e-09,
+        "solver": {
+          "initial_size": 162,
+          "initial_residual_size": 342,
+          "solver_wall_s": 0.9530000000086147,
+          "nfev": 18,
+          "status": 1,
+          "success": true,
+          "optimality": 5.854583538886932e-11,
+          "gradient_norm": 1.699362841188061e-10,
+          "gradient_max": 5.854583538886932e-11,
+          "scipy_cost": 1.0659285092994306e-09,
+          "message": "`gtol` termination condition is satisfied."
+        }
+      }
+    ]
+  },
+  "accuracy_improvement_on_dataset": false,
+  "release_ready": false,
+  "source_or_runtime_mixed_with_prior_results": false
+}

@@ -153,6 +153,8 @@ def _pose_to_params(pose):
 def test_free_source_is_joint_gauge_invariant_has_correct_sparsity_and_commits_solver_pose(monkeypatch):
     state, truth, true_source, landmark_ids = _free_source_case(source_bias=0.1)
     original_source = state.poses[3].copy()
+    original_target = state.keyframes[2].pose.copy()
+    true_relative_source = np.linalg.inv(truth[2]) @ true_source
     calls = []
     provider = _provider(state, truth, true_source, landmark_ids, calls)
     real_solver = bundle.least_squares
@@ -171,41 +173,43 @@ def test_free_source_is_joint_gauge_invariant_has_correct_sparsity_and_commits_s
         baseline_residual = fun(initial)
         assert baseline_residual.shape == (old_rows + 6 * len(landmark_ids),)
 
-        point_offset = payload["parameter_layout"]["point_offset"]
-        point_start = point_offset + 3 * len(selected)
+        chart_start = len(payload["parameter_layout"]["initial_vector"])
+        point_start = chart_start
+        assert len(initial) == chart_start + 3 * len(landmark_ids) + 6
         target_offset = payload["parameter_layout"]["pose_offsets"]["2"]
-        source_offset = len(initial) - 6
+        source_offset = chart_start + 3 * len(landmark_ids)
+        initial_chart_source = _params_to_pose(
+            initial[source_offset:source_offset + 6]
+        )
+        np.testing.assert_allclose(
+            initial_chart_source, np.linalg.inv(original_target) @ original_source,
+            rtol=0., atol=1e-11,
+        )
 
-        # A common rigid transform of the free target, free source, and all
-        # newly introduced points cannot change their image measurements.
+        # T is the world realization of the chart reference. Keeping C and q
+        # fixed while changing T applies a common world transform to the
+        # reconstructed source and singleton points, so pair-only image rows
+        # must remain exactly unchanged.
         common = _pose(-0.35, (0.11, -0.07, 0.045))
         moved = initial.copy()
         moved[target_offset:target_offset + 6] = _pose_to_params(
             common @ _params_to_pose(initial[target_offset:target_offset + 6])
         )
-        moved[source_offset:source_offset + 6] = _pose_to_params(
-            common @ _params_to_pose(initial[source_offset:source_offset + 6])
-        )
-        for index in range(len(landmark_ids)):
-            point_slice = slice(point_start + 3 * index, point_start + 3 * index + 3)
-            moved[point_slice] = common[:3, :3] @ initial[point_slice] + common[:3, 3]
         moved_residual = fun(moved)
-        np.testing.assert_allclose(
-            baseline_residual[old_rows:], moved_residual[old_rows:], rtol=1e-9, atol=1e-8
-        )
+        np.testing.assert_array_equal(baseline_residual[old_rows:], moved_residual[old_rows:])
 
         # Compare central finite differences with the declared row sparsity.
         sparse = kwargs["jac_sparsity"].toarray().astype(bool)
         assert sparse.shape == (len(baseline_residual), len(initial))
-        assert sparse[old_rows:old_rows + 3, source_offset:source_offset + 6].any()
+        assert sparse[old_rows:old_rows + 3, source_offset:source_offset + 6].all()
+        assert sparse[old_rows:old_rows + 3, point_start:point_start + 3].all()
         assert not sparse[old_rows:old_rows + 3, target_offset:target_offset + 6].any()
-        assert sparse[old_rows + 3:old_rows + 6, target_offset:target_offset + 6].any()
+        assert sparse[old_rows + 3:old_rows + 6, point_start:point_start + 3].all()
         assert not sparse[old_rows + 3:old_rows + 6, source_offset:source_offset + 6].any()
+        assert not sparse[old_rows + 3:old_rows + 6, target_offset:target_offset + 6].any()
         target_columns = list(range(target_offset, target_offset + 6))
-        nuisance_columns = (
-            list(range(source_offset, source_offset + 6))
-            + list(range(point_start, point_start + 3 * len(landmark_ids)))
-        )
+        nuisance_columns = (list(range(source_offset, source_offset + 6))
+                            + list(range(point_start, point_start + 3 * len(landmark_ids))))
         jacobian_columns = target_columns + nuisance_columns
         jacobian = np.empty((len(baseline_residual) - old_rows, len(jacobian_columns)))
         for output_column, column in enumerate(jacobian_columns):
@@ -219,11 +223,11 @@ def test_free_source_is_joint_gauge_invariant_has_correct_sparsity_and_commits_s
                 f"undeclared derivative at {column}"
             )
 
-        # After eliminating the independent source camera and every singleton
-        # point, these rows carry no absolute information about target KF 2.
+        # In the chart, pair-only rows have exactly zero target derivatives.
         target_jacobian = jacobian[:, :len(target_columns)]
         source_jacobian = jacobian[:, 6:12]
         point_jacobian = jacobian[:, 12:]
+        np.testing.assert_array_equal(target_jacobian, np.zeros_like(target_jacobian))
         point_left, point_singular, _point_right = np.linalg.svd(
             point_jacobian, full_matrices=False
         )
@@ -246,11 +250,9 @@ def test_free_source_is_joint_gauge_invariant_has_correct_sparsity_and_commits_s
             left[:, observable].T @ target_jacobian
         )
         target_information = target_jacobian.T @ target_jacobian
-        assert np.linalg.norm(target_information, ord="fro") > 1.0
+        assert np.linalg.norm(target_information, ord="fro") == 0.0
         marginalized_information = projected.T @ projected
-        normalized_schur = (np.linalg.norm(marginalized_information, ord="fro")
-                            / np.linalg.norm(target_information, ord="fro"))
-        assert normalized_schur < 1e-6
+        assert np.linalg.norm(marginalized_information, ord="fro") == 0.0
 
         result = real_solver(fun, initial, **kwargs)
         solver_capture["x"] = result.x.copy()
@@ -284,26 +286,61 @@ def test_free_source_is_joint_gauge_invariant_has_correct_sparsity_and_commits_s
     assert summary["unique_image_rows_added"] == 2 * len(landmark_ids)
     assert summary["reused_selected_points"] == 0
     assert not set(summary["factor_landmark_ids"]).intersection(range(24))
-    source_offset = summary["intermediate_pose_offsets"]["3"]
-    candidate_source = _params_to_pose(solver_capture["x"][source_offset:source_offset + 6])
+    chart = summary.get("optimizer_parameter_chart", summary)
+    source_offset = chart["target_relative_camera_offsets"]["3"]
+    target_offset = prepared["payload"]["parameter_layout"]["pose_offsets"]["2"]
+    candidate_target = _params_to_pose(
+        solver_capture["x"][target_offset:target_offset + 6]
+    )
+    candidate_chart_source = _params_to_pose(
+        solver_capture["x"][source_offset:source_offset + 6]
+    )
+    candidate_source = candidate_target @ candidate_chart_source
     np.testing.assert_allclose(state.poses[3], candidate_source, rtol=0., atol=1e-12)
     np.testing.assert_allclose(
         state.relative_poses[3],
         np.linalg.inv(state.keyframes[state.pose_anchors[3]].pose) @ candidate_source,
         rtol=0., atol=1e-12,
     )
+    assert state.pose_anchors[3] == 0
+    assert chart["target_relative_camera_reference_keyframes"]["3"] == 2
+    assert not np.allclose(state.relative_poses[3], candidate_chart_source)
     np.testing.assert_array_equal(state.keyframes[0].pose, original_origin)
     assert 0 in report["fixed_keyframes"]
     assert np.isfinite(state.poses[3]).all()
     assert not np.array_equal(state.poses[3], original_source)
-    assert np.linalg.norm(state.poses[3][:3, 3] - true_source[:3, 3]) < (
-        0.5 * np.linalg.norm(original_source[:3, 3] - true_source[:3, 3])
+    final_relative_source = np.linalg.inv(state.keyframes[2].pose) @ state.poses[3]
+    relative_error = np.linalg.inv(true_relative_source) @ final_relative_source
+    initial_relative_error = np.linalg.inv(true_relative_source) @ (
+        np.linalg.inv(original_target) @ original_source
     )
-    for index, landmark_id in enumerate(landmark_ids):
-        point_slice = slice(point_start_from_payload(prepared["payload"]) + 3 * index,
-                            point_start_from_payload(prepared["payload"]) + 3 * index + 3)
+    initial_world_error = np.linalg.norm(original_source[:3, 3] - true_source[:3, 3])
+    final_world_error = np.linalg.norm(state.poses[3][:3, 3] - true_source[:3, 3])
+    initial_chart_rotation_error_deg = np.degrees(
+        Rotation.from_matrix(initial_relative_error[:3, :3]).magnitude()
+    )
+    final_chart_rotation_error_deg = np.degrees(
+        Rotation.from_matrix(relative_error[:3, :3]).magnitude()
+    )
+    assert final_world_error < 0.5 * initial_world_error, (
+        "synthetic source-pose recovery regressed under the chart: "
+        f"world translation error {initial_world_error:.6f}m -> {final_world_error:.6f}m; "
+        f"relative C translation error "
+        f"{np.linalg.norm(initial_relative_error[:3, 3]):.6f}m -> "
+        f"{np.linalg.norm(relative_error[:3, 3]):.6f}m; "
+        f"relative C rotation error {initial_chart_rotation_error_deg:.6f}deg -> "
+        f"{final_chart_rotation_error_deg:.6f}deg"
+    )
+    assert np.linalg.norm(relative_error[:3, 3]) < 1e-3
+    assert final_chart_rotation_error_deg < 0.01
+    assert summary["augmented_objective_reduced"] is True
+    assert summary["affected_objective_reduced"] is True
+    for landmark_id in landmark_ids:
+        point_offset = chart["target_relative_point_offsets"][str(landmark_id)]
+        chart_point = solver_capture["x"][point_offset:point_offset + 3]
+        expected_world_point = (candidate_target @ np.r_[chart_point, 1.0])[:3]
         np.testing.assert_allclose(
-            state.landmarks[landmark_id].position, solver_capture["x"][point_slice],
+            state.landmarks[landmark_id].position, expected_world_point,
             rtol=0., atol=1e-11,
         )
 
@@ -326,12 +363,24 @@ def test_same_anchor_inbound_and_outbound_motion_edges_reject_candidate_atomical
     # known synthetic image geometry. Both motion records still match the
     # recorded pre-solve trajectory, so these same-anchor edges must veto it.
     real_solver = bundle.least_squares
+    prepared = {}
+    provider = _provider(state, truth, true_source, landmark_ids)
+
+    def capture_provider(payload):
+        if payload.get("training_factor_phase", "prepare") == "prepare":
+            prepared["payload"] = payload
+        return provider(payload)
 
     def candidate_crossing_motion_gate(fun, initial, **kwargs):
         result = real_solver(fun, initial, **kwargs)
         candidate = result.x.copy()
-        candidate[-6:-3] = Rotation.from_matrix(true_source[:3, :3]).as_rotvec()
-        candidate[-3:] = true_source[:3, 3]
+        layout = prepared["payload"]["parameter_layout"]
+        target_offset = layout["pose_offsets"]["2"]
+        chart_start = len(layout["initial_vector"])
+        source_offset = chart_start + 3 * len(landmark_ids)
+        target = _params_to_pose(candidate[target_offset:target_offset + 6])
+        chart_source = np.linalg.inv(target) @ true_source
+        candidate[source_offset:source_offset + 6] = _pose_to_params(chart_source)
         return SimpleNamespace(
             x=candidate,
             nfev=result.nfev,
@@ -345,7 +394,7 @@ def test_same_anchor_inbound_and_outbound_motion_edges_reject_candidate_atomical
     monkeypatch.setattr(bundle, "least_squares", candidate_crossing_motion_gate)
     report = local_bundle_adjustment(
         state, MATRIX, BASELINE, window=3, max_landmarks=40, disparity_offset=OFFSET,
-        training_factor_provider=_provider(state, truth, true_source, landmark_ids),
+        training_factor_provider=capture_provider,
     )
 
     assert report["applied"] is False

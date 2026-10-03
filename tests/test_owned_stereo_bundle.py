@@ -63,27 +63,30 @@ def _provider_for(state, truth, single_id, calls, *, duplicate=False, fail_valid
                         if fail_validate else {"status": "validated", "reason": None})
         selected = payload["selection"]["selected_landmarks"]
         selected_item = next(item for item in selected if (
-            (state.landmarks[int(item["landmark_id"])].observations[1].right_u is None)
+            (state.landmarks[int(item["landmark_id"])].observations[2].right_u is None)
             if mono_collision else
-            (state.landmarks[int(item["landmark_id"])].observations[1].right_u is not None)
+            (state.landmarks[int(item["landmark_id"])].observations[2].right_u is not None)
         ))
         selected_id = int(selected_item["landmark_id"])
         selected_point = np.asarray(selected_item["initial_world_position"], float)
-        source_obs = state.landmarks[selected_id].observations[1]
-        source_pose = state.poses[1].copy()
-        target_pose = state.poses[3].copy()
+        target_obs = state.landmarks[selected_id].observations[2]
+        source_true_pose = truth[1]
+        source_pixel, source_depth = project(selected_point[None], source_true_pose, MATRIX)
+        source_right = right_pixel(source_pixel[0, 0], source_depth[0],
+                                   MATRIX[0, 0], BASELINE, OFFSET)
         target_pixel, target_depth = project(selected_point[None], truth[2], MATRIX)
         target_right = right_pixel(target_pixel[0, 0], target_depth[0],
                                    MATRIX[0, 0], BASELINE, OFFSET)
         first = _factor(
-            source_frame=1, target_frame=3, source_anchor=1, target_anchor=2,
-            source_pose=source_pose, target_pose=target_pose,
-            source_anchor_pose=state.keyframes[1].pose.copy(),
+            source_frame=3, target_frame=2, source_anchor=2, target_anchor=2,
+            source_pose=state.poses[3].copy(), target_pose=state.poses[2].copy(),
+            source_anchor_pose=state.keyframes[2].pose.copy(),
             target_anchor_pose=state.keyframes[2].pose.copy(),
-            source_pixel=source_obs.pixel, target_pixel=target_pixel[0],
-            source_right=(target_right if mono_collision else source_obs.right_u), target_right=target_right,
-            landmark_id=selected_id, source_landmark_id=selected_id,
-            target_landmark_id=-1, source_owned=True, target_owned=False,
+            source_pixel=source_pixel[0], target_pixel=target_obs.pixel,
+            source_right=float(source_right),
+            target_right=(target_right if mono_collision else target_obs.right_u),
+            landmark_id=selected_id, source_landmark_id=-1,
+            target_landmark_id=selected_id, source_owned=False, target_owned=True,
             point=selected_point, epoch=(state.revision, state.geometry_revision),
         )
 
@@ -94,9 +97,9 @@ def _provider_for(state, truth, single_id, calls, *, duplicate=False, fail_valid
                                 MATRIX[0, 0], BASELINE, OFFSET)
         target_obs = singleton.observations[2]
         second = _factor(
-            source_frame=1, target_frame=2, source_anchor=1, target_anchor=2,
-            source_pose=state.poses[1].copy(), target_pose=state.poses[2].copy(),
-            source_anchor_pose=state.keyframes[1].pose.copy(),
+            source_frame=3, target_frame=2, source_anchor=2, target_anchor=2,
+            source_pose=state.poses[3].copy(), target_pose=state.poses[2].copy(),
+            source_anchor_pose=state.keyframes[2].pose.copy(),
             target_anchor_pose=state.keyframes[2].pose.copy(),
             source_pixel=src_pixel[0], target_pixel=target_obs.pixel,
             source_right=src_right, target_right=target_obs.right_u,
@@ -161,8 +164,13 @@ def test_optimized_single_view_position_is_applied_once_not_propagated_again(mon
         training_factor_provider=_provider_for(state, truth, single_id, calls),
     )
     assert report["applied"] is True
-    point_limit = report['owned_stereo_image_bundle']['point_limit']
-    np.testing.assert_allclose(state.landmarks[single_id].position, candidate["x"][point_limit-3:point_limit],
+    summary = report["owned_stereo_image_bundle"]
+    chart = summary.get("optimizer_parameter_chart", summary)
+    point_offset = chart["target_relative_point_offsets"][str(single_id)]
+    reference = chart["target_relative_point_reference_keyframes"][str(single_id)]
+    q = candidate["x"][point_offset:point_offset + 3]
+    expected_world_point = (state.keyframes[int(reference)].pose @ np.r_[q, 1.0])[:3]
+    np.testing.assert_allclose(state.landmarks[single_id].position, expected_world_point,
                                rtol=0., atol=1e-12)
 
 
@@ -243,6 +251,9 @@ def test_augmented_improvement_cannot_override_worsened_original_objective(monke
         phase = payload.get("training_factor_phase", "prepare")
         if phase == "validate":
             return provider(payload)
+        old_row_count["original_variable_count"] = len(
+            payload["parameter_layout"]["initial_vector"]
+        )
         old_row_count["rows"] = (
             sum(int(row["dimensions"]) for row in payload["selected_observations"])
             + sum(int(row["dimensions"])
@@ -251,9 +262,9 @@ def test_augmented_improvement_cannot_override_worsened_original_objective(monke
         factors, report = provider(payload)
         biased = factors[1]
         source_pixel = biased.source_pixel.copy()
-        source_pixel[0] -= 30.
+        source_pixel[0] += 30.
         biased = replace(biased, source_pixel=source_pixel,
-                         source_right_u=biased.source_right_u - 30.)
+                         source_right_u=biased.source_right_u + 30.)
         return (factors[0], biased), report
 
     def huber_cost(values):
@@ -263,19 +274,29 @@ def test_augmented_improvement_cannot_override_worsened_original_objective(monke
 
     def adversarial_solver(fun, initial, **kwargs):
         old_count = old_row_count["rows"]
+        source_offset = old_row_count["original_variable_count"] + 3
         at_start = fun(initial)
         old_start = huber_cost(at_start[:old_count])
         full_start = huber_cost(at_start)
-        # Camera 1 is the first free pose; world-x translation is parameter +3.
-        offset = 3
         candidate = None
-        for distance in np.linspace(1e-5, .001, 200):
-            trial = initial.copy()
-            trial[offset] += distance
-            residuals = fun(trial)
-            if (huber_cost(residuals[:old_count]) > old_start + 1e-8
-                    and huber_cost(residuals) < full_start - 1e-8):
-                candidate = trial
+        # Move the relative source camera toward the deliberately biased
+        # source rows, while nudging an original BA camera enough to worsen
+        # the ordinary objective.
+        for source_shift in np.linspace(-.01, -.80, 80):
+            chart_trial = initial.copy()
+            chart_trial[source_offset + 3] += source_shift
+            chart_residuals = fun(chart_trial)
+            if huber_cost(chart_residuals) >= full_start - 1e-8:
+                continue
+            for distance in np.linspace(1e-5, .001, 200):
+                trial = chart_trial.copy()
+                trial[3] += distance  # First free keyframe's world-x parameter.
+                residuals = fun(trial)
+                if (huber_cost(residuals[:old_count]) > old_start + 1e-8
+                        and huber_cost(residuals) < full_start - 1e-8):
+                    candidate = trial
+                    break
+            if candidate is not None:
                 break
         assert candidate is not None, "fixture must expose the independent original-cost veto"
         return SimpleNamespace(x=candidate, nfev=1, success=True, status=1,

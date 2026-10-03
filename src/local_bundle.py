@@ -334,6 +334,11 @@ def local_bundle_adjustment(
 
     point_limit = len(initial)
     intermediate_pose_offsets = {}
+    intermediate_reference_keyframes = {}
+    target_relative_point_offsets = {}
+    target_relative_point_reference_keyframes = {}
+    extra_index = {}
+    extra_ids = []
     frame_to_keyframe = (
         {frame: key for key, frame in diagnostic_frame_ids.items()}
         if provider_enabled else {}
@@ -344,7 +349,16 @@ def local_bundle_adjustment(
         for k, offset in pose_offset.items():
             poses[k][:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
             poses[k][:3, 3] = x[offset + 3 : offset + 6]
-        return poses, x[point_offset:point_limit].reshape(-1, 3)
+        vector_points = x[point_offset:point_limit].reshape(-1, 3)
+        if not target_relative_point_offsets:
+            return poses, vector_points
+        points = vector_points.copy()
+        for landmark_id, offset in target_relative_point_offsets.items():
+            reference_keyframe = target_relative_point_reference_keyframes[landmark_id]
+            target_pose = poses[reference_keyframe]
+            q = x[offset:offset + 3]
+            points[extra_index[landmark_id]] = target_pose[:3, :3] @ q + target_pose[:3, 3]
+        return poses, points
 
     def frame_pose_for(x, frame_id, poses):
         """One camera accessor for image residuals, guards and atomic commit."""
@@ -352,10 +366,11 @@ def local_bundle_adjustment(
             return poses[frame_to_keyframe[frame_id]]
         offset = intermediate_pose_offsets.get(frame_id)
         if offset is not None:
-            pose = np.eye(4)
-            pose[:3, :3] = Rotation.from_rotvec(x[offset:offset + 3]).as_matrix()
-            pose[:3, 3] = x[offset + 3:offset + 6]
-            return pose
+            relative = np.eye(4)
+            relative[:3, :3] = Rotation.from_rotvec(x[offset:offset + 3]).as_matrix()
+            relative[:3, 3] = x[offset + 3:offset + 6]
+            reference_keyframe = intermediate_reference_keyframes[frame_id]
+            return poses[reference_keyframe] @ relative
         pose = frame_pose_snapshot[frame_id]
         anchor = frame_anchor_snapshot[frame_id]
         return (poses[anchor] @ np.linalg.inv(base[anchor]) @ pose
@@ -443,6 +458,28 @@ def local_bundle_adjustment(
         world = all_points[rows["point_indices"]]
         delta = world - endpoint_poses[:, :3, 3]
         camera_points = np.einsum("ni,nij->nj", delta, endpoint_poses[:, :3, :3])
+        # Eligible singleton tracks use q=T^-1 P and C=T^-1 S directly. This
+        # makes target-row residuals depend only on q and source-row residuals
+        # only on (C,q), without numerically cancelling a free T perturbation.
+        singleton_rows = rows["target_relative_point_mask"]
+        if np.any(singleton_rows):
+            row_ids = np.flatnonzero(singleton_rows)
+            q_values = np.empty((len(row_ids), 3), dtype=float)
+            point_indices = rows["point_indices"][row_ids]
+            for index, point_index in enumerate(point_indices):
+                q_offset = point_offset + 3 * int(point_index)
+                q_values[index] = x[q_offset:q_offset + 3]
+            target_rows = rows["row_is_target"][row_ids]
+            camera_points[row_ids[target_rows]] = q_values[target_rows]
+            source_row_ids = row_ids[~target_rows]
+            source_q = q_values[~target_rows]
+            for frame_id in np.unique(rows["frame_ids"][source_row_ids]):
+                selected_rows = source_row_ids[rows["frame_ids"][source_row_ids] == frame_id]
+                offset = intermediate_pose_offsets[int(frame_id)]
+                relative_rotation = Rotation.from_rotvec(x[offset:offset + 3]).as_matrix()
+                relative_translation = x[offset + 3:offset + 6]
+                local = source_q[rows["frame_ids"][source_row_ids] == frame_id]
+                camera_points[selected_rows] = (local - relative_translation) @ relative_rotation
         z = camera_points[:, 2]
         homogeneous = camera_points @ matrix.T
         projected = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
@@ -626,15 +663,6 @@ def local_bundle_adjustment(
         )
         prepared_payload["input_valid"] = not invalid_prepared_fields
         prepared_payload["invalid_fields"] = invalid_prepared_fields
-        if diagnostics_enabled:
-            try:
-                emit_diagnostic("prepared", prepared_payload)
-            except Exception as error:
-                diagnostic_errors.append({
-                    "phase": "prepared",
-                    "error_type": type(error).__name__,
-                })
-
     original_variable_count = len(initial)
     original_pattern = pattern
     original_initial = initial.copy()
@@ -703,6 +731,11 @@ def local_bundle_adjustment(
                 candidate_rows = []
                 seen_rows = {}
                 factor_ids = set()
+                singleton_reference_keyframes = {}
+                source_reference_keyframes = {}
+                single_observations_by_id = {}
+                for item in single_view_observation_rows:
+                    single_observations_by_id.setdefault(int(item["landmark_id"]), []).append(item)
                 for factor in factors:
                     if not isinstance(factor, StereoTrainingFactor):
                         raise ValueError("invalid_training_factor_type")
@@ -724,6 +757,9 @@ def local_bundle_adjustment(
                                         len(frame_anchor_snapshot))
                            for frame in (factor.source_frame, factor.target_frame)):
                         raise ValueError('training_factor_frame_snapshot_missing')
+                    target_keyframe = frame_to_keyframe.get(int(factor.target_frame))
+                    if target_keyframe is None:
+                        raise ValueError("target_relative_reference_must_be_keyframe")
                     for frame_id, anchor_id, frozen_pose, frozen_anchor, status in (
                         (factor.source_frame, factor.source_anchor, factor.source_pose,
                          factor.source_anchor_pose, frame_status_snapshot[factor.source_frame]),
@@ -756,14 +792,31 @@ def local_bundle_adjustment(
                         point_index = None
                         point_initial = single_by_id[ident][1]
                         used_single_ids.add(ident)
+                        observations = single_observations_by_id.get(ident, [])
+                        if (len(observations) != 1
+                                or single_by_id[ident][0] != target_keyframe
+                                or int(observations[0]["keyframe_id"]) != target_keyframe
+                                or int(observations[0]["frame_id"]) != int(factor.target_frame)):
+                            raise ValueError("singleton_has_non_target_observation")
+                        if int(factor.source_frame) in frame_to_keyframe:
+                            raise ValueError("unsupported_target_relative_singleton_source")
+                        prior_reference = singleton_reference_keyframes.get(ident)
+                        if prior_reference is not None and prior_reference != target_keyframe:
+                            raise ValueError("ambiguous_target_relative_singleton_reference")
+                        singleton_reference_keyframes[ident] = target_keyframe
+                    if int(factor.source_frame) not in frame_to_keyframe:
+                        prior_reference = source_reference_keyframes.get(int(factor.source_frame))
+                        if prior_reference is not None and prior_reference != target_keyframe:
+                            raise ValueError("conflicting_target_relative_source_reference")
+                        source_reference_keyframes[int(factor.source_frame)] = target_keyframe
                     if not np.array_equal(point_initial, factor.point_initial):
                         raise ValueError("training_factor_point_snapshot_mismatch")
                     factor_ids.add(ident)
-                    for frame_id, anchor_id, relative, pixel, right_value in (
-                        (factor.source_frame, factor.source_anchor, factor.source_anchor_relative,
-                         factor.source_pixel, factor.source_right_u),
-                        (factor.target_frame, factor.target_anchor, factor.target_anchor_relative,
-                         factor.target_pixel, factor.target_right_u),
+                    for role, frame_id, anchor_id, relative, pixel, right_value in (
+                        ("source", factor.source_frame, factor.source_anchor,
+                         factor.source_anchor_relative, factor.source_pixel, factor.source_right_u),
+                        ("target", factor.target_frame, factor.target_anchor,
+                         factor.target_anchor_relative, factor.target_pixel, factor.target_right_u),
                     ):
                         if frame_id in frame_to_keyframe:
                             actual_keyframe = frame_to_keyframe[frame_id]
@@ -789,15 +842,23 @@ def local_bundle_adjustment(
                             # An existing owner must be one of the exact selected or singleton rows.
                             raise ValueError("training_factor_existing_observation_not_in_bundle")
                         row_key = (frame_id, tuple(key[1]), right_key)
-                        value = (ident, int(anchor_id), tuple(np.asarray(relative).ravel().tolist()))
+                        value = (ident, int(anchor_id), tuple(np.asarray(relative).ravel().tolist()),
+                                 int(target_keyframe))
                         if row_key in seen_rows:
                             if seen_rows[row_key] != value:
                                 raise ValueError("ambiguous_training_physical_row")
                             continue
                         seen_rows[row_key] = value
-                        candidate_rows.append((ident, int(anchor_id), np.asarray(relative).copy(),
-                                               np.asarray(pixel, dtype=float).copy(), float(right_value),
-                                               int(frame_id)))
+                        candidate_rows.append({
+                            "ident": ident,
+                            "anchor_id": int(anchor_id),
+                            "relative_pose": np.asarray(relative).copy(),
+                            "pixel": np.asarray(pixel, dtype=float).copy(),
+                            "right_u": float(right_value),
+                            "frame_id": int(frame_id),
+                            "role": role,
+                            "reference_keyframe_id": int(target_keyframe),
+                        })
                 if not candidate_rows:
                     raise ValueError("no_new_owned_image_rows")
                 extra_ids = sorted(used_single_ids)
@@ -806,15 +867,26 @@ def local_bundle_adjustment(
                 old_rows = int(np.sum(dimensions) + np.sum(held_dimensions))
                 rows = {
                     "point_indices": np.asarray([
-                        (selected_by_id[ident] if ident in selected_by_id else extra_index[ident])
-                        for ident, *_ in candidate_rows], dtype=np.intp),
-                    "anchor_ids": np.asarray([row[1] for row in candidate_rows], dtype=np.intp),
-                    "relative_poses": np.asarray([row[2] for row in candidate_rows], dtype=float),
-                    "pixels": np.asarray([row[3] for row in candidate_rows], dtype=float),
-                    "right_u": np.asarray([row[4] for row in candidate_rows], dtype=float),
-                    "frame_ids": np.asarray([row[5] for row in candidate_rows], dtype=np.intp),
+                        (selected_by_id[row["ident"]] if row["ident"] in selected_by_id
+                         else extra_index[row["ident"]])
+                        for row in candidate_rows], dtype=np.intp),
+                    "anchor_ids": np.asarray([row["anchor_id"] for row in candidate_rows], dtype=np.intp),
+                    "relative_poses": np.asarray([row["relative_pose"] for row in candidate_rows], dtype=float),
+                    "pixels": np.asarray([row["pixel"] for row in candidate_rows], dtype=float),
+                    "right_u": np.asarray([row["right_u"] for row in candidate_rows], dtype=float),
+                    "frame_ids": np.asarray([row["frame_id"] for row in candidate_rows], dtype=np.intp),
+                    "row_is_target": np.asarray([row["role"] == "target" for row in candidate_rows], dtype=bool),
+                    "reference_keyframe_ids": np.asarray(
+                        [row["reference_keyframe_id"] for row in candidate_rows], dtype=np.intp),
+                    "target_relative_point_mask": np.asarray(
+                        [row["ident"] in single_by_id for row in candidate_rows], dtype=bool),
                 }
-                extra_initial = np.asarray([single_by_id[ident][1] for ident in extra_ids], dtype=float).reshape(-1)
+                target_relative_point_reference_keyframes = dict(singleton_reference_keyframes)
+                extra_initial = np.asarray([
+                    base[target_relative_point_reference_keyframes[ident]][:3, :3].T
+                    @ (single_by_id[ident][1] - base[target_relative_point_reference_keyframes[ident]][:3, 3])
+                    for ident in extra_ids
+                ], dtype=float).reshape(-1)
                 if len(extra_initial):
                     augmented_initial = np.r_[initial, extra_initial]
                     augmented_scale = np.r_[variable_scale, np.full(len(extra_initial), length_scale)]
@@ -824,12 +896,14 @@ def local_bundle_adjustment(
                 # A non-keyframe image is a camera variable, not its anchor
                 # multiplied by a supposedly exact accumulated motion. Reuse
                 # true keyframe variables and optimize intermediate poses freely.
-                intermediate_frames = sorted(set(rows['frame_ids'].tolist()) - set(frame_to_keyframe))
+                intermediate_frames = sorted(source_reference_keyframes)
+                intermediate_reference_keyframes = dict(source_reference_keyframes)
                 # Added cameras/points must connect to the already anchored
                 # visual graph. Never hide an orphan SE(3) gauge by attaching a
                 # camera to its recorded anchor or adding an artificial prior.
                 image_neighbors = {}
-                for ident, _anchor, _relative, _pixel, _right, frame_id in candidate_rows:
+                for row in candidate_rows:
+                    ident, frame_id = row["ident"], row["frame_id"]
                     camera_node, point_node = ('frame', frame_id), ('point', ident)
                     image_neighbors.setdefault(camera_node, set()).add(point_node)
                     image_neighbors.setdefault(point_node, set()).add(camera_node)
@@ -847,24 +921,52 @@ def local_bundle_adjustment(
                 intermediate_offsets = {}
                 augmented_point_limit = len(augmented_initial)
                 for frame_id in intermediate_frames:
-                    pose = frame_pose_snapshot[frame_id]
+                    reference_keyframe = intermediate_reference_keyframes[frame_id]
+                    relative_pose = np.linalg.inv(base[reference_keyframe]) @ frame_pose_snapshot[frame_id]
                     intermediate_offsets[frame_id] = len(augmented_initial)
                     augmented_initial = np.r_[augmented_initial,
-                        Rotation.from_matrix(pose[:3, :3]).as_rotvec(), pose[:3, 3]]
+                        Rotation.from_matrix(relative_pose[:3, :3]).as_rotvec(), relative_pose[:3, 3]]
                     augmented_scale = np.r_[augmented_scale,
                         1., 1., 1., length_scale, length_scale, length_scale]
                 augmented_pattern = lil_matrix((old_rows + 3 * len(candidate_rows), len(augmented_initial)), dtype=int)
                 augmented_pattern[:old_rows, :original_variable_count] = original_pattern
                 row = old_rows
-                for point_index, frame_id in zip(rows["point_indices"], rows["frame_ids"]):
-                    camera_offset = (pose_offset.get(frame_to_keyframe[int(frame_id)])
-                                     if int(frame_id) in frame_to_keyframe
-                                     else intermediate_offsets[int(frame_id)])
-                    if camera_offset is not None:
+                target_relative_point_offsets = {
+                    ident: point_offset + 3 * extra_index[ident]
+                    for ident in extra_ids
+                }
+                for candidate_index, (point_index, frame_id) in enumerate(
+                        zip(rows["point_indices"], rows["frame_ids"])):
+                    is_singleton = bool(rows["target_relative_point_mask"][candidate_index])
+                    is_target = bool(rows["row_is_target"][candidate_index])
+                    reference_keyframe = int(rows["reference_keyframe_ids"][candidate_index])
+                    if is_singleton:
+                        # A target singleton row is h(q); its free target pose
+                        # has exactly no dependency. Its source row is h(C^-1q).
+                        if not is_target:
+                            camera_offset = intermediate_offsets.get(int(frame_id))
+                            if camera_offset is None:
+                                raise ValueError("unsupported_target_relative_singleton_source")
+                            augmented_pattern[row:row + 3, camera_offset:camera_offset + 6] = 1
+                    elif int(frame_id) in frame_to_keyframe:
+                        camera_offset = pose_offset.get(frame_to_keyframe[int(frame_id)])
+                        if camera_offset is not None:
+                            augmented_pattern[row:row + 3, camera_offset:camera_offset + 6] = 1
+                    else:
+                        # Selected shared world points preserve all three
+                        # dependencies: reference T, free relative camera C, P.
+                        camera_offset = intermediate_offsets.get(int(frame_id))
+                        if camera_offset is None:
+                            raise ValueError("unsupported_target_relative_shared_source")
                         augmented_pattern[row:row + 3, camera_offset:camera_offset + 6] = 1
+                        reference_offset = pose_offset.get(reference_keyframe)
+                        if reference_offset is not None:
+                            augmented_pattern[row:row + 3, reference_offset:reference_offset + 6] = 1
                     start = point_offset + 3 * int(point_index)
                     augmented_pattern[row:row + 3, start:start + 3] = 1
                     row += 3
+                for ident, point_index in extra_index.items():
+                    target_relative_point_offsets[ident] = point_offset + 3 * point_index
                 initial = augmented_initial
                 variable_scale = augmented_scale
                 pattern = augmented_pattern
@@ -880,9 +982,19 @@ def local_bundle_adjustment(
                     "factor_landmark_ids": sorted(factor_ids),
                     "physical_row_identity": "exact_image_frame_float32_pixel_right_u",
                     "heldout_validation_claim": False,
-                    "intermediate_camera_model": "free_pose_no_anchor_prior",
+                    "coordinate_chart": "target_relative_intermediate_and_singleton_v1",
+                    "intermediate_camera_model": "target_relative_C_equals_T_inverse_S_no_anchor_prior",
                     "optimized_intermediate_frames": intermediate_frames,
                     "intermediate_pose_offsets": intermediate_offsets,
+                    "target_relative_camera_offsets": intermediate_offsets,
+                    "target_relative_camera_reference_keyframes": intermediate_reference_keyframes,
+                    "target_relative_point_offsets": target_relative_point_offsets,
+                    "target_relative_point_reference_keyframes": target_relative_point_reference_keyframes,
+                    "target_relative_point_initial_values": {
+                        str(ident): _diagnostic_array(augmented_initial[
+                            target_relative_point_offsets[ident]:target_relative_point_offsets[ident] + 3
+                        ]) for ident in extra_ids
+                    },
                     "point_limit": point_limit,
                 })
         except Exception as error:
@@ -892,10 +1004,66 @@ def local_bundle_adjustment(
             pattern = original_pattern
             point_limit = original_variable_count
             intermediate_pose_offsets = {}
+            intermediate_reference_keyframes = {}
+            target_relative_point_offsets = {}
+            target_relative_point_reference_keyframes = {}
+            extra_index = {}
+            extra_ids = []
             training_bundle_summary.update({
                 "status": "rejected", "reason": str(error) or type(error).__name__,
                 "selected_factors": 0, "unique_image_rows_added": 0,
             })
+
+    if diagnostics_enabled and prepared_payload is not None:
+        layout = prepared_payload["parameter_layout"]
+        if owned_training_rows is not None:
+            chart_layout = {
+                "coordinate_chart": "target_relative_intermediate_and_singleton_v1",
+                "free_keyframe_pose_chart": "camera_to_world_rotvec_then_translation",
+                "selected_point_chart": "world_xyz",
+                "singleton_point_chart": "target_camera_xyz_q_equals_T_inverse_P",
+                "intermediate_camera_chart": "source_camera_to_target_camera_C_equals_T_inverse_S",
+                "original_variable_count": int(original_variable_count),
+                "free_keyframe_pose_offsets": {
+                    str(key): int(offset) for key, offset in pose_offset.items()
+                },
+                "world_selected_point_offset": int(point_offset),
+                "world_selected_point_count": int(len(landmarks)),
+                "point_limit": int(point_limit),
+                "target_relative_point_offsets": {
+                    str(ident): int(offset)
+                    for ident, offset in target_relative_point_offsets.items()
+                },
+                "target_relative_point_reference_keyframes": {
+                    str(ident): int(keyframe)
+                    for ident, keyframe in target_relative_point_reference_keyframes.items()
+                },
+                "target_relative_point_initial_values": {
+                    str(ident): _diagnostic_array(initial[offset:offset + 3])
+                    for ident, offset in target_relative_point_offsets.items()
+                },
+                "target_relative_camera_offsets": {
+                    str(frame): int(offset)
+                    for frame, offset in intermediate_pose_offsets.items()
+                },
+                "target_relative_camera_reference_keyframes": {
+                    str(frame): int(keyframe)
+                    for frame, keyframe in intermediate_reference_keyframes.items()
+                },
+                "target_relative_camera_initial_values_rotvec_translation": {
+                    str(frame): _diagnostic_array(initial[offset:offset + 6])
+                    for frame, offset in intermediate_pose_offsets.items()
+                },
+            }
+            training_bundle_summary["optimizer_parameter_chart"] = chart_layout
+            layout["coordinate_chart"] = chart_layout["coordinate_chart"]
+            layout["initial_vector"] = _diagnostic_array(initial)
+            layout["variable_scale"] = _diagnostic_array(variable_scale)
+            layout["point_limit"] = int(point_limit)
+            layout["target_relative_chart"] = chart_layout
+        elif provider_enabled:
+            layout["coordinate_chart"] = "world_keyframe_poses_and_world_selected_points"
+        emit_diagnostic("prepared", prepared_payload)
 
     initial_cameras = camera_poses_for(initial)
     before = objective(optimized_residual(initial, initial_cameras))
@@ -910,16 +1078,26 @@ def local_bundle_adjustment(
             "initial_affected_objective": float(before + held_before),
             "initial_augmented_objective": float(before + held_before + training_before),
         })
-    result = least_squares(
-        residual,
-        initial,
-        jac_sparsity=pattern.tocsr(),
-        loss="huber",
-        f_scale=2.0,
-        max_nfev=30,
-        x_scale=variable_scale,
-        tr_solver="lsmr",
-    )
+    solver_options = {
+        "jac_sparsity": pattern.tocsr(),
+        "loss": "huber",
+        "f_scale": 2.0,
+        "max_nfev": 30,
+        "x_scale": variable_scale,
+        "tr_solver": "lsmr",
+    }
+    if owned_training_rows is not None:
+        # The added target-relative q/C block can be exactly independent of a
+        # free target pose while remaining coupled through shared world points.
+        # Default LSMR tolerances produced inaccurate inner steps and a tiny
+        # source-pose update despite a lower image cost. Tighten only this
+        # audited augmentation's inner solve; keep the 30 outer evaluations.
+        solver_options["tr_options"] = {
+            "atol": 1e-12,
+            "btol": 1e-12,
+            "maxiter": max(500, len(initial)),
+        }
+    result = least_squares(residual, initial, **solver_options)
     result_cameras = camera_poses_for(result.x)
     result_points = result.x[point_offset:point_limit].reshape(-1, 3)
     after = objective(optimized_residual(result.x, result_cameras, result_points))
@@ -975,6 +1153,15 @@ def local_bundle_adjustment(
                 "cost": _diagnostic_value(getattr(result, "cost", None)),
                 "optimality": _diagnostic_value(getattr(result, "optimality", None)),
             },
+            "optimizer_parameter_chart": (
+                _diagnostic_value(training_bundle_summary.get("optimizer_parameter_chart"))
+                if training_bundle_summary is not None
+                and training_bundle_summary.get("optimizer_parameter_chart") is not None
+                else {
+                    "coordinate_chart": "world_keyframe_poses_and_world_selected_points",
+                    "point_limit": int(point_limit),
+                }
+            ),
             "candidate": {
                 "valid": result_is_finite,
                 "poses_camera_to_world": (
@@ -1111,6 +1298,20 @@ def local_bundle_adjustment(
                         or state.statuses[frame] != frame_status_snapshot[frame]
                         or state.pose_anchors[frame] != frame_anchor_snapshot[frame]):
                     return attach_diagnostic_errors({**report, 'reason': 'stale_intermediate_frame'})
+            for reference_keyframe in set(intermediate_reference_keyframes.values()) | set(
+                    target_relative_point_reference_keyframes.values()):
+                reference = int(reference_keyframe)
+                if reference not in state.keyframes or reference not in base:
+                    return attach_diagnostic_errors({**report, 'reason': 'stale_target_relative_reference'})
+                reference_frame = int(diagnostic_frame_ids[reference])
+                if (reference_frame >= min(len(state.poses), len(state.statuses), len(state.pose_anchors))
+                        or int(state.keyframes[reference].frame) != reference_frame
+                        or not np.array_equal(state.keyframes[reference].pose, base[reference])
+                        or not np.array_equal(state.poses[reference_frame], frame_pose_snapshot[reference_frame])
+                        or state.statuses[reference_frame] != frame_status_snapshot[reference_frame]
+                        or state.pose_anchors[reference_frame] != frame_anchor_snapshot[reference_frame]
+                        or frame_anchor_snapshot[reference_frame] != reference):
+                    return attach_diagnostic_errors({**report, 'reason': 'stale_target_relative_reference'})
             validation_payload = copy.deepcopy(prepared_payload)
             validation_payload["training_factor_phase"] = "validate"
             try:

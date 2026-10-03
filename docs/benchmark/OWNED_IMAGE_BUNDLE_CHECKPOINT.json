@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "experimental_backend_checked_benchmark_pending",
+  "source_fingerprint": "7a31a63ea1778ff76dbc0b818a1dd8984f009a7b2c6dcf5f502f1279fccd41a1",
+  "evaluator_sha256": "73da1d14e9c6ed4de3c790e1a50a934932446f6efd4c9c9208492acd472b045d",
+  "tests_sha256": "92f87e917bfd301004a09f8fdc960b446afd26fb3b03356c97dd7025fe2cfd6f",
+  "dependency_identity_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657",
+  "backend_tests": {
+    "passed": 411,
+    "skipped": 4,
+    "test_seconds": 60.42
+  },
+  "estimator_default_enabled": false,
+  "new_replay_results": [],
+  "accuracy_improvement_demonstrated": false,
+  "release_ready": false,
+  "next_gate": "fresh fixed-configuration stereo04/80 ON and OFF, then stereo01 affected diagnostic if04 passes",
+  "ground_truth_policy": "evaluator_only"
+}

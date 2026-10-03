@@ -106,6 +106,8 @@ def main():
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+                        help='Opt in to factors from selected reserved stereo training observations')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
@@ -133,6 +135,8 @@ def main():
         parser.error('--stereo-pose-arbitration requires --stereo')
     if args.stereo_raw_reference_retry and not args.stereo:
         parser.error('--stereo-raw-reference-retry requires --stereo')
+    if args.stereo_owned_image_bundle and not (args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-owned-image-bundle requires --stereo --stereo-pose-arbitration')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
         parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
     if args.bundle_diagnostics_frames is not None:
@@ -282,7 +286,8 @@ def main():
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
-                     stereo_raw_reference_retry=args.stereo_raw_reference_retry), performance=performance,
+                     stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+                     stereo_owned_image_bundle=args.stereo_owned_image_bundle), performance=performance,
                      bundle_diagnostic_writer=bundle_diagnostic_writer)
     source_snapshot = {
         p.name: p.read_bytes()
@@ -408,6 +413,7 @@ def main():
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
         "configuration": slam.config.__dict__,
+        "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,
     }

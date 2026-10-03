@@ -62,6 +62,9 @@ CURATED_TESTS = (
     'tests/test_stereo_hard_conflict_selection.py',
     'tests/test_stereo_pose_arbitration_cli.py',
     'tests/test_stereo_raw_reference_retry.py',
+    'tests/test_owned_stereo_bundle_wiring.py',
+    'tests/test_owned_stereo_bundle.py',
+    'tests/test_bundle_stereo_motion.py',
 )
 
 
@@ -146,7 +149,8 @@ def dependency_runtime_identity(repo=None):
 
 
 def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False,
-                                  stereo_raw_reference_retry=False):
+                                  stereo_raw_reference_retry=False,
+                                  stereo_owned_image_bundle=False):
     """Return the exact evaluator config represented by a development variant."""
     if variant == 'baseline':
         return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
@@ -158,7 +162,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
     return dict(MappingConfig(bundle_enabled=variant != 'map-only', loop_mode=loop_mode,
                               stereo_depth_policy=stereo_depth_policy,
                               stereo_pose_arbitration=stereo_pose_arbitration,
-                              stereo_raw_reference_retry=stereo_raw_reference_retry).__dict__)
+                              stereo_raw_reference_retry=stereo_raw_reference_retry,
+                              stereo_owned_image_bundle=stereo_owned_image_bundle).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -199,6 +204,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_raw_reference_retry')
                     is not identity.get('stereo_raw_reference_retry')):
                 raise ValueError('mismatched stereo-raw-reference-retry mode')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_owned_image_bundle', False)
+                    is not identity.get('stereo_owned_image_bundle', False)):
+                raise ValueError('mismatched owned-stereo-image-bundle mode')
             historical_diagnostics = source_identity.get('bundle_diagnostics_enabled', False)
             historical_frames = source_identity.get('bundle_diagnostics_frames', [])
             if (historical_diagnostics is not identity.get('bundle_diagnostics_enabled', False)
@@ -494,7 +503,8 @@ def reusable_export(report_path, identity):
             expected_configuration = current_mapping_configuration(
                 identity['variant'], identity['stereo_depth_policy'],
                 identity['stereo_pose_arbitration'],
-                identity.get('stereo_raw_reference_retry', False))
+                identity.get('stereo_raw_reference_retry', False),
+                identity.get('stereo_owned_image_bundle', False))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -687,12 +697,17 @@ def main():
                         help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured references with guarded raw-supported stereo geometry')
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+                        help='Use selected reserved raw stereo image rows in the local bundle')
     parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
                         help='Capture immutable local bundle snapshots for selected frame IDs')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
     args=parser.parse_args()
+    if args.stereo_owned_image_bundle and (
+            not args.stereo_pose_arbitration or not any(v != 'baseline' for v in args.variants)):
+        parser.error('--stereo-owned-image-bundle requires --stereo-pose-arbitration and a SharedSlam variant')
     bundle_diagnostics_frames = (sorted(args.bundle_diagnostics_frames)
                                  if args.bundle_diagnostics_frames is not None else [])
     if args.bundle_diagnostics_frames is not None:
@@ -723,6 +738,7 @@ def main():
                'stereo_depth_policy': args.stereo_depth_policy,
                'stereo_pose_arbitration': args.stereo_pose_arbitration,
                'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
+               'stereo_owned_image_bundle': args.stereo_owned_image_bundle,
                'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                'bundle_diagnostics_frames': bundle_diagnostics_frames,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
@@ -770,6 +786,7 @@ def main():
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
                       'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
+                      'stereo_owned_image_bundle': args.stereo_owned_image_bundle if variant!='baseline' else False,
                       'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                       'bundle_diagnostics_frames': bundle_diagnostics_frames,
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
@@ -798,7 +815,8 @@ def main():
             expected_configuration = current_mapping_configuration(
                 variant, args.stereo_depth_policy,
                 args.stereo_pose_arbitration and variant != 'baseline',
-                args.stereo_raw_reference_retry and variant != 'baseline')
+                args.stereo_raw_reference_retry and variant != 'baseline',
+                args.stereo_owned_image_bundle and variant != 'baseline')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -826,6 +844,7 @@ def main():
                                 '--stereo-depth-policy',args.stereo_depth_policy])
                 if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
                 if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
+                if args.stereo_owned_image_bundle:command.append('--stereo-owned-image-bundle')
                 if bundle_diagnostics_frames:
                     command.extend(['--bundle-diagnostics-dir',
                                     str((folder / 'bundle-diagnostics').resolve()),

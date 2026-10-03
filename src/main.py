@@ -106,6 +106,8 @@ def main() -> None:
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry a failed configured stereo reference with guarded raw-supported geometry')
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+                        help='Opt in to bounded image factors from the selected reserved stereo training rows')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path)
@@ -125,6 +127,9 @@ def main() -> None:
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
     if args.stereo_raw_reference_retry and not (args.slam and args.stereo):
         parser.error('--stereo-raw-reference-retry requires --slam --stereo')
+    if args.stereo_owned_image_bundle and not (
+            args.slam and args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-owned-image-bundle requires --slam --stereo --stereo-pose-arbitration')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
         parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
     if args.bundle_diagnostics_frames is not None:
@@ -220,7 +225,8 @@ def main() -> None:
     shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera,
                         config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
                                              stereo_pose_arbitration=args.stereo_pose_arbitration,
-                                             stereo_raw_reference_retry=args.stereo_raw_reference_retry),
+                                             stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+                                             stereo_owned_image_bundle=args.stereo_owned_image_bundle),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
     if shared is not None:

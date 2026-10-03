@@ -1,5 +1,6 @@
 """Bounded local bundle adjustment with explicit monocular gauge constraints."""
 
+import copy
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
@@ -53,6 +54,23 @@ def _diagnostic_value(value, invalid_fields=None, path="$"):
     return str(value)
 
 
+def _training_pixel_key(frame_id, pixel):
+    value = np.asarray(pixel, dtype=np.float32)
+    if value.shape != (2,) or not np.isfinite(value).all():
+        raise ValueError("invalid_training_pixel")
+    key = tuple(0.0 if float(item) == 0.0 else float(item) for item in value)
+    return int(frame_id), key
+
+
+def _training_right_key(value):
+    if value is None:
+        return None
+    result = float(np.float32(value))
+    if not np.isfinite(result):
+        raise ValueError("invalid_training_right_u")
+    return result
+
+
 def local_bundle_adjustment(
     state,
     matrix,
@@ -62,9 +80,13 @@ def local_bundle_adjustment(
     disparity_offset=0.0,
     optimized=True,
     diagnostic_sink=None,
+    training_factor_provider=None,
 ):
     diagnostics_enabled = diagnostic_sink is not None
+    provider_enabled = training_factor_provider is not None
+    snapshot_enabled = diagnostics_enabled or provider_enabled
     diagnostic_errors = [] if diagnostics_enabled else None
+    training_bundle_summary = None
 
     def emit_diagnostic(phase, payload):
         if not diagnostics_enabled:
@@ -78,6 +100,15 @@ def local_bundle_adjustment(
             })
 
     def attach_diagnostic_errors(report):
+        if training_bundle_summary is not None:
+            if (isinstance(report, dict) and report.get("reason") is not None
+                    and training_bundle_summary.get("status") == "active"):
+                training_bundle_summary.update(
+                    status="rejected", reason=str(report.get("reason"))
+                )
+            report["owned_stereo_image_bundle"] = _diagnostic_value(
+                training_bundle_summary
+            )
         if diagnostic_errors:
             report["diagnostic_errors"] = [dict(error) for error in diagnostic_errors]
         return report
@@ -86,15 +117,25 @@ def local_bundle_adjustment(
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
         revision = state.revision
-        geometry_revision = state.geometry_revision if diagnostics_enabled else None
-        diagnostic_metric = bool(state.metric) if diagnostics_enabled else None
+        geometry_revision = state.geometry_revision if snapshot_enabled else None
+        diagnostic_metric = bool(state.metric) if snapshot_enabled else None
         diagnostic_frame_ids = (
             {int(key): int(value.frame) for key, value in state.keyframes.items()}
-            if diagnostics_enabled else None
+            if snapshot_enabled else None
+        )
+        frame_status_snapshot = list(state.statuses) if snapshot_enabled else None
+        frame_pose_snapshot = (
+            [np.asarray(pose).copy() for pose in state.poses]
+            if provider_enabled else None
+        )
+        keyframe_size_snapshot = (
+            {int(key): (None if frame.image_size is None else tuple(frame.image_size))
+             for key, frame in state.keyframes.items()}
+            if provider_enabled else None
         )
         selected = list(state.keyframes)[-window:]
-        diagnostic_keyframe_rows = {} if diagnostics_enabled else None
-        if diagnostics_enabled:
+        diagnostic_keyframe_rows = {} if snapshot_enabled else None
+        if snapshot_enabled:
             for keyframe_id in selected:
                 keyframe = state.keyframes[keyframe_id]
                 diagnostic_keyframe_rows[int(keyframe_id)] = {
@@ -117,13 +158,13 @@ def local_bundle_adjustment(
             ),
             reverse=True,
         )
-        eligible_landmarks_pre_cap = len(landmarks) if diagnostics_enabled else None
+        eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
         landmarks = landmarks[:max_landmarks]
         if len(landmarks) < 15:
             return {"applied": False, "reason": "insufficient_observations"}
-        diagnostic_selected_landmarks = [] if diagnostics_enabled else None
-        diagnostic_selected_ids = [] if diagnostics_enabled else None
-        if diagnostics_enabled:
+        diagnostic_selected_landmarks = [] if snapshot_enabled else None
+        diagnostic_selected_ids = [] if snapshot_enabled else None
+        if snapshot_enabled:
             for rank, landmark in enumerate(landmarks):
                 diagnostic_selected_ids.append(int(landmark.id))
                 observed_keyframes = [k for k in landmark.observations if k in selected]
@@ -205,8 +246,8 @@ def local_bundle_adjustment(
             for k, o in landmark.observations.items()
             if k in free
         ]
-        held_out_ids = [] if diagnostics_enabled else None
-        if diagnostics_enabled:
+        held_out_ids = [] if snapshot_enabled else None
+        if snapshot_enabled:
             held_out_ids = [
                 int(landmark.id)
                 for landmark in state.landmarks.values()
@@ -220,6 +261,22 @@ def local_bundle_adjustment(
             if landmark.id not in optimized_ids and len(landmark.observations) == 1
             and landmark.anchor in free and landmark.anchor in landmark.observations
         ]
+        single_view_observation_rows = [] if provider_enabled else None
+        if provider_enabled:
+            for ident, anchor, _position in single_view:
+                landmark = state.landmarks[ident]
+                for keyframe_id, observation in landmark.observations.items():
+                    if keyframe_id not in base:
+                        continue
+                    single_view_observation_rows.append({
+                        "landmark_id": int(ident),
+                        "keyframe_id": int(keyframe_id),
+                        "frame_id": int(state.keyframes[keyframe_id].frame),
+                        "anchor_keyframe_id": int(anchor),
+                        "pixel": _diagnostic_array(observation.pixel),
+                        "right_u": (None if observation.right_u is None
+                                    else float(observation.right_u)),
+                    })
         pose_offset = {k: 6 * i for i, k in enumerate(free)}
         point_offset = 6 * len(free)
         initial = np.r_[
@@ -250,7 +307,7 @@ def local_bundle_adjustment(
             np.full(3 * len(landmarks), length_scale),
         ]
         motion_checks = []
-        diagnostic_motion_checks = [] if diagnostics_enabled else None
+        diagnostic_motion_checks = [] if snapshot_enabled else None
         for (first, second), measurement in state.stereo_motion.items():
             anchors = (state.pose_anchors[first], state.pose_anchors[second])
             # A shared rigid correction preserves relative motion within one anchor.
@@ -258,7 +315,7 @@ def local_bundle_adjustment(
                 continue
             motion_checks.append((measurement.copy(), anchors,
                                   (state.poses[first].copy(), state.poses[second].copy())))
-            if diagnostics_enabled:
+            if snapshot_enabled:
                 diagnostic_motion_checks.append({
                     "frame_ids": [int(first), int(second)],
                     "measurement": _diagnostic_array(measurement),
@@ -342,6 +399,27 @@ def local_bundle_adjustment(
         [pose_offset[k] for k in free_camera_ids], dtype=np.intp
     ).reshape(-1, 1) + np.arange(6, dtype=np.intp)
 
+    owned_training_rows = None
+
+    def owned_training_residual(x):
+        rows = owned_training_rows
+        if rows is None or not len(rows["point_indices"]):
+            return np.empty(0)
+        poses, all_points = unpack(x)
+        anchors = np.asarray([poses[int(k)] for k in rows["anchor_ids"]])
+        endpoint_poses = np.einsum("nij,njk->nik", anchors, rows["relative_poses"])
+        world = all_points[rows["point_indices"]]
+        delta = world - endpoint_poses[:, :3, 3]
+        camera_points = np.einsum("ni,nij->nj", delta, endpoint_poses[:, :3, :3])
+        z = camera_points[:, 2]
+        homogeneous = camera_points @ matrix.T
+        projected = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
+        predicted_right = projected[:, 0] - matrix[0, 0] * baseline / np.maximum(z, 1e-9) - disparity_offset
+        errors = np.column_stack((projected - rows["pixels"], predicted_right - rows["right_u"]))
+        errors[:, :2] = np.clip(errors[:, :2], -1e4, 1e4)
+        errors[z <= 0.] = 1e4
+        return errors.ravel()
+
     def camera_poses_for(x):
         if not optimized:
             poses, _ = unpack(x)
@@ -410,12 +488,16 @@ def local_bundle_adjustment(
     def residual(x):
         cameras = camera_poses_for(x)
         points = x[point_offset:].reshape(-1, 3)
-        return np.r_[
+        original = np.r_[
             optimized_residual(x, cameras, points),
             held_out_residual(cameras),
         ]
+        if owned_training_rows is None:
+            return original
+        return np.r_[original, owned_training_residual(x)]
 
-    if diagnostics_enabled:
+    prepared_payload = None
+    if snapshot_enabled:
         selected_rows = []
         for row_index, (_point_index, keyframe_id, _observation) in enumerate(records):
             point_index = int(record_points[row_index])
@@ -503,23 +585,243 @@ def local_bundle_adjustment(
             ],
             "motion_checks": diagnostic_motion_checks,
         }
+        if provider_enabled:
+            prepared_payload["frame_statuses"] = [str(value) for value in frame_status_snapshot]
+            prepared_payload["single_view_observation_rows"] = single_view_observation_rows
         invalid_prepared_fields = []
         prepared_payload = _diagnostic_value(
             prepared_payload, invalid_prepared_fields, "$.prepared"
         )
         prepared_payload["input_valid"] = not invalid_prepared_fields
         prepared_payload["invalid_fields"] = invalid_prepared_fields
+        if diagnostics_enabled:
+            try:
+                emit_diagnostic("prepared", prepared_payload)
+            except Exception as error:
+                diagnostic_errors.append({
+                    "phase": "prepared",
+                    "error_type": type(error).__name__,
+                })
+
+    original_variable_count = len(initial)
+    original_pattern = pattern
+    original_initial = initial.copy()
+    original_scale = variable_scale.copy()
+    if provider_enabled:
+        training_bundle_summary = {
+            "status": "rejected", "reason": "provider_not_evaluated",
+            "model": "correlated_physical_stereo_image_rows_v1",
+            "covariance_claim": False,
+            "intentionally_reuses_sensor_evidence": True,
+            "holdout_validation_claim": False,
+            "selected_factors": 0,
+        }
         try:
-            emit_diagnostic("prepared", prepared_payload)
+            provider_payload = copy.deepcopy(prepared_payload)
+            provider_payload["training_factor_phase"] = "prepare"
+            factors, provider_report = training_factor_provider(provider_payload)
+            provider_report = _diagnostic_value(provider_report if isinstance(provider_report, dict) else {})
+            training_bundle_summary.update(provider_report)
+            if not factors:
+                training_bundle_summary.setdefault("reason", "no_eligible_factors")
+            elif not diagnostic_metric or baseline <= 0.:
+                training_bundle_summary.update(status="rejected", reason="metric_stereo_required")
+            else:
+                from stereo_training_factors import StereoTrainingFactor
+
+                selected_by_id = {int(item["landmark_id"]): int(item["rank"])
+                                  for item in diagnostic_selected_landmarks}
+                single_by_id = {int(ident): (anchor, position.copy())
+                                for ident, anchor, position in single_view}
+                # An image row already present in the ordinary BA objective is reused
+                # exactly once. Conflicting row ownership rejects the complete pool.
+                original_physical = {}
+                original_pixel_only = {}
+                for row_index, (_point_index, keyframe_id, _observation) in enumerate(records):
+                    fid = int(diagnostic_frame_ids[int(keyframe_id)])
+                    key = _training_pixel_key(fid, measured_pixels[row_index])
+                    right_value = (
+                        _training_right_key(measured_right[row_index])
+                        if dimensions[row_index] == 3 else None
+                    )
+                    value = (int(record_points[row_index]), right_value)
+                    prior = original_pixel_only.get(key)
+                    if prior is not None and prior != value:
+                        raise ValueError("ambiguous_original_physical_observation")
+                    original_pixel_only[key] = value
+                    if value[1] is not None:
+                        original_physical[(key, value[1])] = value[0]
+                single_physical = {}
+                single_pixel_only = {}
+                for item in single_view_observation_rows:
+                    fid = int(item["frame_id"])
+                    key = _training_pixel_key(fid, item["pixel"])
+                    point_id = int(item["landmark_id"])
+                    right_key = _training_right_key(item["right_u"])
+                    value = (point_id, right_key)
+                    prior = single_pixel_only.get(key)
+                    if prior is not None and prior != value:
+                        raise ValueError("ambiguous_single_view_physical_observation")
+                    single_pixel_only[key] = value
+                    single_physical[(key, right_key)] = point_id
+
+                used_single_ids = set()
+                candidate_rows = []
+                seen_rows = {}
+                factor_ids = set()
+                for factor in factors:
+                    if not isinstance(factor, StereoTrainingFactor):
+                        raise ValueError("invalid_training_factor_type")
+                    if (factor.fit_partition != "reserved_training"
+                            or factor.heldout_status != "excluded_external_arbitration_rows"
+                            or factor.heldout_validation_claim is not False
+                            or factor.covariance_claim is not False
+                            or factor.model != "correlated_physical_stereo_image_rows_v1"):
+                        raise ValueError("invalid_training_factor_provenance")
+                    if (not np.array_equal(factor.matrix, matrix)
+                            or factor.baseline != float(baseline)
+                            or factor.disparity_offset != float(disparity_offset)):
+                        raise ValueError("training_factor_calibration_mismatch")
+                    epoch = tuple(int(value) for value in factor.source_epoch)
+                    if (len(epoch) != 2 or epoch[1] != int(geometry_revision)
+                            or epoch[0] > int(revision)):
+                        raise ValueError("training_factor_source_epoch_mismatch")
+                    for frame_id, anchor_id, frozen_pose, frozen_anchor, status in (
+                        (factor.source_frame, factor.source_anchor, factor.source_pose,
+                         factor.source_anchor_pose, frame_status_snapshot[factor.source_frame]),
+                        (factor.target_frame, factor.target_anchor, factor.target_pose,
+                         factor.target_anchor_pose, frame_status_snapshot[factor.target_frame]),
+                    ):
+                        if (frame_id >= len(frame_pose_snapshot)
+                                or status not in {"tracking", "relocalized", "accepted"}
+                                or anchor_id not in base
+                                or not np.array_equal(frame_pose_snapshot[frame_id], frozen_pose)
+                                or not np.array_equal(base[anchor_id], frozen_anchor)):
+                            raise ValueError("training_factor_endpoint_snapshot_mismatch")
+                    if (not np.allclose(
+                            np.linalg.inv(factor.source_anchor_pose) @ factor.source_pose,
+                            factor.source_anchor_relative, rtol=0., atol=1e-9)
+                            or not np.allclose(
+                                np.linalg.inv(factor.target_anchor_pose) @ factor.target_pose,
+                                factor.target_anchor_relative, rtol=0., atol=1e-9)):
+                        raise ValueError("training_factor_anchor_transport_mismatch")
+                    ident = int(factor.reused_landmark_id)
+                    if ident < 0 or ident not in selected_by_id and ident not in single_by_id:
+                        raise ValueError("training_factor_landmark_not_optimized")
+                    if any(value >= 0 and int(value) != ident for value in
+                           (factor.source_landmark_id, factor.target_landmark_id)):
+                        raise ValueError("training_factor_endpoint_landmark_mismatch")
+                    if ident in selected_by_id:
+                        point_index = selected_by_id[ident]
+                        point_initial = initial[point_offset + 3 * point_index:point_offset + 3 * point_index + 3]
+                    else:
+                        point_index = None
+                        point_initial = single_by_id[ident][1]
+                        used_single_ids.add(ident)
+                    if not np.array_equal(point_initial, factor.point_initial):
+                        raise ValueError("training_factor_point_snapshot_mismatch")
+                    factor_ids.add(ident)
+                    for frame_id, anchor_id, relative, pixel, right_value in (
+                        (factor.source_frame, factor.source_anchor, factor.source_anchor_relative,
+                         factor.source_pixel, factor.source_right_u),
+                        (factor.target_frame, factor.target_anchor, factor.target_anchor_relative,
+                         factor.target_pixel, factor.target_right_u),
+                    ):
+                        key = _training_pixel_key(frame_id, pixel)
+                        right_key = _training_right_key(right_value)
+                        physical = (key, right_key)
+                        if key in original_pixel_only and original_pixel_only[key][1] != right_key:
+                            raise ValueError("training_factor_conflicts_with_original_observation")
+                        if physical in original_physical:
+                            original_id = diagnostic_selected_ids[original_physical[physical]]
+                            if original_id != ident:
+                                raise ValueError("training_factor_original_owner_mismatch")
+                            continue
+                        if key in single_pixel_only and single_pixel_only[key][1] != right_key:
+                            raise ValueError("training_factor_conflicts_with_single_view_observation")
+                        if physical in single_physical and single_physical[physical] != ident:
+                            raise ValueError("training_factor_single_view_owner_mismatch")
+                        if key not in single_pixel_only and (frame_id == factor.source_frame and factor.source_has_existing_observation
+                                                             or frame_id == factor.target_frame and factor.target_has_existing_observation):
+                            # An existing owner must be one of the exact selected or singleton rows.
+                            raise ValueError("training_factor_existing_observation_not_in_bundle")
+                        row_key = (frame_id, tuple(key[1]), right_key)
+                        value = (ident, int(anchor_id), tuple(np.asarray(relative).ravel().tolist()))
+                        if row_key in seen_rows:
+                            if seen_rows[row_key] != value:
+                                raise ValueError("ambiguous_training_physical_row")
+                            continue
+                        seen_rows[row_key] = value
+                        candidate_rows.append((ident, int(anchor_id), np.asarray(relative).copy(),
+                                               np.asarray(pixel, dtype=float).copy(), float(right_value)))
+                if not candidate_rows:
+                    raise ValueError("no_new_owned_image_rows")
+                extra_ids = sorted(used_single_ids)
+                extra_index = {ident: len(landmarks) + i for i, ident in enumerate(extra_ids)}
+                # Rebind singleton rows after deterministic point-index assignment.
+                old_rows = int(np.sum(dimensions) + np.sum(held_dimensions))
+                rows = {
+                    "point_indices": np.asarray([
+                        (selected_by_id[ident] if ident in selected_by_id else extra_index[ident])
+                        for ident, *_ in candidate_rows], dtype=np.intp),
+                    "anchor_ids": np.asarray([row[1] for row in candidate_rows], dtype=np.intp),
+                    "relative_poses": np.asarray([row[2] for row in candidate_rows], dtype=float),
+                    "pixels": np.asarray([row[3] for row in candidate_rows], dtype=float),
+                    "right_u": np.asarray([row[4] for row in candidate_rows], dtype=float),
+                }
+                extra_initial = np.asarray([single_by_id[ident][1] for ident in extra_ids], dtype=float).reshape(-1)
+                if len(extra_initial):
+                    augmented_initial = np.r_[initial, extra_initial]
+                    augmented_scale = np.r_[variable_scale, np.full(len(extra_initial), length_scale)]
+                else:
+                    augmented_initial = initial
+                    augmented_scale = variable_scale
+                augmented_pattern = lil_matrix((old_rows + 3 * len(candidate_rows), len(augmented_initial)), dtype=int)
+                augmented_pattern[:old_rows, :original_variable_count] = original_pattern
+                row = old_rows
+                for point_index, anchor_id in zip(rows["point_indices"], rows["anchor_ids"]):
+                    if int(anchor_id) in pose_offset:
+                        augmented_pattern[row:row + 3, pose_offset[int(anchor_id)]:pose_offset[int(anchor_id)] + 6] = 1
+                    start = point_offset + 3 * int(point_index)
+                    augmented_pattern[row:row + 3, start:start + 3] = 1
+                    row += 3
+                initial = augmented_initial
+                variable_scale = augmented_scale
+                pattern = augmented_pattern
+                owned_training_rows = rows
+                training_bundle_summary.update({
+                    "status": "active", "reason": None,
+                    "selected_factors": int(len(factors)),
+                    "unique_image_rows_added": int(len(candidate_rows)),
+                    "reused_selected_points": int(sum(i in selected_by_id for i in factor_ids)),
+                    "optimized_single_view_points": int(len(extra_ids)),
+                    "factor_landmark_ids": sorted(factor_ids),
+                    "physical_row_identity": "exact_image_frame_float32_pixel_right_u",
+                    "heldout_validation_claim": False,
+                })
         except Exception as error:
-            diagnostic_errors.append({
-                "phase": "prepared",
-                "error_type": type(error).__name__,
+            owned_training_rows = None
+            initial = original_initial
+            variable_scale = original_scale
+            pattern = original_pattern
+            training_bundle_summary.update({
+                "status": "rejected", "reason": str(error) or type(error).__name__,
+                "selected_factors": 0, "unique_image_rows_added": 0,
             })
 
     initial_cameras = camera_poses_for(initial)
     before = objective(optimized_residual(initial, initial_cameras))
     held_before = objective(held_out_residual(initial_cameras))
+    training_before = (
+        objective(owned_training_residual(initial))
+        if owned_training_rows is not None else 0.0
+    )
+    if training_bundle_summary is not None and owned_training_rows is not None:
+        training_bundle_summary.update({
+            "initial_image_objective": float(training_before),
+            "initial_affected_objective": float(before + held_before),
+            "initial_augmented_objective": float(before + held_before + training_before),
+        })
     result = least_squares(
         residual,
         initial,
@@ -533,6 +835,11 @@ def local_bundle_adjustment(
     result_cameras = camera_poses_for(result.x)
     result_points = result.x[point_offset:].reshape(-1, 3)
     after = objective(optimized_residual(result.x, result_cameras, result_points))
+    training_after = (
+        objective(owned_training_residual(result.x))
+        if owned_training_rows is not None and np.isfinite(result.x).all()
+        else (float("inf") if owned_training_rows is not None else 0.0)
+    )
     report = {
         "applied": False,
         "initial_cost": before,
@@ -547,6 +854,11 @@ def local_bundle_adjustment(
     poses = points = None
     if result_is_finite:
         poses, points = unpack(result.x)
+    if training_bundle_summary is not None:
+        training_bundle_summary.update({
+            "final_image_objective": float(training_after),
+            "solver_status": "finite_candidate" if result_is_finite else "nonfinite_candidate",
+        })
     if diagnostics_enabled:
         invalid_report_fields = []
         report_snapshot = _diagnostic_value(report, invalid_report_fields)
@@ -573,7 +885,11 @@ def local_bundle_adjustment(
                 ),
                 "selected_landmark_world_positions": (
                     None if points is None else [
-                        {"landmark_id": diagnostic_selected_ids[index],
+                        {"landmark_id": (
+                            diagnostic_selected_ids[index]
+                            if index < len(diagnostic_selected_ids)
+                            else extra_ids[index - len(diagnostic_selected_ids)]
+                        ),
                          "position": _diagnostic_array(point)}
                         for index, point in enumerate(points)
                     ]
@@ -598,11 +914,31 @@ def local_bundle_adjustment(
         held_out_final_cost=held_after,
         affected_initial_cost=before+held_before,
         affected_final_cost=after+held_after,
-        optimized_landmarks=len(landmarks),
-        anchor_propagated_single_view_landmarks=len(single_view),
+        optimized_landmarks=len(landmarks) + (len(extra_ids) if owned_training_rows is not None else 0),
+        anchor_propagated_single_view_landmarks=(
+            len(single_view) - (len(extra_ids) if owned_training_rows is not None else 0)
+        ),
         max_camera_translation_change=float(max(
             np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
     )
+    if owned_training_rows is not None:
+        augmented_initial = before + held_before + training_before
+        augmented_final = after + held_after + training_after
+        report.update(
+            augmented_initial_cost=float(augmented_initial),
+            augmented_final_cost=float(augmented_final),
+        )
+        training_bundle_summary.update({
+            "final_affected_objective": float(after + held_after),
+            "final_augmented_objective": float(augmented_final),
+            "affected_objective_reduced": bool(after + held_after < before + held_before),
+            "augmented_objective_reduced": bool(augmented_final < augmented_initial),
+        })
+        if (not np.isfinite(augmented_final)
+                or not augmented_final < augmented_initial):
+            return attach_diagnostic_errors({
+                **report, "reason": "owned_stereo_augmented_objective_worsened"
+            })
     if not np.isfinite(held_after) or not after+held_after < before+held_before:
         return attach_diagnostic_errors({**report, "reason": "affected_observations_worsened"})
     if any(
@@ -610,6 +946,19 @@ def local_bundle_adjustment(
         for i, k, _ in records
     ):
         return attach_diagnostic_errors(report)
+    if owned_training_rows is not None:
+        training_cameras = np.asarray([poses[int(k)] for k in owned_training_rows["anchor_ids"]])
+        endpoint_poses = np.einsum("nij,njk->nik", training_cameras,
+                                   owned_training_rows["relative_poses"])
+        training_world = points[owned_training_rows["point_indices"]]
+        training_camera_points = np.einsum(
+            "ni,nij->nj", training_world - endpoint_poses[:, :3, 3],
+            endpoint_poses[:, :3, :3],
+        )
+        if (not np.isfinite(training_camera_points).all()
+                or np.any(training_camera_points[:, 2] <= 0.)):
+            training_bundle_summary.update(status="rejected", reason="nonpositive_factor_depth")
+            return attach_diagnostic_errors({**report, "reason": "owned_stereo_nonpositive_depth"})
     motion_translation, motion_rotation = [], []
     for measurement, anchors, recorded in motion_checks:
         updated = [
@@ -634,13 +983,47 @@ def local_bundle_adjustment(
     with state.lock:
         if state.revision != revision:
             return attach_diagnostic_errors({**report, "reason": "stale_revision"})
+        if owned_training_rows is not None:
+            validation_payload = copy.deepcopy(prepared_payload)
+            validation_payload["training_factor_phase"] = "validate"
+            try:
+                _unused_factors, validation_report = training_factor_provider(validation_payload)
+            except Exception as error:
+                validation_report = {"status": "rejected", "reason": type(error).__name__}
+            if (not isinstance(validation_report, dict)
+                    or validation_report.get("status") != "validated"
+                    or not isinstance(_unused_factors, tuple)
+                    or len(_unused_factors) != 0):
+                training_bundle_summary.update({
+                    "status": "rejected", "reason": (
+                        validation_report.get("reason", "final_factor_validation_failed")
+                        if isinstance(validation_report, dict) else "malformed_final_factor_validation"
+                    ),
+                })
+                return attach_diagnostic_errors({**report, "reason": "owned_stereo_final_validation_failed"})
+            training_bundle_summary.update({
+                "status": "candidate_validated", "final_validation": _diagnostic_value(validation_report),
+            })
         updates = {l.id: p.copy() for l, p in zip(landmarks, points)}
+        optimized_single_ids = set()
+        if owned_training_rows is not None:
+            optimized_single_ids = {
+                ident for ident in extra_ids
+            }
+            for ident, point_index in extra_index.items():
+                updates[ident] = points[point_index].copy()
         for ident, anchor, position in single_view:
+            if ident in optimized_single_ids:
+                continue
             camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])
             updates[ident] = poses[anchor][:3, :3] @ camera + poses[anchor][:3, 3]
         if not state.apply_corrections(revision, poses, propagate_landmarks=False, landmark_updates=updates):
+            if training_bundle_summary is not None and owned_training_rows is not None:
+                training_bundle_summary.update(status="rejected", reason="atomic_apply_rejected")
             return attach_diagnostic_errors(report)
         # Multiview world points are independent; single-view stereo points retain
         # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
+        if training_bundle_summary is not None and owned_training_rows is not None:
+            training_bundle_summary.update(status="accepted", reason=None)
     return attach_diagnostic_errors(report)

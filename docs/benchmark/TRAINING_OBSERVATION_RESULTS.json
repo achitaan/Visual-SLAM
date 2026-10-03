@@ -1,0 +1,427 @@
+{
+  "title": "Stereo training-observation capture diagnostics",
+  "source_fingerprint": "5b6767d33ee9cf0e500a5ebaa20a270ebe8470d5a88ac55fcca5f7ac6088511a",
+  "source_manifest_sha256": "69332eeb7f8aa8c92e5346067d60d31592e3d87daafd505055fa95dd206e41a8",
+  "evaluator_sha256": "ec1af5a9894c65396c6401fcbda38c076287363ac112b16b674e8eb84ba7444a",
+  "runtime_identity": {
+    "version": 1,
+    "dependencies": {
+      "python": "3.12.14",
+      "implementation": "CPython",
+      "platform": "win32",
+      "machine": "AMD64",
+      "files": {
+        "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+        "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+        "requirements-depth.txt": "7e0b3202030746a9150dec7ac3a8206165a23f2fa68888866e93eaadf8a00e9e",
+        "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+      },
+      "packages": {
+        "bokeh": "3.10.0",
+        "cloudpickle": "3.1.2",
+        "colorama": "0.4.6",
+        "contourpy": "1.4.0",
+        "cycler": "0.12.1",
+        "fonttools": "4.66.1",
+        "iniconfig": "2.3.0",
+        "Jinja2": "3.1.6",
+        "joblib": "1.6.0",
+        "kiwisolver": "1.5.1",
+        "MarkupSafe": "3.0.3",
+        "matplotlib": "3.11.2",
+        "narwhals": "2.26.0",
+        "numpy": "2.5.3",
+        "opencv-contrib-python": "5.0.0.93",
+        "packaging": "26.3",
+        "pillow": "12.3.0",
+        "pluggy": "1.6.0",
+        "Pygments": "2.21.0",
+        "pyparsing": "3.3.3",
+        "pytest": "9.1.1",
+        "python-dateutil": "2.9.0.post0",
+        "PyYAML": "6.0.3",
+        "pyyaml": "6.0.3",
+        "scikit-learn": "1.9.1",
+        "scipy": "1.18.1",
+        "six": "1.17.0",
+        "threadpoolctl": "3.7.0",
+        "torch": "2.14.1+cpu",
+        "torchvision": "0.29.1+cpu",
+        "tornado": "6.5.10",
+        "websockets": "17.1",
+        "xyzservices": "2026.9.1"
+      }
+    },
+    "dependencies_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657"
+  },
+  "ground_truth_used_for_estimation": false,
+  "scope": {
+    "sequence_01_frames": 129,
+    "sequence_04_frames": 80,
+    "coverage": "partial_prefixes",
+    "diagnostic_frame_01": 127,
+    "loop_mode": "off"
+  },
+  "runs": {
+    "01_capture": {
+      "sequence": "01",
+      "frames": 129,
+      "coverage": "partial",
+      "status": "completed",
+      "metrics": {
+        "frames": 129,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 2.5809816025799965,
+        "raw_ate_rmse_m": 6.057210385349236,
+        "segment_count": 9,
+        "translation_percent": 4.330329084456943,
+        "rotation_deg_per_m": 0.013057141295576058
+      },
+      "lost_frames": 0,
+      "relocalized_frames": 0,
+      "elapsed_s": 121.09639330001664,
+      "peak_memory_mb": 309.3203125,
+      "opencv_threads": 1,
+      "evaluator_sha256": "ec1af5a9894c65396c6401fcbda38c076287363ac112b16b674e8eb84ba7444a",
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "stereo_raw_reference_retry": true
+      },
+      "performance_configuration": {
+        "retrieval": "current",
+        "matching_backend": "cpu",
+        "cpu_optimizations": true,
+        "profile": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_manifest_sha256": "69332eeb7f8aa8c92e5346067d60d31592e3d87daafd505055fa95dd206e41a8",
+      "input_identity_sha256": "7e68101f0a23417765ae5244762e6ce41bc6523fc43571c677e1a174cab02987",
+      "reference_identity_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8"
+    },
+    "01_diagnostic_off_control": {
+      "sequence": "01",
+      "frames": 129,
+      "coverage": "partial",
+      "status": "completed",
+      "metrics": {
+        "frames": 129,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 2.5809816025799965,
+        "raw_ate_rmse_m": 6.057210385349236,
+        "segment_count": 9,
+        "translation_percent": 4.330329084456943,
+        "rotation_deg_per_m": 0.013057141295576058
+      },
+      "lost_frames": 0,
+      "relocalized_frames": 0,
+      "elapsed_s": 117.60009979997994,
+      "peak_memory_mb": 303.16796875,
+      "opencv_threads": 1,
+      "evaluator_sha256": "ec1af5a9894c65396c6401fcbda38c076287363ac112b16b674e8eb84ba7444a",
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "stereo_raw_reference_retry": true
+      },
+      "performance_configuration": {
+        "retrieval": "current",
+        "matching_backend": "cpu",
+        "cpu_optimizations": true,
+        "profile": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_manifest_sha256": "69332eeb7f8aa8c92e5346067d60d31592e3d87daafd505055fa95dd206e41a8",
+      "input_identity_sha256": "7e68101f0a23417765ae5244762e6ce41bc6523fc43571c677e1a174cab02987",
+      "reference_identity_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8"
+    },
+    "04_capture_smoke": {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "partial",
+      "status": "completed",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.11188367637566381,
+        "raw_ate_rmse_m": 0.27379108167601507,
+        "segment_count": 1,
+        "translation_percent": 0.2807531045984703,
+        "rotation_deg_per_m": 0.005652783299876321
+      },
+      "lost_frames": 0,
+      "relocalized_frames": 0,
+      "elapsed_s": 67.14000210000086,
+      "peak_memory_mb": 264.66015625,
+      "opencv_threads": 1,
+      "evaluator_sha256": "ec1af5a9894c65396c6401fcbda38c076287363ac112b16b674e8eb84ba7444a",
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "stereo_raw_reference_retry": true
+      },
+      "performance_configuration": {
+        "retrieval": "current",
+        "matching_backend": "cpu",
+        "cpu_optimizations": true,
+        "profile": false
+      },
+      "ground_truth_used_for_estimation": false,
+      "source_manifest_sha256": "69332eeb7f8aa8c92e5346067d60d31592e3d87daafd505055fa95dd206e41a8",
+      "input_identity_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_identity_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1"
+    }
+  },
+  "finite_exports": {
+    "01_capture": {
+      "pose_rows": 129,
+      "so3_max_orthogonality_error": 1.1214140727133781e-11,
+      "so3_max_determinant_error": 1.1999512494753617e-11,
+      "sparse_vertices": 24451
+    },
+    "01_diagnostic_off_control": {
+      "pose_rows": 129,
+      "so3_max_orthogonality_error": 1.1214140727133781e-11,
+      "so3_max_determinant_error": 1.1999512494753617e-11,
+      "sparse_vertices": 24451
+    },
+    "04_capture_smoke": {
+      "pose_rows": 80,
+      "so3_max_orthogonality_error": 9.956702129443329e-12,
+      "so3_max_determinant_error": 1.3876233495579982e-11,
+      "sparse_vertices": 10288
+    }
+  },
+  "capture_control_identity_match_except_diagnostic_switch": true,
+  "capture_control_audit": {
+    "status": "pass",
+    "metrics_reused": false,
+    "checks": {
+      "bundle_reports_equal": true,
+      "capture_reusable_export": true,
+      "control_reusable_export": true,
+      "identity_equal_except_diagnostic_mode": true,
+      "poses_byte_identical": true,
+      "sparse_map_byte_identical": true,
+      "tracking_states_equal": true
+    }
+  },
+  "validation": {
+    "source_commit": "c634737b82dd8f54bcb2b8ede44f180b9cb1e618",
+    "backend_suite": {
+      "passed": 391,
+      "optional_skips": 4,
+      "elapsed_seconds": 67.31
+    }
+  },
+  "diagnostic_manifest": {
+    "enabled": true,
+    "selected_frames": [
+      127
+    ],
+    "frame127_status": "complete",
+    "phases": {
+      "prepared": {
+        "status": "written",
+        "sha256": "dc0dcbceb6c16e172392685a0605f319e0cc5ae7706f817b12082d3cad6926a5"
+      },
+      "solved": {
+        "status": "written",
+        "sha256": "70d46838880556b6acf6f6ba9b48b860a721f506977ed1a6d2f86d104db2e8ab"
+      },
+      "finished": {
+        "status": "written",
+        "sha256": "a3ef0e7b406a5ba019db3bdf6fbea575a36ec72600df90467f1731ddd3cf96b8"
+      }
+    }
+  },
+  "training_observations": {
+    "schema": "stereo_training_rows_v1",
+    "eligible": true,
+    "fit_matches": 193,
+    "heldout_matches": 167,
+    "raw_candidate_rows": 176,
+    "audit_certified_rows": 171,
+    "audit": {
+      "schema": "saved_stereo_training_information_audit_v1",
+      "prepared_sha256": "dc0dcbceb6c16e172392685a0605f319e0cc5ae7706f817b12082d3cad6926a5",
+      "factor_builder": {
+        "status": "accepted",
+        "reason": null,
+        "candidate_edges": 176,
+        "selected_factors": 171,
+        "cap": 256,
+        "truncated": 0,
+        "rejections": {
+          "conflicting_endpoint_landmark_ids": 5,
+          "unverified_landmark_claim_ignored": 7
+        },
+        "model": "correlated_physical_stereo_image_rows_v1",
+        "covariance_claim": false,
+        "intentionally_reuses_sensor_evidence": true,
+        "heldout_validation_claim": false,
+        "pose_fit_performed": false,
+        "selection_policy": "lexicographic_exact_float32_physical_endpoints_cap256_v1",
+        "fit_source": "reserved_supported_training_rows",
+        "fit_depth_policy": "supported_raw",
+        "fit_partition": "reserved_training",
+        "holdout_status": "excluded_external_arbitration_rows",
+        "eligible_before_cap": 171,
+        "physical_identity_sha256": "bac5fb999310241263f103691d14183d58976636df1935e5db3a6a62c39607a3",
+        "source_epoch": [
+          78,
+          53
+        ]
+      },
+      "physical_target_cells": 7,
+      "baseline_excluded_multiview_count": 0,
+      "covariance_claim": false,
+      "heldout_validation_claim": false,
+      "pose_fit_performed": false,
+      "dimensionless_added_information": {
+        "eigenvalue_count": 24,
+        "min": -1.9004766082278996e-08,
+        "max": 143902422.38245586,
+        "rank": 6,
+        "condition": 111825.1385876643,
+        "rank_tolerance": 7.668661566160175e-07,
+        "negative_beyond_tolerance": 0
+      }
+    },
+    "frame_plot": {
+      "latest_selected_keyframe_id": 24,
+      "map_observations": 49,
+      "raw_rows_displayed": 171,
+      "forward_inliers_displayed": 162,
+      "reverse_inliers_displayed": 165,
+      "heldout_rows_displayed": 167
+    },
+    "information_spectrum": {
+      "eigenvalue_count": 24,
+      "min": -1.9004766082278996e-08,
+      "max": 143902422.38245586,
+      "rank": 6,
+      "condition": 111825.1385876643,
+      "rank_tolerance": 7.668661566160175e-07,
+      "negative_beyond_tolerance": 0
+    }
+  },
+  "sequence_04_training_audit": {
+    "certified_factors": 109,
+    "factor_builder": {
+      "status": "accepted",
+      "reason": null,
+      "candidate_edges": 116,
+      "selected_factors": 109,
+      "cap": 256,
+      "truncated": 0,
+      "rejections": {
+        "conflicting_endpoint_landmark_ids": 7,
+        "unverified_landmark_claim_ignored": 1
+      },
+      "model": "correlated_physical_stereo_image_rows_v1",
+      "covariance_claim": false,
+      "intentionally_reuses_sensor_evidence": true,
+      "heldout_validation_claim": false,
+      "pose_fit_performed": false,
+      "selection_policy": "lexicographic_exact_float32_physical_endpoints_cap256_v1",
+      "fit_source": "reserved_supported_training_rows",
+      "fit_depth_policy": "supported_raw",
+      "fit_partition": "reserved_training",
+      "holdout_status": "excluded_external_arbitration_rows",
+      "eligible_before_cap": 109,
+      "physical_identity_sha256": "4cb4db8de873167ef239479c919081cdd70d41c175a71ef309870d523b679100",
+      "source_epoch": [
+        12,
+        9
+      ]
+    },
+    "physical_target_cells": 9,
+    "covariance_claim": false,
+    "heldout_validation_claim": false,
+    "pose_fit_performed": false,
+    "dimensionless_added_information": {
+      "eigenvalue_count": 12,
+      "min": -1.0892399319787762e-09,
+      "max": 102399887.24871019,
+      "rank": 6,
+      "condition": 26112.154709689745,
+      "rank_tolerance": 2.728481101020913e-07,
+      "negative_beyond_tolerance": 0
+    }
+  },
+  "saved_candidate_fixed_geometry_costs": {
+    "interpretation": "post-hoc image costs at saved poses and map points; no fit",
+    "01_frame127": {
+      "point_policy": "actual selected solution plus original single-view anchor propagation; no nuisance fit",
+      "base_initial": 85.2181540239331,
+      "base_candidate": 31.10143543926593,
+      "augmented_initial": 214.71120621121867,
+      "augmented_candidate": 510.5373493175921,
+      "extra_unique_initial": 129.49305218728557,
+      "extra_unique_candidate": 479.4359138783262,
+      "extra_cost_change": 349.9428616910406,
+      "declared_huber_delta": 2.0,
+      "row_trimming": false,
+      "gt_used": false
+    },
+    "04_frame14": {
+      "point_policy": "actual selected solution plus original single-view anchor propagation; no nuisance fit",
+      "base_initial": 130.81017086748955,
+      "base_candidate": 13.69207494778625,
+      "augmented_initial": 172.72825246041893,
+      "augmented_candidate": 173.4587176025394,
+      "extra_unique_initial": 41.91808159292938,
+      "extra_unique_candidate": 159.76664265475316,
+      "extra_cost_change": 117.84856106182377,
+      "declared_huber_delta": 2.0,
+      "row_trimming": false,
+      "gt_used": false
+    }
+  },
+  "plots": [
+    "plots/training-observations-frame127.png",
+    "plots/training-observations-information-spectrum.png",
+    "plots/training-observations-04-information-spectrum.png",
+    "plots/training-observations-fixed-geometry-cost.png",
+    "plots/training-observations-01-capture-overview.png",
+    "plots/training-observations-01-control-overview.png",
+    "plots/training-observations-04-capture-overview.png"
+  ],
+  "interpretation": {
+    "claim": "capture and audit only; no estimator-quality improvement is established",
+    "ground_truth_policy": "ground truth is used only by the evaluator after estimation",
+    "prefix_policy": "01/129 and 04/80 are partial prefixes, not full-sequence results",
+    "diagnostic_policy": "diagnostic snapshots are opt-in and are not a tracking or acceptance input"
+  }
+}

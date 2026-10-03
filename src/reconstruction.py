@@ -1,6 +1,6 @@
 """Portable sparse-map exports and optional after-run learned-depth reconstruction."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +8,36 @@ import numpy as np
 import cv2 as cv
 from kitti import save_poses_txt
 from mapping_geometry import project
+
+
+def _motion_regularizer_manifest(state):
+    """Export frozen raw-fit provenance; invalid unused fit geometry is explicit."""
+    def portable(value, allow_invalid=False):
+        if isinstance(value, np.ndarray):
+            return portable(value.tolist(), allow_invalid)
+        if isinstance(value, (tuple, list)):
+            return [portable(item, allow_invalid) for item in value]
+        if isinstance(value, np.generic):
+            return portable(value.item(), allow_invalid)
+        if isinstance(value, float) and not np.isfinite(value):
+            if not allow_invalid:
+                raise ValueError("Nonfinite motion regularizer artifact")
+            return None
+        return value
+
+    result = []
+    for edge, factor in state.stereo_motion_regularizers.items():
+        record = {field.name: portable(getattr(factor, field.name), field.name in
+                           ("training_source_points", "training_target_points"))
+                  for field in fields(factor)}
+        record.update(
+            previous_frame=int(edge[0]), frame=int(edge[1]),
+            invalid_unused_fit_geometry_encoded_as_null=True,
+            training_source_depth_valid=np.isfinite(factor.training_source_points).all(axis=1).tolist(),
+            training_target_depth_valid=np.isfinite(factor.training_target_points).all(axis=1).tolist(),
+        )
+        result.append(record)
+    return result
 
 
 def write_ply(path, points, colors=None):
@@ -116,6 +146,8 @@ def export_run(slam, folder, image_paths, image_loader=None, include_images=True
             for (i, j), measurement in slam.loop_worker.verified.items()
         ],
     }
+    if getattr(slam.config, "stereo_motion_regularizer", False):
+        payload["stereo_motion_regularizers"] = _motion_regularizer_manifest(state)
     (folder / "run.json").write_text(
         json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8"
     )

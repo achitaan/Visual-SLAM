@@ -93,6 +93,7 @@ def test_history_is_cost_only_and_accepts_cross_revision_exact_mode(tmp_path, mo
     lambda r: r.update(coverage='full'),
     lambda r: r.update(status='interrupted_time_budget'),
     lambda r: r['development_identity'].update(variant='live'),
+    lambda r: r['development_identity'].update(stereo_motion_regularizer=True),
     lambda r: r['development_identity'].update(cached=True),
     lambda r: r['development_identity']['performance'].update(matching_backend='cuda'),
     lambda r: r['development_identity'].update(stereo_depth_policy='verified_fallback'),

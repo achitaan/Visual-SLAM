@@ -319,7 +319,8 @@ def _estimate_pose_hypothesis(
 
 
 def estimate_stereo_reference(
-    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None
+    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
+    capture_training=False,
 ):
     """Frame tracking with the map tracker's PnP checks, never a loop constraint.
 
@@ -354,6 +355,7 @@ def estimate_stereo_reference(
         initial_pose=np.linalg.inv(measurement),
     )
     reverse_translation = reverse_rotation = None
+    reverse_inlier_pairs = None
     refinement = None
     if reverse is not None:
         consistency = reverse[0] @ measurement
@@ -365,13 +367,16 @@ def estimate_stereo_reference(
             return None
         reverse_a = a[reverse_available][reverse[1]]
         reverse_b = b[reverse_available][reverse[1]]
+        if capture_training:
+            reverse_inlier_pairs = np.column_stack((reverse_a, reverse_b)).astype(
+                np.int64, copy=False)
         measurement, refinement = refine_bidirectional_stereo(
             measurement, source.points[a_source[valid]], target.pixels[b_target[valid]],
             target.points[reverse_b], source.pixels[reverse_a], matrix,
         )
         predicted, _ = project(source.points[a_source[valid]], measurement, matrix)
         error = float(np.median(np.linalg.norm(predicted-target.pixels[b_target[valid]], axis=1)))
-    return {
+    result = {
         "measurement": measurement,
         "matches": len(a_source),
         "inliers": len(valid),
@@ -382,6 +387,22 @@ def estimate_stereo_reference(
         "target_features": b_target[valid].tolist(),
         "bidirectional_refinement": refinement,
     }
+    if capture_training:
+        # Preserve the exact descriptor-row identity supplied to both PnP
+        # directions. This is diagnostic metadata only; the default path above
+        # remains byte-for-byte equivalent in its returned values and fitting.
+        result["training"] = {
+            "training_pairs": np.column_stack((a, b)).astype(np.int64, copy=True),
+            "training_source_pixels": np.asarray(source.pixels[a]).copy(),
+            "training_target_pixels": np.asarray(target.pixels[b]).copy(),
+            "training_source_points": np.asarray(source.points[a]).copy(),
+            "training_target_points": np.asarray(target.points[b]).copy(),
+            "forward_inlier_pairs": np.column_stack((a_source[valid], b_target[valid])).astype(
+                np.int64, copy=True),
+            "reverse_inlier_pairs": (reverse_inlier_pairs if reverse_inlier_pairs is not None
+                                     else np.empty((0, 2), dtype=np.int64)),
+        }
+    return result
 
 
 def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):

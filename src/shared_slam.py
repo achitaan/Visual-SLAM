@@ -25,6 +25,7 @@ from descriptor_matching import DescriptorMatcher
 from performance import PerformanceConfig
 from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
 from stereo_pose_arbitration import SupportedStereoFrame, SupportedStereoHoldout, arbitrate_stereo_pose
+from stereo_motion_regularizer import build_stereo_motion_regularizer
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class MappingConfig:
     stereo_depth_policy: str = "supported"
     stereo_pose_arbitration: bool = False
     stereo_raw_reference_retry: bool = False
+    stereo_motion_regularizer: bool = False
 
 
 class SharedSlam:
@@ -98,6 +100,8 @@ class SharedSlam:
             raise ValueError('Stereo pose arbitration requires two calibrated cameras')
         if stereo is None and self.config.stereo_raw_reference_retry:
             raise ValueError('Raw stereo reference retry requires two calibrated cameras')
+        if stereo is None and self.config.stereo_motion_regularizer:
+            raise ValueError('Stereo motion regularization requires two calibrated cameras')
         self.previous_supported_stereo = None
         self.current_supported_stereo = None
         self._supported_extraction = None
@@ -259,7 +263,8 @@ class SharedSlam:
             self.current_disparity = disparity
             points, right_u = self._measure_stereo_pixels(
                 pixels, capture_supported=(self.config.stereo_pose_arbitration
-                                           or self.config.stereo_raw_reference_retry))
+                                           or self.config.stereo_raw_reference_retry
+                                           or self.config.stereo_motion_regularizer))
         return pixels, desc, points, right_u
 
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations):
@@ -1383,10 +1388,16 @@ class SharedSlam:
                    'map_fit_targets': set(), 'map_fit_landmarks': set(), 'report': report}
         source_frame = StereoLoopFrame(previous.pixels, previous.points, previous.descriptors, previous.image_size)
         target_frame = StereoLoopFrame(current.pixels, current.points, current.descriptors, current.image_size)
+        fit_kwargs = {
+            'min_inliers': minimum,
+            'initial_pose': None,
+            'matcher': lambda first, second: fit.copy(),
+        }
+        if self.config.stereo_motion_regularizer:
+            fit_kwargs['capture_training'] = True
         verified = self.profile.call(
             'stereo_pose_arbitration_fit', estimate_stereo_reference,
-            source_frame, target_frame, self.K, min_inliers=minimum,
-            initial_pose=None, matcher=lambda first, second: fit.copy())
+            source_frame, target_frame, self.K, **fit_kwargs)
         if verified is None or not verified['reverse_checked']:
             report['reason'] = 'independent_training_failed'
             return None, report
@@ -1769,12 +1780,17 @@ class SharedSlam:
         target_frame = StereoLoopFrame(target.pixels, target_points,
                                        target.descriptors, target.image_size)
         try:
+            fit_kwargs = {
+                'min_inliers': self.config.min_inliers,
+                'initial_pose': None,
+                'matcher': lambda first, second: pairs.copy(),
+            }
+            if self.config.stereo_motion_regularizer:
+                fit_kwargs['capture_training'] = True
             verified = self.profile.call(
                 ('stereo_pose_raw_supported_retry_fit' if physical_canonical
                  else 'stereo_pose_full_supported_fallback_fit'), estimate_stereo_reference,
-                source_frame, target_frame, self.K,
-                min_inliers=self.config.min_inliers, initial_pose=None,
-                matcher=lambda first, second: pairs.copy())
+                source_frame, target_frame, self.K, **fit_kwargs)
         except (cv.error, np.linalg.LinAlgError, TypeError, ValueError, IndexError):
             return None, {**report, 'eligible': False,
                           'reason': 'full_supported_reference_fit_error'}
@@ -1851,6 +1867,7 @@ class SharedSlam:
                     return fail('invalid_source_pose_index')
                 source_pose_raw = np.asarray(self.map.poses[int(previous_index)])
                 source_revision = self.map.revision
+                source_geometry_revision = self.map.geometry_revision
                 if (not isinstance(source_revision, (int, np.integer))
                         or isinstance(source_revision, (bool, np.bool_))
                         or not self._is_proper_se3(source_pose_raw)):
@@ -1887,8 +1904,12 @@ class SharedSlam:
                           'reason': source_guard.get('reason', 'raw_reference_source_guard_failed'),
                           'source_guard': source_guard,
                           'reverse_checked': True}, None, None, None
+        epoch_fields = ({
+            'source_geometry_revision': int(source_geometry_revision),
+            'source_epoch': (int(source_revision), int(source_geometry_revision)),
+        } if self.config.stereo_motion_regularizer else {})
         return (verified,
-                {**report, 'eligible': True,
+                {**report, **epoch_fields, 'eligible': True,
                  'reason': 'raw_supported_reference_verified',
                  'source_guard': source_guard,
                  'source_frame': int(previous_index), 'target_frame': int(index),
@@ -1972,7 +1993,8 @@ class SharedSlam:
             return {**report, 'reason': reason}
 
         if (not (self.config.stereo_pose_arbitration
-                 or self.config.stereo_raw_reference_retry) or self.stereo is None
+                 or self.config.stereo_raw_reference_retry
+                 or self.config.stereo_motion_regularizer) or self.stereo is None
                 or not isinstance(verified, dict) or verified.get('reverse_checked') is not True):
             return fail('reverse_verification_or_feature_flag_missing')
         if not self._supported_record_is_well_formed(source, size):
@@ -2101,6 +2123,105 @@ class SharedSlam:
                                     record.right_u, linked, record.frame, record.image_size,
                                     record.calibration_identity)
 
+    def _attach_stereo_motion_regularizer(
+        self, previous, current, measurement, verified, source_pose, source_epoch,
+        *, fit_source, role,
+    ):
+        """Build and attach an immutable factor for an already verified edge."""
+        base = {
+            "model": "correlated_pixel_motion_regularizer",
+            "covariance_claim": False,
+            "intentionally_reuses_sensor_evidence": True,
+            "holdout_rows_used": False,
+            "source_frame": int(previous),
+            "target_frame": int(current),
+            "fit_source": fit_source,
+            "fit_depth_policy": "supported_raw",
+            "source_epoch": list(source_epoch) if source_epoch is not None else None,
+            "role": role,
+        }
+        if not self.config.stereo_motion_regularizer:
+            return None
+        source = self.previous_supported_stereo
+        target = self.current_supported_stereo
+        training = verified.get("training") if isinstance(verified, dict) else None
+        if not isinstance(training, dict):
+            return {**base, "active": False, "reason": "raw_training_rows_unavailable"}
+        if source_epoch is None or source_pose is None:
+            return {**base, "active": False, "reason": "source_epoch_unavailable"}
+        try:
+            with self.map.lock:
+                if (not 0 <= previous < len(self.map.poses)
+                        or not 0 <= current < len(self.map.poses)
+                        or len(self.map.statuses) != len(self.map.poses)):
+                    return {**base, "active": False, "reason": "endpoint_frames_unavailable"}
+                source_status = self.map.statuses[previous]
+                target_status = self.map.statuses[current]
+                if (not np.array_equal(self.map.poses[previous], source_pose)
+                        or self.map.geometry_revision != source_epoch[1]):
+                    return {**base, "active": False,
+                            "reason": "source_geometry_epoch_changed"}
+                calibration_identity = self._live_stereo_calibration_identity()
+                matrix_snapshot = self.K.copy()
+                baseline_snapshot = float(self.stereo.baseline)
+                offset_snapshot = float(self.stereo.disparity_offset)
+                if (source is None or target is None
+                        or source.calibration_identity != calibration_identity
+                        or target.calibration_identity != calibration_identity):
+                    return {**base, "active": False,
+                            "reason": "raw_endpoint_calibration_mismatch"}
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return {**base, "active": False, "reason": "source_epoch_or_calibration_invalid"}
+
+        factor, reason = build_stereo_motion_regularizer(
+            source, target, measurement,
+            training_pairs=training.get("training_pairs"),
+            forward_inlier_pairs=training.get("forward_inlier_pairs"),
+            reverse_inlier_pairs=training.get("reverse_inlier_pairs"),
+            training_source_pixels=training.get("training_source_pixels"),
+            training_target_pixels=training.get("training_target_pixels"),
+            training_source_points=training.get("training_source_points"),
+            training_target_points=training.get("training_target_points"),
+            matrix=matrix_snapshot,
+            baseline=baseline_snapshot,
+            disparity_offset=offset_snapshot,
+            source_epoch=source_epoch,
+            source_status=source_status,
+            target_status=target_status,
+            fit_source=fit_source,
+            fit_depth_policy="supported_raw",
+            role=role,
+        )
+        if factor is None:
+            return {**base, "active": False,
+                    "reason": f"factor_build_failed:{reason}"}
+        if self._live_stereo_calibration_identity() != calibration_identity:
+            return {**base, "active": False,
+                    "reason": "live_calibration_changed_during_factor_build"}
+        attached, attach_reason = self.map.add_stereo_motion_regularizer(
+            previous, current, factor,
+            calibration_identity=calibration_identity,
+            source_pose=source_pose,
+            source_geometry_revision=source_epoch[1],
+        )
+        if not attached:
+            return {**base, "active": False,
+                    "reason": f"factor_install_failed:{attach_reason}"}
+        return {
+            **base,
+            "active": True,
+            "reason": "attached",
+            "rank": int(factor.rank),
+            "condition_number": float(factor.condition_number),
+            "noise_model": factor.noise_model,
+            "information_row_ids": factor.information_pairs.tolist(),
+            "training_row_ids": factor.training_pairs.tolist(),
+            "forward_inlier_row_ids": factor.forward_inlier_pairs.tolist(),
+            "reverse_inlier_row_ids": factor.reverse_inlier_pairs.tolist(),
+            "information_matrix": factor.information.tolist(),
+            "sqrt_information": factor.sqrt_information.tolist(),
+        }
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
@@ -2109,7 +2230,8 @@ class SharedSlam:
         self.loop_worker.poll(self.map)
         self._prepare_frame_images(image, right)
         raw_stereo_enabled = (self.config.stereo_pose_arbitration
-                              or self.config.stereo_raw_reference_retry)
+                              or self.config.stereo_raw_reference_retry
+                              or self.config.stereo_motion_regularizer)
         if raw_stereo_enabled:
             self._supported_extraction = None
             self._arbitration_context = None
@@ -2138,6 +2260,8 @@ class SharedSlam:
         anchor = self.last_keyframe
         inlier_features = set()
         verified_motion = None
+        motion_regularizer_source_pose = None
+        motion_regularizer_source_epoch = None
         associations = {}
         map_inlier_miss_snapshot = None
         status = "initializing" if not self.map.landmarks else "lost"
@@ -2278,14 +2402,18 @@ class SharedSlam:
                                 previous_frame, measured
                             )
                         )
-                    verified = (arbitration['verified'] if arbitration is not None else estimate_stereo_reference(
-                        previous_frame,
-                        measured,
-                        self.K,
-                        min_inliers=self.config.min_inliers,
-                        initial_pose=prior,
-                        matcher=reference_matcher,
-                    ))
+                    if arbitration is not None:
+                        verified = arbitration['verified']
+                    else:
+                        reference_kwargs = {
+                            'min_inliers': self.config.min_inliers,
+                            'initial_pose': prior,
+                            'matcher': reference_matcher,
+                        }
+                        if self.config.stereo_motion_regularizer:
+                            reference_kwargs['capture_training'] = True
+                        verified = estimate_stereo_reference(
+                            previous_frame, measured, self.K, **reference_kwargs)
                     if (verified is None and arbitration is None
                             and self.config.stereo_raw_reference_retry):
                         raw_reference_retry_attempted = True
@@ -2335,12 +2463,21 @@ class SharedSlam:
                         if raw_reference_retry_succeeded:
                             source_pose = raw_reference_retry_source_pose
                             source_map_revision = raw_reference_retry_source_revision
+                            source_geometry_revision = raw_reference_retry_report.get(
+                                'source_geometry_revision')
                             reference_pose = raw_reference_retry_pose
                         else:
                             with self.map.lock:
                                 source_pose = self.map.poses[previous_index].copy()
                                 source_map_revision = self.map.revision
+                                source_geometry_revision = self.map.geometry_revision
                                 reference_pose = source_pose @ verified["measurement"]
+                        if (self.config.stereo_motion_regularizer
+                                and isinstance(source_geometry_revision, (int, np.integer))
+                                and not isinstance(source_geometry_revision, (bool, np.bool_))):
+                            motion_regularizer_source_pose = np.asarray(source_pose, float).copy()
+                            motion_regularizer_source_epoch = (
+                                int(source_map_revision), int(source_geometry_revision))
                         conflict = False
                         half_conflict = False
                         half_translation_error = half_rotation_error = None
@@ -2796,6 +2933,35 @@ class SharedSlam:
         if info["tracking_ok"] and verified_motion is not None:
             previous_index, measurement = verified_motion
             self.map.add_stereo_motion(previous_index, index, measurement)
+            if self.config.stereo_motion_regularizer:
+                if raw_reference_retry_succeeded:
+                    fit_source = "raw_supported_reference_retry"
+                elif full_supported_fallback_attempted:
+                    fit_source = "full_supported_reference"
+                elif arbitration is not None:
+                    fit_source = "reserved_supported_training_rows"
+                else:
+                    fit_source = "configured_reference"
+                selected_reference = info.get("pose_source") in (
+                    "stereo_tracking_reference", "reserved_stereo_arbitration")
+                regularizer_report = self._attach_stereo_motion_regularizer(
+                    previous_index, index, measurement, verified,
+                    motion_regularizer_source_pose, motion_regularizer_source_epoch,
+                    fit_source=fit_source,
+                    role=("selected_reference" if selected_reference
+                          else "parallel_map_agreeing"),
+                )
+                if regularizer_report is not None:
+                    info["stereo_motion_regularizer"] = regularizer_report
+        elif self.config.stereo_motion_regularizer:
+            info["stereo_motion_regularizer"] = {
+                "model": "correlated_pixel_motion_regularizer",
+                "covariance_claim": False,
+                "intentionally_reuses_sensor_evidence": True,
+                "holdout_rows_used": False,
+                "active": False,
+                "reason": "no_accepted_bidirectional_motion_edge",
+            }
         if (
             info["tracking_ok"]
             and anchor is not None
@@ -2810,6 +2976,7 @@ class SharedSlam:
                     window=self.config.bundle_window,
                     disparity_offset=self.stereo.disparity_offset if self.stereo is not None else 0.,
                     optimized=self.performance.cpu_optimizations,
+                    stereo_motion_regularizer=self.config.stereo_motion_regularizer,
                 ) if self.config.bundle_enabled else {"applied": False, "reason": "diagnostic_ablation"}
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()

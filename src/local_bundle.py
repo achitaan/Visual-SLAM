@@ -5,6 +5,7 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from scipy.sparse import lil_matrix
 from mapping_geometry import project, right_pixel
+from stereo_motion_regularizer import stereo_motion_residual
 
 
 def local_bundle_adjustment(
@@ -15,7 +16,21 @@ def local_bundle_adjustment(
     max_landmarks=200,
     disparity_offset=0.0,
     optimized=True,
+    stereo_motion_regularizer=False,
 ):
+    input_matrix = matrix
+    if stereo_motion_regularizer:
+        # The enabled factor and its pixel Jacobians are tied to one immutable
+        # calibration snapshot throughout this solve.
+        try:
+            raw_matrix = np.asarray(matrix)
+            if np.iscomplexobj(raw_matrix):
+                return {"applied": False, "reason": "invalid_regularizer_calibration"}
+            matrix = np.array(raw_matrix, dtype=float, copy=True)
+        except (TypeError, ValueError, OverflowError):
+            return {"applied": False, "reason": "invalid_regularizer_calibration"}
+        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+            return {"applied": False, "reason": "invalid_regularizer_calibration"}
     with state.lock:
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
@@ -148,6 +163,65 @@ def local_bundle_adjustment(
                 continue
             motion_checks.append((measurement.copy(), anchors,
                                   (state.poses[first].copy(), state.poses[second].copy())))
+        regularizer_checks = []
+        regularizer_skipped = []
+        if stereo_motion_regularizer:
+            matrix_snapshot = np.asarray(matrix, float)
+            for edge, factor in state.stereo_motion_regularizers.items():
+                first, second = edge
+                reason = None
+                if edge not in state.stereo_motion:
+                    reason = "verified_motion_edge_missing"
+                elif (not 0 <= first < second < len(state.poses)
+                      or second >= len(state.pose_anchors)):
+                    reason = "invalid_endpoint_frames"
+                elif (state.statuses[first] not in ("tracking", "relocalized")
+                      or state.statuses[second] not in ("tracking", "relocalized")
+                      or factor.source_status != state.statuses[first]
+                      or factor.target_status != state.statuses[second]):
+                    reason = "endpoint_status_mismatch"
+                elif (factor.source_frame != first or factor.target_frame != second
+                      or not np.array_equal(factor.measurement,
+                                            state.stereo_motion[edge])):
+                    reason = "measurement_or_frame_mismatch"
+                elif (factor.matrix.shape != (3, 3)
+                      or not np.array_equal(factor.matrix, matrix_snapshot)
+                      or factor.baseline != float(baseline)
+                      or factor.disparity_offset != float(disparity_offset)):
+                    reason = "calibration_mismatch"
+                elif (factor.model != "correlated_pixel_motion_regularizer"
+                      or factor.noise_model != "independent_1px_u_v_disparity_per_endpoint_v1"
+                      or factor.tangent_order != (
+                          "rho_x", "rho_y", "rho_z", "phi_x", "phi_y", "phi_z")
+                      or factor.covariance_claim is not False
+                      or factor.intentionally_reuses_sensor_evidence is not True
+                      or factor.holdout_rows_used is not False):
+                    reason = "invalid_factor_provenance_metadata"
+                elif (factor.sqrt_information.shape != (6, 6)
+                      or not np.isfinite(factor.sqrt_information).all()
+                      or factor.information.shape != (6, 6)
+                      or not np.isfinite(factor.information).all()
+                      or not np.allclose(
+                          factor.sqrt_information.T @ factor.sqrt_information,
+                          factor.information, rtol=1e-9, atol=1e-10)
+                      or factor.rank != 6
+                      or not np.isfinite(factor.condition_number)
+                      or factor.condition_number <= 0.):
+                    reason = "invalid_information_factor"
+                anchors = (state.pose_anchors[first], state.pose_anchors[second])
+                if reason is None and (anchors[0] == anchors[1]
+                                       or not any(anchor in pose_offset for anchor in anchors)):
+                    reason = "constant_endpoint_motion"
+                if reason is not None:
+                    regularizer_skipped.append({
+                        "source_frame": int(first), "target_frame": int(second),
+                        "reason": reason,
+                    })
+                    continue
+                regularizer_checks.append((
+                    factor, anchors,
+                    (state.poses[first].copy(), state.poses[second].copy()),
+                ))
 
     def unpack(x):
         poses = {k: p.copy() for k, p in base.items()}
@@ -164,7 +238,9 @@ def local_bundle_adjustment(
         [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out],
         dtype=int,
     )
-    pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
+    motion_rows = 6 * len(regularizer_checks) if stereo_motion_regularizer else 0
+    pattern = lil_matrix((sum(dimensions)+sum(held_dimensions)+motion_rows,
+                          len(initial)), dtype=int)
     row = 0
     for (i, k, _), dim in zip(records, dimensions):
         if k in pose_offset:
@@ -174,6 +250,12 @@ def local_bundle_adjustment(
     for (_, k, _), dim in zip(held_out, held_dimensions):
         pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
         row += dim
+    if stereo_motion_regularizer:
+        for _, anchors, _ in regularizer_checks:
+            for anchor in set(anchors):
+                if anchor in pose_offset:
+                    pattern[row:row + 6, pose_offset[anchor]:pose_offset[anchor] + 6] = 1
+            row += 6
 
     # Residual rows repeatedly use the same point indices, camera indices, and
     # measurements. Materialize those once so each solver evaluation only
@@ -286,17 +368,37 @@ def local_bundle_adjustment(
             held_dimension_mask,
         )
 
+    def motion_regularizer_residual(x):
+        if not stereo_motion_regularizer or not regularizer_checks:
+            return np.empty(0)
+        poses, _ = unpack(x)
+        values = []
+        for factor, anchors, recorded in regularizer_checks:
+            updated = [
+                poses[anchor] @ np.linalg.inv(base[anchor]) @ frame_pose
+                if anchor is not None else frame_pose
+                for anchor, frame_pose in zip(anchors, recorded)
+            ]
+            values.extend(stereo_motion_residual(factor, updated[0], updated[1]))
+        return np.asarray(values, dtype=float)
+
     def residual(x):
         cameras = camera_poses_for(x)
         points = x[point_offset:].reshape(-1, 3)
-        return np.r_[
+        image_rows = np.r_[
             optimized_residual(x, cameras, points),
             held_out_residual(cameras),
         ]
+        if not stereo_motion_regularizer:
+            return image_rows
+        return np.r_[image_rows, motion_regularizer_residual(x)]
 
     initial_cameras = camera_poses_for(initial)
     before = objective(optimized_residual(initial, initial_cameras))
     held_before = objective(held_out_residual(initial_cameras))
+    if stereo_motion_regularizer:
+        regularizer_before = objective(motion_regularizer_residual(initial))
+        augmented_before = before + held_before + regularizer_before
     result = least_squares(
         residual,
         initial,
@@ -335,7 +437,46 @@ def local_bundle_adjustment(
         max_camera_translation_change=float(max(
             np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
     )
-    if not np.isfinite(held_after) or not after+held_after < before+held_before:
+    if stereo_motion_regularizer:
+        regularizer_after = objective(motion_regularizer_residual(result.x))
+        augmented_after = after + held_after + regularizer_after
+        report.update(
+            stereo_motion_regularizer={
+                "model": "correlated_pixel_motion_regularizer",
+                "covariance_claim": False,
+                "intentionally_reuses_sensor_evidence": True,
+                "holdout_rows_used": False,
+                "active_factors": len(regularizer_checks),
+                "skipped_factors": regularizer_skipped,
+                "active_edges": [[int(f.source_frame), int(f.target_frame)]
+                                 for f, _, _ in regularizer_checks],
+                "initial_huber_cost": regularizer_before,
+                "final_huber_cost": regularizer_after,
+                "augmented_initial_huber_cost": augmented_before,
+                "augmented_final_huber_cost": augmented_after,
+                "fit_sources": sorted({factor.fit_source
+                                        for factor, _, _ in regularizer_checks}),
+                "fit_depth_policies": sorted({factor.fit_depth_policy
+                                               for factor, _, _ in regularizer_checks}),
+                "training_row_ids": {
+                    f"{factor.source_frame}:{factor.target_frame}":
+                    {
+                        "all_training": factor.training_pairs.tolist(),
+                        "forward_inliers": factor.forward_inlier_pairs.tolist(),
+                        "reverse_inliers": factor.reverse_inlier_pairs.tolist(),
+                        "information_rows": factor.information_pairs.tolist(),
+                    }
+                    for factor, _, _ in regularizer_checks
+                },
+                "overlap_with_reprojection_rows": "intentional_sensor_row_reuse",
+            }
+        )
+        if not np.isfinite(held_after) or not after+held_after < before+held_before:
+            return {**report, "reason": "affected_observations_worsened"}
+        if (not np.isfinite(augmented_after)
+                or not augmented_after < augmented_before):
+            return {**report, "reason": "augmented_regularized_objective_worsened"}
+    elif not np.isfinite(held_after) or not after+held_after < before+held_before:
         return {**report, "reason": "affected_observations_worsened"}
     if any(
         np.any(project(points[i : i + 1], poses[k], matrix)[1] <= 0)
@@ -364,6 +505,19 @@ def local_bundle_adjustment(
     with state.lock:
         if state.revision != revision:
             return {**report, "reason": "stale_revision"}
+        if stereo_motion_regularizer:
+            try:
+                live_matrix = np.asarray(input_matrix)
+                calibration_unchanged = (
+                    not np.iscomplexobj(live_matrix)
+                    and live_matrix.shape == (3, 3)
+                    and np.isfinite(live_matrix).all()
+                    and np.array_equal(np.asarray(live_matrix, float), matrix)
+                )
+            except (TypeError, ValueError, OverflowError):
+                calibration_unchanged = False
+            if not calibration_unchanged:
+                return {**report, "reason": "stale_regularizer_calibration"}
         updates = {l.id: p.copy() for l, p in zip(landmarks, points)}
         for ident, anchor, position in single_view:
             camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])

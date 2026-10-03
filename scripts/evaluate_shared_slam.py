@@ -106,6 +106,8 @@ def main():
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
+    parser.add_argument('--stereo-motion-regularizer', action='store_true',
+                        help='Experimental correlated stereo motion regularizer in local bundle adjustment')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
@@ -129,6 +131,8 @@ def main():
         parser.error('--stereo-pose-arbitration requires --stereo')
     if args.stereo_raw_reference_retry and not args.stereo:
         parser.error('--stereo-raw-reference-retry requires --stereo')
+    if args.stereo_motion_regularizer and not args.stereo:
+        parser.error('--stereo-motion-regularizer requires --stereo')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -260,7 +264,8 @@ def main():
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
-                     stereo_raw_reference_retry=args.stereo_raw_reference_retry), performance=performance)
+                     stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+                                             stereo_motion_regularizer=args.stereo_motion_regularizer), performance=performance)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")

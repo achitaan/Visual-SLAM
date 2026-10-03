@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 import numpy as np
 from kitti import validate_pose
+from stereo_motion_regularizer import StereoMotionRegularizer
 
 
 @dataclass
@@ -45,6 +46,10 @@ class MapState:
         self.relative_poses = []
         self.statuses = []
         self.stereo_motion = {}
+        # Optional factors derived from the same raw stereo rows as tracking.
+        # Keep them separate from the existing append-only motion ledger so
+        # enabling a BA regularizer cannot alter its established contents.
+        self.stereo_motion_regularizers = {}
         self.revision = 0
         self.geometry_revision = 0
         self.next_landmark = 0
@@ -63,6 +68,68 @@ class MapState:
                 raise ValueError('Stereo motion already recorded')
             # Append-only evidence accompanies recorded frames, without changing geometry.
             self.stereo_motion[key] = measurement.copy()
+
+    def add_stereo_motion_regularizer(
+        self, previous, current, factor, *, calibration_identity,
+        source_pose, source_geometry_revision,
+    ):
+        """Attach an immutable raw-row factor to its already accepted motion edge.
+
+        This is deliberately separate from ``add_stereo_motion``: the latter's
+        validation, keys, and stored measurements remain unchanged for existing
+        callers. A stale fit epoch or a factor for a different edge is rejected.
+        """
+        validate_pose(source_pose)
+        with self.lock:
+            key = (previous, current)
+            if (not isinstance(previous, (int, np.integer))
+                    or isinstance(previous, (bool, np.bool_))
+                    or not isinstance(current, (int, np.integer))
+                    or isinstance(current, (bool, np.bool_))
+                    or not self.metric or not 0 <= previous < current < len(self.poses)
+                    or self.statuses[previous] not in ('tracking', 'relocalized')
+                    or self.statuses[current] not in ('tracking', 'relocalized')):
+                return False, 'motion_edge_endpoints_not_accepted'
+            if key not in self.stereo_motion:
+                return False, 'verified_motion_edge_missing'
+            if key in self.stereo_motion_regularizers:
+                return False, 'regularizer_already_recorded'
+            if not isinstance(factor, StereoMotionRegularizer):
+                return False, 'factor_type_invalid'
+            if (factor.source_frame != previous or factor.target_frame != current):
+                return False, 'factor_frame_pair_mismatch'
+            if (getattr(factor, 'calibration_identity', None) != calibration_identity
+                    or not isinstance(calibration_identity, str)
+                    or not calibration_identity):
+                return False, 'factor_calibration_mismatch'
+            epoch = factor.source_epoch
+            if (not isinstance(epoch, tuple) or len(epoch) != 2
+                    or not all(isinstance(v, (int, np.integer))
+                               and not isinstance(v, (bool, np.bool_)) for v in epoch)
+                    or epoch[0] < 0 or epoch[0] > self.revision
+                    or epoch[1] != source_geometry_revision
+                    or not np.array_equal(self.poses[previous], source_pose)
+                    or source_geometry_revision != self.geometry_revision):
+                return False, 'source_geometry_epoch_changed'
+            if (factor.source_status != self.statuses[previous]
+                    or factor.target_status != self.statuses[current]):
+                return False, 'factor_endpoint_status_mismatch'
+            factor_measurement = np.asarray(factor.measurement)
+            if (factor_measurement.shape != (4, 4)
+                    or not np.isfinite(factor_measurement).all()
+                    or not np.array_equal(factor_measurement,
+                                          self.stereo_motion[key])):
+                return False, 'factor_measurement_mismatch'
+            if (factor.model != 'correlated_pixel_motion_regularizer'
+                    or factor.covariance_claim is not False
+                    or factor.intentionally_reuses_sensor_evidence is not True
+                    or factor.holdout_rows_used is not False
+                    or factor.sqrt_information.shape != (6, 6)
+                    or not np.isfinite(factor.sqrt_information).all()
+                    or np.linalg.matrix_rank(factor.sqrt_information) != 6):
+                return False, 'factor_metadata_or_information_invalid'
+            self.stereo_motion_regularizers[key] = factor
+            return True, 'attached'
 
     def add_landmark(self, position, descriptor, anchor, observations):
         position = np.asarray(position, float).reshape(3)

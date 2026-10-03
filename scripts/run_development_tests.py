@@ -60,6 +60,8 @@ CURATED_TESTS = (
     'tests/test_stereo_hard_conflict_selection.py',
     'tests/test_stereo_pose_arbitration_cli.py',
     'tests/test_stereo_raw_reference_retry.py',
+    'tests/test_bundle_residual_cli.py',
+    'tests/test_bundle_residual_model.py',
 )
 
 
@@ -144,7 +146,8 @@ def dependency_runtime_identity(repo=None):
 
 
 def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False,
-                                  stereo_raw_reference_retry=False):
+                                  stereo_raw_reference_retry=False,
+                                  stereo_bundle_residuals='left_right'):
     """Return the exact evaluator config represented by a development variant."""
     if variant == 'baseline':
         return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
@@ -156,7 +159,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
     return dict(MappingConfig(bundle_enabled=variant != 'map-only', loop_mode=loop_mode,
                               stereo_depth_policy=stereo_depth_policy,
                               stereo_pose_arbitration=stereo_pose_arbitration,
-                              stereo_raw_reference_retry=stereo_raw_reference_retry).__dict__)
+                              stereo_raw_reference_retry=stereo_raw_reference_retry,
+                              stereo_bundle_residuals=stereo_bundle_residuals).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -197,6 +201,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_raw_reference_retry')
                     is not identity.get('stereo_raw_reference_retry')):
                 raise ValueError('mismatched stereo-raw-reference-retry mode')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_bundle_residuals', 'left_right')
+                    != identity.get('stereo_bundle_residuals', 'left_right')):
+                raise ValueError('mismatched stereo bundle residual mode')
             if report.get('stereo') is not True:
                 raise ValueError('sensor mode is not stereo')
             if report.get('coverage') != coverage:
@@ -209,8 +217,19 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     raise ValueError('missing or mismatched evaluator feature-cache metadata')
             elif isinstance(cache_metadata, dict) and cache_metadata.get('enabled'):
                 raise ValueError('mismatched baseline feature-cache metadata')
-            if report.get('configuration') != configuration:
-                raise ValueError('mismatched evaluator configuration')
+            report_configuration = report.get('configuration')
+            if report_configuration != configuration:
+                # Pre-option reports encode the historical default implicitly.
+                # They remain useful for cost estimates only when every other
+                # configuration field matches; reusable_export stays exact.
+                legacy_default_configuration = dict(configuration)
+                legacy_default_configuration.pop('stereo_bundle_residuals', None)
+                if (identity.get('variant') == 'baseline'
+                        or identity.get('stereo_bundle_residuals', 'left_right') != 'left_right'
+                        or not isinstance(report_configuration, dict)
+                        or 'stereo_bundle_residuals' in report_configuration
+                        or report_configuration != legacy_default_configuration):
+                    raise ValueError('mismatched evaluator configuration')
 
             if identity.get('variant') == 'baseline':
                 historical_performance = source_identity.get('performance')
@@ -378,7 +397,8 @@ def reusable_export(report_path, identity):
             expected_configuration = current_mapping_configuration(
                 identity['variant'], identity['stereo_depth_policy'],
                 identity['stereo_pose_arbitration'],
-                identity.get('stereo_raw_reference_retry', False))
+                identity.get('stereo_raw_reference_retry', False),
+                identity.get('stereo_bundle_residuals', 'left_right'))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -569,6 +589,9 @@ def main():
                         help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured references with guarded raw-supported stereo geometry')
+    parser.add_argument('--stereo-bundle-residuals', choices=['left_right', 'left_disparity'],
+                        default='left_right',
+                        help='Stereo residual model for bundle SLAM variants')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
@@ -594,6 +617,7 @@ def main():
                'stereo_depth_policy': args.stereo_depth_policy,
                'stereo_pose_arbitration': args.stereo_pose_arbitration,
                'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
+               'stereo_bundle_residuals': args.stereo_bundle_residuals,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
                                'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
     try:
@@ -639,6 +663,7 @@ def main():
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
                       'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
+                      'stereo_bundle_residuals': args.stereo_bundle_residuals if variant!='baseline' else 'left_right',
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
@@ -647,14 +672,17 @@ def main():
             if not report_path.exists():
                 for candidate in (args.output/fingerprint[:12]).glob(f'*/{folder.name}/evaluation.json'):
                     if reusable_export(candidate, identity):
-                        manifest['attempts'].append({'sequence':seq,'variant':variant,'output':str(candidate.parent.relative_to(args.output/fingerprint[:12])),'status':'reused'})
+                        manifest['attempts'].append({'sequence':seq,'variant':variant,
+                            'output':str(candidate.parent.relative_to(args.output/fingerprint[:12])),
+                            'identity':identity,'status':'reused'})
                         write_json(manifest_path,manifest)
                         break
                 else:
                     candidate=None
                 if candidate is not None:continue
             if report_path.exists() and reusable_export(report_path, identity):
-                manifest['attempts'].append({'sequence':seq,'variant':variant,'output':folder.name,'status':'reused'})
+                manifest['attempts'].append({'sequence':seq,'variant':variant,
+                    'output':folder.name,'identity':identity,'status':'reused'})
                 write_json(manifest_path,manifest);continue
             # Historical reports affect scheduling only. They never satisfy a case or supply metrics.
             samples=[r['elapsed_s']/r['frames'] for r in manifest['attempts']
@@ -665,7 +693,8 @@ def main():
             expected_configuration = current_mapping_configuration(
                 variant, args.stereo_depth_policy,
                 args.stereo_pose_arbitration and variant != 'baseline',
-                args.stereo_raw_reference_retry and variant != 'baseline')
+                args.stereo_raw_reference_retry and variant != 'baseline',
+                args.stereo_bundle_residuals if variant != 'baseline' else 'left_right')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -693,6 +722,8 @@ def main():
                                 '--stereo-depth-policy',args.stereo_depth_policy])
                 if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
                 if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
+                if args.stereo_bundle_residuals != 'left_right':
+                    command.extend(['--stereo-bundle-residuals', args.stereo_bundle_residuals])
                 if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
                 if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])
@@ -704,7 +735,8 @@ def main():
                 write_json(manifest_path,manifest)
             result=run_owned(command,folder/'runner.log',max(1,budget.remaining-50),env,on_start=started)
             manifest.pop('active_case',None)
-            row={'sequence':seq,'variant':variant,'output':folder.name,**result}
+            row={'sequence':seq,'variant':variant,'output':folder.name,
+                 'identity':identity,**result}
             source_unchanged = source_fingerprint() == fingerprint
             if report_path.exists():
                 try:

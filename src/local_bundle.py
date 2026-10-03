@@ -15,7 +15,53 @@ def local_bundle_adjustment(
     max_landmarks=200,
     disparity_offset=0.0,
     optimized=True,
+    stereo_residuals="left_right",
 ):
+    if stereo_residuals not in ("left_right", "left_disparity"):
+        raise ValueError("stereo_residuals must be 'left_right' or 'left_disparity'")
+    if stereo_residuals == "left_disparity":
+        try:
+            raw_matrix = np.asarray(matrix)
+            if np.iscomplexobj(raw_matrix) or raw_matrix.shape != (3, 3):
+                raise ValueError
+            matrix = np.array(raw_matrix, dtype=float, copy=True)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(
+                "left_disparity residuals require a finite normalized real 3x3 calibration"
+            ) from None
+        if (not np.isfinite(matrix).all() or matrix[0, 0] <= 0
+                or matrix[1, 1] <= 0
+                or not np.allclose(matrix[2], [0.0, 0.0, 1.0], rtol=0.0, atol=1e-12)):
+            raise ValueError(
+                "left_disparity residuals require finite fx/fy>0 and a normalized camera row"
+            )
+        try:
+            baseline_value = np.asarray(baseline)
+            if (baseline_value.ndim != 0 or np.iscomplexobj(baseline_value)
+                    or isinstance(baseline, (bool, np.bool_))):
+                raise ValueError
+            baseline = float(baseline_value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(
+                "left_disparity residuals require a finite positive stereo baseline"
+            ) from None
+        if not np.isfinite(baseline) or baseline <= 0:
+            raise ValueError(
+                "left_disparity residuals require a finite positive stereo baseline"
+            )
+        if not state.metric:
+            raise ValueError("left_disparity residuals require a metric stereo map")
+        try:
+            offset_value = np.asarray(disparity_offset)
+            if (offset_value.ndim != 0 or np.iscomplexobj(offset_value)
+                    or isinstance(disparity_offset, (bool, np.bool_))):
+                raise ValueError
+            disparity_offset = float(offset_value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("left_disparity residuals require a finite real disparity offset") from None
+        if not np.isfinite(disparity_offset):
+            raise ValueError("left_disparity residuals require a finite real disparity offset")
+
     with state.lock:
         if len(state.keyframes) < 3:
             return {"applied": False, "reason": "insufficient_keyframes"}
@@ -249,10 +295,23 @@ def local_bundle_adjustment(
             return errors.ravel()
         values = np.zeros((len(camera_indices), 3))
         values[:, :2] = errors
-        values[:, 2] = (
-            right_pixel(projected[:, 0], z, matrix[0, 0], baseline, disparity_offset)
-            - right
-        )
+        if stereo_residuals == "left_right":
+            # Preserve the original observation residual exactly by default.
+            values[:, 2] = (
+                right_pixel(projected[:, 0], z, matrix[0, 0], baseline, disparity_offset)
+                - right
+            )
+        else:
+            # Treat measured (u, v, disparity) as the declared uniform
+            # approximate residual basis. Compute disparity directly rather
+            # than combining clipped image residuals: for invalid depth that
+            # combination could cancel the large penalties below.
+            measured_disparity = pixels[:, 0] - right
+            values[:, 2] = (
+                matrix[0, 0] * baseline / np.maximum(z, 1e-9)
+                + disparity_offset
+                - measured_disparity
+            )
         values[z <= 0] = 1e4
         return values[mask]
 
@@ -320,6 +379,29 @@ def local_bundle_adjustment(
         "observation_components": len(components),
         "unsupported_local_cameras": sorted(unsupported),
     }
+    if stereo_residuals == "left_disparity":
+        stereo_observations = int(np.count_nonzero(dimensions == 3)
+                                  + np.count_nonzero(held_dimensions == 3))
+        mono_observations = int(np.count_nonzero(dimensions == 2)
+                                + np.count_nonzero(held_dimensions == 2))
+        report["stereo_residual_model"] = {
+            "mode": "left_disparity",
+            "model": "uniform_independent_u_v_disparity_1px_assumption",
+            "formula": (
+                "e_d=(fx*baseline/z+disparity_offset)"
+                "-(measured_left_u-measured_right_u)"
+            ),
+            "covariance_claim": False,
+            "source_specific_noise_model": False,
+            "source_provenance": "unavailable",
+            "approximate_uniform_noise": True,
+            "pose_priors_added": False,
+            "objective_values_across_modes_comparable": False,
+            "active_stereo_observations": stereo_observations,
+            "active_mono_observations": mono_observations,
+            "active_stereo_rows": 3 * stereo_observations,
+            "active_mono_rows": 2 * mono_observations,
+        }
     if not np.isfinite(result.x).all():
         return report
     poses, points = unpack(result.x)

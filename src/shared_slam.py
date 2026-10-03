@@ -65,6 +65,7 @@ class MappingConfig:
     stereo_depth_policy: str = "supported"
     stereo_pose_arbitration: bool = False
     stereo_raw_reference_retry: bool = False
+    stereo_bundle_residuals: str = "left_right"
 
 
 class SharedSlam:
@@ -92,6 +93,10 @@ class SharedSlam:
         self.config = config or MappingConfig()
         if self.config.stereo_depth_policy not in ('supported', 'verified_fallback'):
             raise ValueError('Invalid stereo depth policy')
+        if self.config.stereo_bundle_residuals not in ('left_right', 'left_disparity'):
+            raise ValueError('Invalid stereo bundle residual mode')
+        if stereo is None and self.config.stereo_bundle_residuals != 'left_right':
+            raise ValueError('Stereo bundle residual mode requires calibrated stereo')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
             raise ValueError('Verified stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_pose_arbitration:
@@ -2803,14 +2808,21 @@ class SharedSlam:
             and len(self.map.keyframes) >= 3
         ):
             with self.profile.measure("local_bundle"):
-                report = local_bundle_adjustment(
-                    self.map,
-                    self.K,
-                    self.stereo.baseline if self.stereo is not None else 0.0,
-                    window=self.config.bundle_window,
-                    disparity_offset=self.stereo.disparity_offset if self.stereo is not None else 0.,
-                    optimized=self.performance.cpu_optimizations,
-                ) if self.config.bundle_enabled else {"applied": False, "reason": "diagnostic_ablation"}
+                if self.config.bundle_enabled:
+                    bundle_options = {}
+                    if self.config.stereo_bundle_residuals != 'left_right':
+                        bundle_options['stereo_residuals'] = self.config.stereo_bundle_residuals
+                    report = local_bundle_adjustment(
+                        self.map,
+                        self.K,
+                        self.stereo.baseline if self.stereo is not None else 0.0,
+                        window=self.config.bundle_window,
+                        disparity_offset=self.stereo.disparity_offset if self.stereo is not None else 0.,
+                        optimized=self.performance.cpu_optimizations,
+                        **bundle_options,
+                    )
+                else:
+                    report = {"applied": False, "reason": "diagnostic_ablation"}
             self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
             self.loop_worker.schedule(self.map)

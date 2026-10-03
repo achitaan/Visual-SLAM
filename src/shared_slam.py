@@ -267,20 +267,106 @@ class SharedSlam:
         # A valid tracked landmark need not coincide with a freshly detected SIFT keypoint.
         # Preserve its actual image observation rather than dropping it from bundle adjustment.
         detected_features = len(desc)
-        observed = set(associations.values())
+        association_output = associations
+        associations = {int(feature): int(lid) for feature, lid in associations.items()
+                        if int(lid) in self.map.landmarks
+                        and 0 <= int(feature) < len(pixels)}
+        tracks = self._unique_physical_tracks(self.accepted_tracks)
+
+        # A landmark can only have one physical observation in a keyframe. If
+        # malformed or legacy associations connect it to multiple detector
+        # pixels, keep an exact accepted-flow pixel when it identifies one row;
+        # otherwise preserve the flow observation as its own row below.
+        tracked_pixels = {int(lid): np.asarray(pixel).reshape(2) for lid, pixel in tracks}
+        groups, group_ids = self._physical_pixel_groups(pixels)
+        group_for_feature = {int(feature): int(group_ids[feature])
+                             for feature in range(len(pixels))}
+        linked_groups = {}
+        for feature, lid in associations.items():
+            linked_groups.setdefault(lid, set()).add(group_for_feature[feature])
+        blocked_groups = set()
+        for lid, linked in list(linked_groups.items()):
+            if len(linked) <= 1:
+                continue
+            flow = tracked_pixels.get(lid)
+            flow_group = (self._physical_pixel_key(flow) if flow is not None
+                          and np.isfinite(flow).all() else None)
+            matches = [group_id for group_id, members in enumerate(groups)
+                       if self._physical_pixel_key(pixels[members[0]]) == flow_group]
+            keep = matches[0] if len(matches) == 1 else None
+            if keep is None:
+                blocked_groups.update(linked)
+            associations = {feature: linked_lid for feature, linked_lid in associations.items()
+                            if linked_lid != lid or group_for_feature[feature] == keep}
+
+        # If an accepted flow point is exactly a detector pixel, reuse that
+        # physical feature group. Otherwise append its real measured location.
         appended_pixels, appended_desc = [], []
-        for lid, pixel in self.accepted_tracks:
-            if lid in self.map.landmarks and lid not in observed:
-                feature = len(pixels) + len(appended_pixels)
-                appended_pixels.append(pixel)
-                appended_desc.append(self.map.landmarks[lid].descriptor)
-                associations[feature] = lid
-                observed.add(lid)
+        observed = set(associations.values())
+        for lid, pixel in tracks:
+            if lid not in self.map.landmarks or lid in observed:
+                continue
+            key = self._physical_pixel_key(pixel)
+            exact_features = [feature for feature, group_id in enumerate(group_ids)
+                              if self._physical_pixel_key(pixels[feature]) == key]
+            if exact_features:
+                existing_ids = {associations[feature] for feature in exact_features
+                                if feature in associations}
+                if not existing_ids or existing_ids == {int(lid)}:
+                    associations[exact_features[0]] = int(lid)
+                    observed.add(int(lid))
+                    continue
+            feature = len(pixels) + len(appended_pixels)
+            appended_pixels.append(np.asarray(pixel).reshape(2))
+            appended_desc.append(self.map.landmarks[lid].descriptor)
+            associations[feature] = int(lid)
+            observed.add(int(lid))
         if appended_pixels:
             pixels = np.vstack([pixels, appended_pixels])
             desc = np.vstack([desc, appended_desc])
             points = np.vstack([points, np.full((len(appended_pixels), 3), np.nan)])
             right_u = np.r_[right_u, np.full(len(appended_pixels), np.nan)]
+
+        # Propagate a single existing identity across every SIFT orientation
+        # row at that exact pixel. Conflicting IDs are ambiguous: leave that
+        # pixel group unlinked and do not create a replacement landmark.
+        groups, group_ids = self._physical_pixel_groups(pixels)
+        clean_associations = {}
+        for group_id, members in enumerate(groups):
+            ids = {associations[feature] for feature in members
+                   if feature in associations and associations[feature] in self.map.landmarks}
+            if len(ids) > 1:
+                blocked_groups.add(group_id)
+                continue
+            if ids:
+                lid = next(iter(ids))
+                clean_associations.update({int(feature): int(lid) for feature in members})
+
+        # Distinct pixels cannot silently overwrite one landmark's observation
+        # in the per-keyframe observation dictionary. An accepted exact flow
+        # measurement can select its own pixel; otherwise drop the ambiguous ID.
+        associated_groups = {}
+        for feature, lid in clean_associations.items():
+            associated_groups.setdefault(lid, set()).add(int(group_ids[feature]))
+        for lid, linked in list(associated_groups.items()):
+            if len(linked) <= 1:
+                continue
+            flow = tracked_pixels.get(lid)
+            flow_key = (self._physical_pixel_key(flow) if flow is not None
+                        and np.isfinite(flow).all() else None)
+            matches = [gid for gid in linked
+                       if self._physical_pixel_key(pixels[groups[gid][0]]) == flow_key]
+            keep = matches[0] if len(matches) == 1 else None
+            if keep is None:
+                blocked_groups.update(linked)
+            clean_associations = {feature: value for feature, value in clean_associations.items()
+                                  if value != lid or int(group_ids[feature]) == keep}
+
+        # Track aliases are represented once for subsequent LK and prediction.
+        self.accepted_tracks = self._unique_physical_tracks(tracks)
+        association_output.clear()
+        association_output.update(clean_associations)
+        associations = association_output
         ident = len(self.map.keyframes)
         frame = MappingKeyframe(
             ident,
@@ -312,45 +398,57 @@ class SharedSlam:
         for feature, lid in associations.items():
             if lid in self.map.landmarks:
                 frame.landmark_ids[feature] = lid
-                observed_pixel = tracked_pixels.get(lid, pixels[feature])
-                same_pixel = np.allclose(observed_pixel, pixels[feature], atol=1e-5)
-                measured_right = (
-                    float(right_u[feature])
-                    if same_pixel and np.isfinite(right_u[feature])
-                    else None
-                )
-                if self.stereo is not None and self.current_disparity is not None:
-                    # The disparity at a nearby detector feature is a different
-                    # observation. Re-measure at the accepted flow coordinate.
-                    if feature in measured_rights:
-                        measured = [measured_rights[feature]]
-                    else:
-                        _, measured = self._measure_stereo_pixels(observed_pixel[None])
-                    measured_right = (
-                        float(measured[0]) if np.isfinite(measured[0]) else None
-                    )
-                self.map.landmarks[lid].observations[ident] = Observation(
-                    observed_pixel.copy(), measured_right
-                )
+        observed_by_landmark = {}
+        for feature, lid in associations.items():
+            observed_by_landmark.setdefault(lid, feature)
+        for lid, feature in observed_by_landmark.items():
+            observed_pixel = tracked_pixels.get(lid, pixels[feature])
+            same_pixel = np.array_equal(np.asarray(observed_pixel, np.float32),
+                                        np.asarray(pixels[feature], np.float32))
+            measured_right = (float(right_u[feature])
+                              if same_pixel and np.isfinite(right_u[feature]) else None)
+            if self.stereo is not None and self.current_disparity is not None:
+                # The disparity at a nearby detector feature is a different
+                # observation. Re-measure at the accepted flow coordinate.
+                if feature in measured_rights:
+                    measured = [measured_rights[feature]]
+                else:
+                    _, measured = self._measure_stereo_pixels(observed_pixel[None])
+                measured_right = float(measured[0]) if np.isfinite(measured[0]) else None
+            self.map.landmarks[lid].observations[ident] = Observation(
+                observed_pixel.copy(), measured_right
+            )
         if self.stereo is not None:
-            for feature in np.flatnonzero(np.isfinite(points).all(axis=1)):
-                if frame.landmark_ids[feature] >= 0:
+            for group_id, members in enumerate(groups):
+                if group_id in blocked_groups or any(
+                        frame.landmark_ids[feature] >= 0 for feature in members):
                     continue
-                world = pose[:3, :3] @ points[feature] + pose[:3, 3]
+                values = points[members]
+                rights = right_u[members]
+                finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
+                if not finite.all() or not np.allclose(values, values[0], rtol=1e-6, atol=1e-6) \
+                        or not np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6):
+                    continue
+                feature = members[0]
+                world = pose[:3, :3] @ values[0] + pose[:3, 3]
                 lid = self.map.add_landmark(
                     world,
                     desc[feature],
                     ident,
                     {
                         ident: Observation(
-                            pixels[feature].copy(), float(right_u[feature])
+                            pixels[feature].copy(), float(rights[0])
                         )
                     },
                 )
-                frame.landmark_ids[feature] = lid
+                frame.landmark_ids[members] = lid
         elif self.last_keyframe is not None:
             previous = self.map.keyframes[self.last_keyframe]
             measured_pairs = self._match(previous.descriptors, desc)
+            measured_pairs = self._collapse_physical_matches(
+                measured_pairs, previous.pixels, pixels,
+                previous.landmark_ids, frame.landmark_ids,
+            )
             if len(measured_pairs):
                 a, b = measured_pairs.T
                 geometry, valid = triangulate(
@@ -372,14 +470,19 @@ class SharedSlam:
             ):
                 previous = self.map.keyframes[previous_id]
                 pairs = self._match(previous.descriptors, desc)
-                pairs = np.array(
-                    [
-                        (a, b)
-                        for a, b in pairs
-                        if previous.landmark_ids[a] < 0 and frame.landmark_ids[b] < 0
-                    ],
-                    int,
-                ).reshape(-1, 2)
+                pairs = self._collapse_physical_matches(
+                    pairs, previous.pixels, pixels,
+                    previous.landmark_ids, frame.landmark_ids,
+                )
+                previous_groups, previous_group_ids = self._physical_pixel_groups(previous.pixels)
+                current_groups, current_group_ids = self._physical_pixel_groups(pixels)
+                pairs = np.asarray([
+                    (a, b) for a, b in pairs
+                    if all(previous.landmark_ids[row] < 0
+                           for row in previous_groups[previous_group_ids[a]])
+                    and all(frame.landmark_ids[row] < 0
+                            for row in current_groups[current_group_ids[b]])
+                ], int).reshape(-1, 2)
                 if not len(pairs):
                     continue
                 a, b = pairs.T
@@ -399,14 +502,16 @@ class SharedSlam:
                     )
                     previous.landmark_ids[ia] = lid
                     frame.landmark_ids[ib] = lid
+                    previous.landmark_ids[previous_groups[previous_group_ids[ia]]] = lid
+                    frame.landmark_ids[current_groups[current_group_ids[ib]]] = lid
                     if previous.depth_points is None:
                         previous.depth_points = np.full(
                             (len(previous.pixels), 3), np.nan
                         )
-                    previous.depth_points[ia] = previous.pose[:3, :3].T @ (
+                    previous.depth_points[previous_groups[previous_group_ids[ia]]] = previous.pose[:3, :3].T @ (
                         position - previous.pose[:3, 3]
                     )
-                    frame.depth_points[ib] = pose[:3, :3].T @ (position - pose[:3, 3])
+                    frame.depth_points[current_groups[current_group_ids[ib]]] = pose[:3, :3].T @ (position - pose[:3, 3])
         self.last_keyframe = ident
         self.map.revision += 1
         return ident
@@ -465,6 +570,11 @@ class SharedSlam:
                 & (projected[:, 1] < size[1] + 40)
             )
             landmarks = [l for l, ok in zip(landmarks, visible) if ok]
+            # Legacy/corrupt maps may contain multiple IDs for one exact
+            # observation pixel. They cannot contribute independent geometry.
+            ambiguous = self._landmark_pixel_identity_conflicts(landmarks)
+            if ambiguous:
+                landmarks = [l for l in landmarks if l.id not in ambiguous]
             if len(landmarks) > self.config.max_landmarks:
                 landmarks.sort(
                     key=lambda l: (max(l.observations), len(l.observations)),
@@ -473,21 +583,24 @@ class SharedSlam:
                 landmarks = landmarks[: self.config.max_landmarks]
         if not landmarks:
             return None, {}
-        # Keep descriptor storage bounded by the already-filtered tracking set.
-        # A persistent dense matrix here duplicates every descriptor in the map,
-        # even though tracking truncates the active list to max_landmarks above.
-        descriptors = np.array([l.descriptor for l in landmarks])
+        # Keep geometry unique by LM while retaining linked SIFT orientation
+        # descriptors from bounded anchor/latest keyframes for appearance.
+        descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
         pairs = self._match(descriptors, desc)
         arbitration = self._arbitration_context if self.config.stereo_pose_arbitration else None
         if arbitration is not None:
             # A held detector observation may map to a different older landmark
             # than the source snapshot. Exclude every linked descriptor/flow ID.
             arbitration['excluded_landmarks'].update(
-                landmarks[a].id for a, b in pairs if b in arbitration['excluded_targets'])
+                int(descriptor_landmark_ids[a])
+                for a, b in pairs if b in arbitration['excluded_targets'])
             pairs = np.asarray([(a, b) for a, b in pairs
                                 if b not in arbitration['excluded_targets']
-                                and landmarks[a].id not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
-        candidates = {landmarks[a].id: (pixels[b], int(b)) for a, b in pairs}
+                                and int(descriptor_landmark_ids[a])
+                                not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
+        pairs = self._collapse_landmark_matches(pairs, descriptor_landmark_ids, pixels)
+        candidates = {int(descriptor_landmark_ids[a]): (pixels[b], int(b))
+                      for a, b in pairs}
         descriptor_candidates = candidates.copy()
         flow_conflicts = 0
         flow_visibility_rejections = 0
@@ -571,6 +684,7 @@ class SharedSlam:
                                 or self._physical_pixel_key(p) in arbitration['excluded_target_pixels']):
                             continue
                         candidates[lid] = (p, feature)
+        candidates = self._collapse_track_candidates(candidates, pixels)
         if len(candidates) < self.config.min_inliers:
             return None, {
                 "num_matches": len(candidates),
@@ -660,7 +774,9 @@ class SharedSlam:
         associations = {
             candidates[ids[j]][1]: ids[j] for j in valid if candidates[ids[j]][1] >= 0
         }
-        self.accepted_tracks = [(ids[j], observed[j].copy()) for j in valid]
+        self.accepted_tracks = self._unique_physical_tracks(
+            [(ids[j], observed[j].copy()) for j in valid]
+        )
         return (pose, associations), info
 
     def _keyframe_stereo_reference(self, pixels, desc, points, size, ranked=None):
@@ -670,10 +786,11 @@ class SharedSlam:
         if ranked is None:
             local = list(self.map.keyframes.values())[-self.config.bundle_window :]
             ranked = sorted(
-                ((len(self._match(k.descriptors, desc)), k.id) for k in local),
+                ((self._physical_match_support(k, pixels, desc), k.id) for k in local),
                 reverse=True,
             )
-        query = StereoLoopFrame(pixels, points, desc, size)
+        query_rows = self._unique_physical_geometry_rows(pixels, points)
+        query = StereoLoopFrame(pixels[query_rows], points[query_rows], desc[query_rows], size)
         best, stats = None, {}
         for support, ident in ranked[:5]:
             if support < 20:
@@ -681,10 +798,13 @@ class SharedSlam:
             keyframe = self.map.keyframes[ident]
             if keyframe.depth_points is None:
                 continue
+            source_rows = self._unique_physical_geometry_rows(
+                keyframe.pixels, keyframe.depth_points
+            )
             source = StereoLoopFrame(
-                keyframe.pixels,
-                keyframe.depth_points,
-                keyframe.descriptors,
+                keyframe.pixels[source_rows],
+                keyframe.depth_points[source_rows],
+                keyframe.descriptors[source_rows],
                 keyframe.image_size or size,
             )
             verified = verify_loop(source, query, self.K, min_inliers=20)
@@ -721,7 +841,7 @@ class SharedSlam:
             candidate_ids = eligible
         ranked = sorted(
             (
-                (len(self._match(k.descriptors, desc)), k.id)
+                (self._physical_match_support(k, pixels, desc), k.id)
                 for k in (self.map.keyframes[i] for i in candidate_ids)
             ),
             reverse=True,
@@ -729,7 +849,7 @@ class SharedSlam:
         result, stats = self._recover_ranked(pixels, desc, size, points, ranked)
         if result is None and self.retrieval_index is not None and len(candidate_ids) < len(eligible):
             cached_ids = set(candidate_ids)
-            ranked = sorted(ranked + [(len(self._match(self.map.keyframes[i].descriptors, desc)), i)
+            ranked = sorted(ranked + [(self._physical_match_support(self.map.keyframes[i], pixels, desc), i)
                                       for i in eligible if i not in cached_ids], reverse=True)
             self.profile.count('recovery_exhaustive_fallbacks')
             return self._recover_ranked(pixels, desc, size, points, ranked)
@@ -778,6 +898,280 @@ class SharedSlam:
     @staticmethod
     def _physical_pixel_key(pixel):
         return tuple(np.asarray(pixel, np.float32).tolist())
+
+    @classmethod
+    def _physical_pixel_groups(cls, pixels):
+        """Return stable exact-float32 pixel groups and a row-to-group map."""
+        pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
+        keys, groups = {}, []
+        row_groups = np.full(len(pixels), -1, int)
+        for row, pixel in enumerate(pixels):
+            if not np.isfinite(pixel).all():
+                # Invalid coordinates are never evidence of shared identity.
+                group = len(groups)
+                groups.append([row])
+                row_groups[row] = group
+                continue
+            key = cls._physical_pixel_key(pixel)
+            group = keys.get(key)
+            if group is None:
+                group = len(groups)
+                keys[key] = group
+                groups.append([])
+            groups[group].append(row)
+            row_groups[row] = group
+        return groups, row_groups
+
+    @classmethod
+    def _unique_supported_feature_rows(cls, pixels, points, right_u):
+        """Return one row per pixel only when aliased metric readings agree."""
+        pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
+        points = np.asarray(points, float).reshape(-1, 3)
+        right_u = np.asarray(right_u, float).reshape(-1)
+        if len(points) != len(pixels) or len(right_u) != len(pixels):
+            return np.empty(0, int)
+        groups, _ = cls._physical_pixel_groups(pixels)
+        selected = []
+        for members in groups:
+            values = points[members]
+            rights = right_u[members]
+            finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
+            if (finite.all()
+                    and np.allclose(values, values[0], rtol=1e-6, atol=1e-6)
+                    and np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6)):
+                selected.append(members[0])
+        return np.asarray(selected, int)
+
+    @classmethod
+    def _unique_physical_geometry_rows(cls, pixels, points):
+        """Select one appearance row per physical pixel for geometric fitting."""
+        pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
+        points = np.asarray(points, float).reshape(-1, 3)
+        if len(points) != len(pixels):
+            return np.empty(0, int)
+        groups, _ = cls._physical_pixel_groups(pixels)
+        selected = []
+        for members in groups:
+            finite_rows = [row for row in members if np.isfinite(points[row]).all()]
+            if finite_rows:
+                finite_points = points[finite_rows]
+                if not np.allclose(finite_points, finite_points[0], rtol=1e-6, atol=1e-6):
+                    continue
+                selected.append(finite_rows[0])
+            else:
+                selected.append(members[0])
+        return np.asarray(selected, int)
+
+    @classmethod
+    def _collapse_physical_matches(
+        cls, pairs, first_pixels, second_pixels,
+        first_landmark_ids=None, second_landmark_ids=None,
+    ):
+        """Keep one deterministic descriptor pair per unambiguous pixel edge.
+
+        Mutual descriptor matching is unique by descriptor row, not physical
+        image point. Conflicting endpoint relations are rejected rather than
+        arbitrarily assigning one physical observation to another.
+        """
+        first_pixels = np.asarray(first_pixels, np.float32).reshape(-1, 2)
+        second_pixels = np.asarray(second_pixels, np.float32).reshape(-1, 2)
+        pairs = np.asarray(pairs)
+        if (pairs.ndim != 2 or pairs.shape[1:] != (2,)
+                or not np.issubdtype(pairs.dtype, np.integer)
+                or np.issubdtype(pairs.dtype, np.bool_)):
+            return np.empty((0, 2), int)
+        pairs = pairs.astype(int, copy=False)
+        if (len(pairs) and (np.any(pairs < 0)
+                            or np.any(pairs[:, 0] >= len(first_pixels))
+                            or np.any(pairs[:, 1] >= len(second_pixels)))):
+            return np.empty((0, 2), int)
+        first_groups, first_row_group = cls._physical_pixel_groups(first_pixels)
+        second_groups, second_row_group = cls._physical_pixel_groups(second_pixels)
+
+        def conflicting_groups(groups, row_groups, landmark_ids):
+            conflicts = set()
+            if landmark_ids is None:
+                return conflicts
+            landmark_ids = np.asarray(landmark_ids)
+            if landmark_ids.shape != (len(row_groups),):
+                return set(range(len(groups)))
+            for group_id, rows in enumerate(groups):
+                identifiers = {int(landmark_ids[row]) for row in rows
+                               if int(landmark_ids[row]) >= 0}
+                if len(identifiers) > 1:
+                    conflicts.add(group_id)
+            return conflicts
+
+        bad_first = conflicting_groups(first_groups, first_row_group, first_landmark_ids)
+        bad_second = conflicting_groups(second_groups, second_row_group, second_landmark_ids)
+        edges = {}
+        first_to_second, second_to_first = {}, {}
+        for first, second in pairs:
+            first_group = int(first_row_group[first])
+            second_group = int(second_row_group[second])
+            if first_group in bad_first or second_group in bad_second:
+                continue
+            edge = (first_group, second_group)
+            edges.setdefault(edge, []).append((int(first), int(second)))
+            first_to_second.setdefault(first_group, set()).add(second_group)
+            second_to_first.setdefault(second_group, set()).add(first_group)
+        ambiguous_first = {group for group, targets in first_to_second.items()
+                           if len(targets) > 1}
+        ambiguous_second = {group for group, sources in second_to_first.items()
+                            if len(sources) > 1}
+        selected = [min(rows) for (first_group, second_group), rows in edges.items()
+                    if first_group not in ambiguous_first
+                    and second_group not in ambiguous_second]
+        return np.asarray(sorted(selected), int).reshape(-1, 2)
+
+    def _physical_match_support(self, keyframe, pixels, descriptors):
+        pairs = self._match(keyframe.descriptors, descriptors)
+        source_pixels = getattr(keyframe, "pixels", None)
+        if source_pixels is None:
+            return len(pairs)
+        return len(self._collapse_physical_matches(
+            pairs, source_pixels, pixels, getattr(keyframe, "landmark_ids", None)
+        ))
+
+    @staticmethod
+    def _collapse_landmark_matches(pairs, landmark_ids, target_pixels):
+        """Collapse descriptor-bank aliases to one row per LM/target pixel."""
+        landmark_ids = np.asarray(landmark_ids, int)
+        target_pixels = np.asarray(target_pixels, np.float32).reshape(-1, 2)
+        pairs = np.asarray(pairs)
+        if (pairs.ndim != 2 or pairs.shape[1:] != (2,)
+                or not np.issubdtype(pairs.dtype, np.integer)
+                or np.issubdtype(pairs.dtype, np.bool_)):
+            return np.empty((0, 2), int)
+        pairs = pairs.astype(int, copy=False)
+        if (landmark_ids.ndim != 1 or (len(pairs) and (np.any(pairs < 0)
+                or np.any(pairs[:, 0] >= len(landmark_ids))
+                or np.any(pairs[:, 1] >= len(target_pixels))))):
+            return np.empty((0, 2), int)
+        _, target_row_group = SharedSlam._physical_pixel_groups(target_pixels)
+        edges = {}
+        lm_to_target, target_to_lm = {}, {}
+        for row, target in pairs:
+            landmark_id = int(landmark_ids[row])
+            target_group = int(target_row_group[target])
+            if landmark_id < 0:
+                continue
+            edges.setdefault((landmark_id, target_group), []).append((int(row), int(target)))
+            lm_to_target.setdefault(landmark_id, set()).add(target_group)
+            target_to_lm.setdefault(target_group, set()).add(landmark_id)
+        ambiguous_lms = {landmark_id for landmark_id, targets in lm_to_target.items()
+                         if len(targets) > 1}
+        ambiguous_targets = {target for target, landmarks in target_to_lm.items()
+                             if len(landmarks) > 1}
+        selected = [min(rows) for (landmark_id, target_group), rows in edges.items()
+                    if landmark_id not in ambiguous_lms
+                    and target_group not in ambiguous_targets]
+        return np.asarray(sorted(selected), int).reshape(-1, 2)
+
+    @classmethod
+    def _collapse_track_candidates(cls, candidates, target_pixels):
+        """Drop all landmarks competing for one physical current observation."""
+        target_pixels = np.asarray(target_pixels, np.float32).reshape(-1, 2)
+        group_claims, candidate_groups = {}, {}
+        for landmark_id, (pixel, feature) in candidates.items():
+            if 0 <= int(feature) < len(target_pixels):
+                key = cls._physical_pixel_key(target_pixels[int(feature)])
+            else:
+                key = cls._physical_pixel_key(np.asarray(pixel, np.float32).reshape(2))
+            candidate_groups[int(landmark_id)] = key
+            group_claims.setdefault(key, set()).add(int(landmark_id))
+        conflicts = {key for key, identifiers in group_claims.items()
+                     if len(identifiers) > 1}
+        return {landmark_id: value for landmark_id, value in candidates.items()
+                if candidate_groups[int(landmark_id)] not in conflicts}
+
+    def _landmark_descriptor_bank(self, landmarks):
+        """Use anchor/latest linked SIFT rows without retaining a dense map copy."""
+        frames_for_landmark, requested_by_frame = {}, {}
+        for landmark in landmarks:
+            frame_ids = []
+            for frame_id in (landmark.anchor, max(landmark.observations, default=landmark.anchor)):
+                if frame_id not in frame_ids:
+                    frame_ids.append(frame_id)
+            frames_for_landmark[int(landmark.id)] = frame_ids
+            for frame_id in frame_ids:
+                if frame_id in self.map.keyframes:
+                    requested_by_frame.setdefault(frame_id, set()).add(int(landmark.id))
+
+        rows_by_landmark = {}
+        for frame_id, requested in requested_by_frame.items():
+            keyframe = self.map.keyframes[frame_id]
+            rows = np.flatnonzero(np.isin(keyframe.landmark_ids, list(requested)))
+            for row in rows:
+                landmark_id = int(keyframe.landmark_ids[row])
+                rows_by_landmark.setdefault(landmark_id, {}).setdefault(frame_id, []).append(
+                    keyframe.descriptors[row]
+                )
+
+        descriptors, identifiers = [], []
+        for landmark in landmarks:
+            found = False
+            seen_descriptors = set()
+            rows = rows_by_landmark.get(int(landmark.id), {})
+            for frame_id in frames_for_landmark[int(landmark.id)]:
+                for descriptor in rows.get(frame_id, ()):
+                    signature = (descriptor.dtype.str, descriptor.shape, descriptor.tobytes())
+                    if signature in seen_descriptors:
+                        continue
+                    seen_descriptors.add(signature)
+                    descriptors.append(descriptor)
+                    identifiers.append(int(landmark.id))
+                    found = True
+            if not found:
+                descriptors.append(landmark.descriptor)
+                identifiers.append(int(landmark.id))
+        if not descriptors:
+            return np.empty((0, 128), np.float32), np.empty(0, int)
+        return np.asarray(descriptors), np.asarray(identifiers, int)
+
+    def _landmark_pixel_identity_conflicts(self, landmarks):
+        """Find distinct LMs claiming one exact pixel in one keyframe."""
+        claims = {}
+        for landmark in landmarks:
+            for keyframe_id, observation in landmark.observations.items():
+                # Synthetic map-only clients can provide observations without
+                # keyframes; there is no detector-row identity to disambiguate.
+                if keyframe_id not in self.map.keyframes:
+                    continue
+                pixel = np.asarray(observation.pixel, np.float32).reshape(-1)
+                if pixel.shape == (2,) and np.isfinite(pixel).all():
+                    claims.setdefault((int(keyframe_id), self._physical_pixel_key(pixel)), set()).add(
+                        int(landmark.id)
+                    )
+        return {landmark_id for identifiers in claims.values() if len(identifiers) > 1
+                for landmark_id in identifiers}
+
+    @classmethod
+    def _unique_physical_tracks(cls, tracks):
+        """Keep one LM per exact accepted-flow pixel and one pixel per LM."""
+        by_landmark, by_pixel = {}, {}
+        normalized = []
+        for landmark_id, pixel in tracks:
+            landmark_id = int(landmark_id)
+            pixel = np.asarray(pixel).reshape(2)
+            if not np.isfinite(pixel).all():
+                continue
+            key = cls._physical_pixel_key(pixel)
+            by_landmark.setdefault(landmark_id, set()).add(key)
+            by_pixel.setdefault(key, set()).add(landmark_id)
+            normalized.append((landmark_id, pixel.copy(), key))
+        ambiguous_landmarks = {landmark_id for landmark_id, keys in by_landmark.items()
+                               if len(keys) > 1}
+        ambiguous_pixels = {key for key, identifiers in by_pixel.items()
+                            if len(identifiers) > 1}
+        result, seen = [], set()
+        for landmark_id, pixel, key in normalized:
+            if (landmark_id in ambiguous_landmarks or key in ambiguous_pixels
+                    or landmark_id in seen):
+                continue
+            result.append((landmark_id, pixel))
+            seen.add(landmark_id)
+        return result
 
     def _capture_supported_stereo(self, index, pixels, desc, size):
         # Native extraction copies the supported surface before restoration.
@@ -1485,7 +1879,11 @@ class SharedSlam:
         info = {
             "frame": index,
             "features": len(pixels),
-            "valid_stereo_depth": int(np.isfinite(points).all(axis=1).sum()),
+            "valid_stereo_depth": int(
+                len(self._unique_supported_feature_rows(pixels, points, right_u))
+                if self.stereo is not None
+                else np.isfinite(points).all(axis=1).sum()
+            ),
             "num_matches": 0,
             "num_inliers": 0,
             "tracking_ok": False,
@@ -1499,26 +1897,27 @@ class SharedSlam:
         status = "initializing" if not self.map.landmarks else "lost"
         if not self.map.keyframes:
             if self.stereo is not None:
-                valid = np.flatnonzero(np.isfinite(points).all(axis=1))
+                valid = self._unique_supported_feature_rows(pixels, points, right_u)
                 if len(valid) >= 30 and coverage(pixels[valid], size) >= 4:
                     anchor = self._keyframe(
                         index, pose, pixels, desc, points, right_u, {}
                     )
                     status = "tracking"
                     info["tracking_ok"] = True
-                    self.accepted_tracks = [
+                    self.accepted_tracks = self._unique_physical_tracks([
                         (
                             int(self.map.keyframes[anchor].landmark_ids[j]),
                             pixels[j].copy(),
                         )
                         for j in valid
-                    ]
+                    ])
                     inlier_features = set(valid.tolist())
             elif self.initial is None:
                 self.initial = (index, pixels.copy(), desc.copy())
             else:
                 start, initial_pixels, initial_desc = self.initial
                 pairs = self._match(initial_desc, desc)
+                pairs = self._collapse_physical_matches(pairs, initial_pixels, pixels)
                 info["num_matches"] = len(pairs)
                 result = (
                     initialize_monocular(
@@ -1549,6 +1948,8 @@ class SharedSlam:
                     )
                     self.map.keyframes.update({0: first, 1: second})
                     first.image_size = second.image_size = size
+                    initial_groups, initial_group_ids = self._physical_pixel_groups(initial_pixels)
+                    current_groups, current_group_ids = self._physical_pixel_groups(pixels)
                     for position, j in zip(positions, valid):
                         a, b = pairs[j]
                         lid = self.map.add_landmark(
@@ -1560,10 +1961,12 @@ class SharedSlam:
                                 1: Observation(pixels[b].copy()),
                             },
                         )
-                        first.landmark_ids[a] = lid
-                        second.landmark_ids[b] = lid
-                        first.depth_points[a] = position
-                        second.depth_points[b] = pose[:3, :3].T @ (
+                        first_rows = initial_groups[initial_group_ids[a]]
+                        second_rows = current_groups[current_group_ids[b]]
+                        first.landmark_ids[first_rows] = lid
+                        second.landmark_ids[second_rows] = lid
+                        first.depth_points[first_rows] = position
+                        second.depth_points[second_rows] = pose[:3, :3].T @ (
                             position - pose[:3, 3]
                         )
                     self.last_keyframe = anchor = 1
@@ -1575,13 +1978,13 @@ class SharedSlam:
                         num_inliers=len(valid),
                         inlier_ratio=len(valid) / len(pairs),
                     )
-                    self.accepted_tracks = [
+                    self.accepted_tracks = self._unique_physical_tracks([
                         (
                             int(second.landmark_ids[pairs[j, 1]]),
                             pixels[pairs[j, 1]].copy(),
                         )
                         for j in valid
-                    ]
+                    ])
                     inlier_features = set(pairs[valid, 1].tolist())
         else:
             result, stats = self._track(pixels, desc, size)

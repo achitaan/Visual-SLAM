@@ -80,7 +80,7 @@ npm test
 npm run build
 ```
 
-Local backend validation passes 136 tests. The dashboard passed its 4 socket tests, type checking and production build. GitHub Actions runs backend tests on Windows/Linux and dashboard tests/build on Linux; inspect the workflow for remote results.
+Run the backend suite with `python -m pytest -q`. The dashboard checks include socket tests, type checking and a production build. GitHub Actions runs backend tests on Windows/Linux and dashboard checks on Linux; inspect the exact commit's workflow for remote results.
 
 The evaluator writes KITTI-format poses and JSON metrics. ATE uses explicitly labeled SE(3) alignment without scale fitting. Translation and rotation drift use the official 100–800 m segments in metric coordinates. Partial runs are labeled; insufficient segment coverage produces null drift. `--estimates-root` evaluates saved trajectories without rerunning tracking.
 
@@ -144,6 +144,10 @@ checks. Full validation and a release review remain pending.
 fresh VO comparisons, trajectories and sparse maps for 04/80 and 01/350. The
 latest diagnostic removes the lost frame on 01 but fails the rotation regression
 gate; full-sequence testing remains paused.
+
+[Same-source bundle adjustment ablation](docs/benchmark/same-source-bundle-ablation.md) isolates the position and rotation trade-off without changing inputs or acceptance thresholds.
+
+[Physical landmark identity validation](docs/benchmark/physical-identity-validation.md) reports the latest correctness repair, improved 04 accuracy, and the retained 01 accuracy and runtime regressions.
 
 Use `--slam` to select persistent landmark tracking and local bundle adjustment;
 add `--stereo` for calibrated stereo input. Commands without `--slam` retain the

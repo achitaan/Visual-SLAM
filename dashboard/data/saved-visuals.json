@@ -1,5 +1,20 @@
 [
   {
+    "file": "physical-identity-comparison.png",
+    "label": "Physical landmark identity: measured accuracy trade-offs",
+    "group": "04/80 and 01/350; saved uncached runs; accuracy gate failed; loops off"
+  },
+  {
+    "file": "physical-identity01-overview.png",
+    "label": "Physical identity KITTI 01: trajectory and sparse map",
+    "group": "350 frames; zero lost; saved diagnostic; no live-loop evidence"
+  },
+  {
+    "file": "same-source-bundle-ablation.png",
+    "label": "Bundle adjustment: same-source comparison",
+    "group": "04/80 and 01/350; loops off; position/rotation trade-off; saved diagnostics"
+  },
+  {
     "file": "reserved-stereo-validation.png",
     "label": "Reserved stereo validation: fresh VO comparison",
     "group": "04/80 and 01/350; saved uncached diagnostics; 01 rotation gate failed"

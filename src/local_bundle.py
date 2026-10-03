@@ -81,7 +81,20 @@ def local_bundle_adjustment(
     optimized=True,
     diagnostic_sink=None,
     training_factor_provider=None,
+    solver_accuracy="default",
 ):
+    if solver_accuracy not in ("default", "precise"):
+        raise ValueError("solver_accuracy must be 'default' or 'precise'")
+
+    def solver_metadata(effective, inner_options=None):
+        return {
+            "solver_accuracy_requested": solver_accuracy,
+            "solver_accuracy_effective": effective,
+            "solver_inner_options": (
+                None if inner_options is None else dict(inner_options)
+            ),
+        }
+
     diagnostics_enabled = diagnostic_sink is not None
     provider_enabled = training_factor_provider is not None
     snapshot_enabled = diagnostics_enabled or provider_enabled
@@ -115,7 +128,8 @@ def local_bundle_adjustment(
 
     with state.lock:
         if len(state.keyframes) < 3:
-            return {"applied": False, "reason": "insufficient_keyframes"}
+            return {"applied": False, "reason": "insufficient_keyframes",
+                    **solver_metadata("not_run")}
         revision = state.revision
         geometry_revision = state.geometry_revision if snapshot_enabled else None
         diagnostic_metric = bool(state.metric) if snapshot_enabled else None
@@ -166,7 +180,8 @@ def local_bundle_adjustment(
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
         landmarks = landmarks[:max_landmarks]
         if len(landmarks) < 15:
-            return {"applied": False, "reason": "insufficient_observations"}
+            return {"applied": False, "reason": "insufficient_observations",
+                    **solver_metadata("not_run")}
         diagnostic_selected_landmarks = [] if snapshot_enabled else None
         diagnostic_selected_ids = [] if snapshot_enabled else None
         if snapshot_enabled:
@@ -242,7 +257,8 @@ def local_bundle_adjustment(
                         fixed.update(component)
         free = [k for k in free if k not in fixed]
         if not free:
-            return {"applied": False, "reason": "no_anchored_free_cameras"}
+            return {"applied": False, "reason": "no_anchored_free_cameras",
+                    **solver_metadata("not_run")}
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
             (landmark.position.copy(), k, o)
@@ -1086,17 +1102,21 @@ def local_bundle_adjustment(
         "x_scale": variable_scale,
         "tr_solver": "lsmr",
     }
-    if owned_training_rows is not None:
+    precise_inner_solve = solver_accuracy == "precise" or owned_training_rows is not None
+    inner_options = None
+    if precise_inner_solve:
         # The added target-relative q/C block can be exactly independent of a
         # free target pose while remaining coupled through shared world points.
         # Default LSMR tolerances produced inaccurate inner steps and a tiny
-        # source-pose update despite a lower image cost. Tighten only this
-        # audited augmentation's inner solve; keep the 30 outer evaluations.
-        solver_options["tr_options"] = {
+        # source-pose update despite a lower image cost. The explicit precise
+        # policy applies the same inner accuracy to ordinary BA controls.
+        # Keep the 30 outer evaluations and all acceptance rules unchanged.
+        inner_options = {
             "atol": 1e-12,
             "btol": 1e-12,
             "maxiter": max(500, len(initial)),
         }
+        solver_options["tr_options"] = dict(inner_options)
     result = least_squares(residual, initial, **solver_options)
     result_cameras = camera_poses_for(result.x)
     result_points = result.x[point_offset:point_limit].reshape(-1, 3)
@@ -1115,6 +1135,10 @@ def local_bundle_adjustment(
         "fixed_keyframes": sorted(set(base) - set(free)),
         "observation_components": len(components),
         "unsupported_local_cameras": sorted(unsupported),
+        **solver_metadata(
+            "precise_lsmr" if precise_inner_solve else "legacy_defaults",
+            inner_options,
+        ),
     }
     result_is_finite = bool(np.isfinite(result.x).all())
     poses = points = None

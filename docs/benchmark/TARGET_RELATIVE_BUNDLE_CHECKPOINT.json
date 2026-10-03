@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "status": "synthetic_checks_pass_replay_pending",
+  "status": "fresh_matched_04_80_accuracy_gate_failed",
   "source_runtime_fingerprint": "4c2071864e762480618faa13c1044cde9e4038b609664af6cc1167f453e74062",
-  "scope": "target-relative chart with active-augmentation-only tighter LSMR",
+  "scope": "partial 04/80 diagnostic; default-off experiment; not release validation",
   "backend_tests": {
     "passed": 435,
     "skipped": 0,
@@ -180,5 +180,170 @@
     "deadline_utc": "2026-10-03T19:21:22+00:00",
     "next_case": "fresh CUDA stereo04/80 ON/OFF",
     "accuracy_result_claimed": false
+  },
+  "source_fingerprint": "4c2071864e762480618faa13c1044cde9e4038b609664af6cc1167f453e74062",
+  "source_backend_group": {
+    "source_fingerprint": "4c2071864e762480618faa13c1044cde9e4038b609664af6cc1167f453e74062",
+    "matching_backend": "cuda",
+    "runtime_identity_sha256": "8df0767dd06bbb3976efeff815e852ddf004a395655de5777413c2bbaef72cd8",
+    "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+    "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+    "coverage": "partial",
+    "identities_match_except_experiment_flag": true,
+    "metrics_reused": false
+  },
+  "fresh_matched_04_80": {
+    "gate_status": "fail",
+    "release_ready": false,
+    "accuracy_changes_percent_on_vs_off": {
+      "ate_rmse_m": 46.51985963883569,
+      "translation_percent": 46.16980959364161,
+      "rotation_deg_per_m": -14.830385612519215
+    },
+    "failures": [
+      {
+        "metric": "ate_rmse_m",
+        "reason": "regression_exceeds_declared_five_percent_gate"
+      },
+      {
+        "metric": "translation_percent",
+        "reason": "regression_exceeds_declared_five_percent_gate"
+      }
+    ],
+    "lost_frames": {
+      "on": 0,
+      "off": 0
+    },
+    "runs": {
+      "on": {
+        "run": "results/integration/target-relative-bundle/4c2071864e76/04-owned-on-1791054333159260100/run",
+        "sequence": "04",
+        "frames": 80,
+        "coverage": "partial",
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.16393180558439177,
+          "raw_ate_rmse_m": 0.3225197101442554,
+          "segment_count": 1,
+          "translation_percent": 0.4103762784198215,
+          "rotation_deg_per_m": 0.004814453738664574
+        },
+        "lost_frames": 0,
+        "elapsed_seconds": 76.68390720000025,
+        "peak_memory_mb": 972.75,
+        "bundle_adjustments_applied": 9,
+        "matching_backend": {
+          "requested": "cuda",
+          "cuda_available": true,
+          "fallback_reason": null,
+          "python_version": "3.12.14",
+          "pytorch_version": "2.7.1+cu126",
+          "cuda_runtime_version": "12.6",
+          "cuda_device_index": 0,
+          "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+          "cuda_device_capability": [
+            7,
+            5
+          ],
+          "cuda_calls": 158,
+          "cpu_calls": 0,
+          "ambiguous_rows_on_cpu": 6852,
+          "auto_decisions": {},
+          "peak_cuda_allocated_mb": 25.9541015625,
+          "peak_cuda_reserved_mb": 46.0
+        }
+      },
+      "off": {
+        "run": "results/integration/target-relative-bundle/4c2071864e76/04-owned-off-1791054420942398900/run",
+        "sequence": "04",
+        "frames": 80,
+        "coverage": "partial",
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.11188367637566381,
+          "raw_ate_rmse_m": 0.27379108167601507,
+          "segment_count": 1,
+          "translation_percent": 0.2807531045984703,
+          "rotation_deg_per_m": 0.005652783299876321
+        },
+        "lost_frames": 0,
+        "elapsed_seconds": 46.942569699982414,
+        "peak_memory_mb": 970.33984375,
+        "bundle_adjustments_applied": 9,
+        "matching_backend": {
+          "requested": "cuda",
+          "cuda_available": true,
+          "fallback_reason": null,
+          "python_version": "3.12.14",
+          "pytorch_version": "2.7.1+cu126",
+          "cuda_runtime_version": "12.6",
+          "cuda_device_index": 0,
+          "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+          "cuda_device_capability": [
+            7,
+            5
+          ],
+          "cuda_calls": 158,
+          "cpu_calls": 0,
+          "ambiguous_rows_on_cpu": 6806,
+          "auto_decisions": {},
+          "peak_cuda_allocated_mb": 25.97412109375,
+          "peak_cuda_reserved_mb": 46.0
+        }
+      }
+    },
+    "activity": {
+      "on_bundle_adjustments_applied": 9,
+      "on_free_intermediate_corrections_applied": 9,
+      "on_accepted_training_factors": 1040,
+      "temporary_source_rows_persisted": false
+    },
+    "expanded_to_01": false,
+    "expanded_to_01_reason": "The matched 04/80 accuracy gate failed; 01/350 and 01/129 were not run.",
+    "ground_truth_policy": "evaluator-only; no ground-truth input to estimator",
+    "cycle_status": "stopped_failure_or_incomplete",
+    "cycle_started_utc": "2026-10-03T19:04:45+00:00",
+    "cycle_finished_utc": "2026-10-03T19:07:57.774733+00:00",
+    "cycle_path": "results/integration/target-relative-cycle/4c2071864e76-1791054330628572900",
+    "gate_path": "results/integration/target-relative-cycle/4c2071864e76-1791054330628572900/04-80-gate.json",
+    "next_causal_control": "default OFF, precise OFF, precise ON; compare all three under the same fresh input/runtime group to isolate solver precision from measurement augmentation.",
+    "previous_transport_certificate_recheck": {
+      "status": "not_confirmed_by_recheck",
+      "transported_original_cost": 26.0007,
+      "saved_on_original_cost": 23.0612,
+      "interpretation": "The earlier claimed lower-original-cost transport certificate is not valid; do not use it as evidence."
+    }
+  },
+  "publication_assets": {
+    "comparison_plot": "plots/target-relative-04-80-on-off-failed-gate.png",
+    "on_overview": "plots/target-relative-04-80-on-overview.png",
+    "off_overview": "plots/target-relative-04-80-off-overview.png"
+  },
+  "history": {
+    "checkpoint_status_before_fresh_pair": "synthetic_checks_pass_replay_pending",
+    "previous_deferrals": [
+      {
+        "status": "checkpoint_pushed_replay_deferred_budget_gate",
+        "started_utc": "2026-10-03T18:21:22+00:00",
+        "deadline_utc": "2026-10-03T19:21:22+00:00",
+        "source_fingerprint": "4c2071864e762480618faa13c1044cde9e4038b609664af6cc1167f453e74062",
+        "reason": "Feasible same-objective frame14 candidate beats prior capped world-coordinate result; test equivalent relative chart rather than changing weights or thresholds.",
+        "error": "RuntimeError: Full pair estimate does not fit inclusive budget",
+        "replay_evaluator_launched": false,
+        "next_action": "Fresh GPU04/80 paired comparison in next budgeted cycle; no source edits needed",
+        "release_ready": false
+      }
+    ]
+  },
+  "full_validation": "not performed; sequence 01 was not run",
+  "accuracy_improvement_claim": false,
+  "publication_asset_sha256": {
+    "comparison_plot": "90386e5409aea13501c35d780657154ca58f3823b57994900aba6f194df13deb",
+    "on_overview": "e399efafebc55021c9b292fabf7ec8e4485cd880cf4d58dd5f4f1b8a025cd98e",
+    "off_overview": "4488e4158858bbcdf2e3c633689f7d81b5c8aa4b842b473ebdb241596f52698e"
   }
 }

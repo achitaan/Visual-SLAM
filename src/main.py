@@ -108,6 +108,8 @@ def main() -> None:
                         help='Retry a failed configured stereo reference with guarded raw-supported geometry')
     parser.add_argument('--stereo-owned-image-bundle', action='store_true',
                         help='Opt in to bounded image factors from the selected reserved stereo training rows')
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+                        help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path)
@@ -130,6 +132,8 @@ def main() -> None:
     if args.stereo_owned_image_bundle and not (
             args.slam and args.stereo and args.stereo_pose_arbitration):
         parser.error('--stereo-owned-image-bundle requires --slam --stereo --stereo-pose-arbitration')
+    if args.bundle_solver_accuracy != 'default' and not args.slam:
+        parser.error('--bundle-solver-accuracy precise requires --slam')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
         parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
     if args.bundle_diagnostics_frames is not None:
@@ -226,7 +230,8 @@ def main() -> None:
                         config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
                                              stereo_pose_arbitration=args.stereo_pose_arbitration,
                                              stereo_raw_reference_retry=args.stereo_raw_reference_retry,
-                                             stereo_owned_image_bundle=args.stereo_owned_image_bundle),
+                                             stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+                                             bundle_solver_accuracy=args.bundle_solver_accuracy),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
     if shared is not None:

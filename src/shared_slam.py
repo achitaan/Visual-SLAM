@@ -153,6 +153,11 @@ class MappingConfig:
     stereo_pose_arbitration: bool = False
     stereo_raw_reference_retry: bool = False
     stereo_owned_image_bundle: bool = False
+    bundle_solver_accuracy: str = "default"
+
+    def __post_init__(self):
+        if self.bundle_solver_accuracy not in ("default", "precise"):
+            raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
 
 
 class SharedSlam:
@@ -181,6 +186,8 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        if self.config.bundle_solver_accuracy not in ("default", "precise"):
+            raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
         if self.config.stereo_depth_policy not in ('supported', 'verified_fallback', 'verified_all'):
             raise ValueError('Invalid stereo depth policy')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
@@ -4083,6 +4090,7 @@ class SharedSlam:
                         "window": self.config.bundle_window,
                         "disparity_offset": self.stereo.disparity_offset if self.stereo is not None else 0.,
                         "optimized": self.performance.cpu_optimizations,
+                        "solver_accuracy": self.config.bundle_solver_accuracy,
                     }
                     if diagnostic_capture:
                         diagnostic_inputs = {

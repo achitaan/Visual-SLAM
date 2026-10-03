@@ -108,6 +108,8 @@ def main():
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
     parser.add_argument('--stereo-owned-image-bundle', action='store_true',
                         help='Opt in to factors from selected reserved stereo training observations')
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+                        help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
@@ -287,7 +289,8 @@ def main():
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
                      stereo_raw_reference_retry=args.stereo_raw_reference_retry,
-                     stereo_owned_image_bundle=args.stereo_owned_image_bundle), performance=performance,
+                     stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+                     bundle_solver_accuracy=args.bundle_solver_accuracy), performance=performance,
                      bundle_diagnostic_writer=bundle_diagnostic_writer)
     source_snapshot = {
         p.name: p.read_bytes()
@@ -413,6 +416,7 @@ def main():
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
         "configuration": slam.config.__dict__,
+        "bundle_solver_accuracy": getattr(slam.config, "bundle_solver_accuracy", "default"),
         "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,

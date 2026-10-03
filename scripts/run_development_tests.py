@@ -67,6 +67,7 @@ CURATED_TESTS = (
     'tests/test_owned_stereo_bundle.py',
     'tests/test_free_source_stereo_bundle.py',
     'tests/test_target_relative_stereo_bundle.py',
+    'tests/test_bundle_solver_accuracy_control.py',
     'tests/test_bundle_stereo_motion.py',
 )
 
@@ -153,9 +154,14 @@ def dependency_runtime_identity(repo=None):
 
 def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False,
                                   stereo_raw_reference_retry=False,
-                                  stereo_owned_image_bundle=False):
+                                  stereo_owned_image_bundle=False,
+                                  bundle_solver_accuracy='default'):
     """Return the exact evaluator config represented by a development variant."""
+    if bundle_solver_accuracy not in ('default', 'precise'):
+        raise ValueError('bundle_solver_accuracy must be default or precise')
     if variant == 'baseline':
+        if bundle_solver_accuracy != 'default':
+            raise ValueError('precise bundle solver accuracy is not available for baseline')
         return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
     source = str(REPO / 'src')
     if source not in sys.path:
@@ -166,7 +172,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
                               stereo_depth_policy=stereo_depth_policy,
                               stereo_pose_arbitration=stereo_pose_arbitration,
                               stereo_raw_reference_retry=stereo_raw_reference_retry,
-                              stereo_owned_image_bundle=stereo_owned_image_bundle).__dict__)
+                              stereo_owned_image_bundle=stereo_owned_image_bundle,
+                              bundle_solver_accuracy=bundle_solver_accuracy).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -211,6 +218,44 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_owned_image_bundle', False)
                     is not identity.get('stereo_owned_image_bundle', False)):
                 raise ValueError('mismatched owned-stereo-image-bundle mode')
+            expected_accuracy = identity.get('bundle_solver_accuracy', 'default')
+            historical_accuracy = source_identity.get('bundle_solver_accuracy')
+            report_accuracy = report.get('bundle_solver_accuracy')
+            if identity.get('variant') != 'baseline':
+                if expected_accuracy not in ('default', 'precise'):
+                    raise ValueError('invalid requested bundle solver accuracy mode')
+                if not isinstance(configuration, dict):
+                    raise ValueError('missing expected evaluator configuration')
+                expected_configuration = dict(configuration)
+                expected_configured_accuracy = expected_configuration.get('bundle_solver_accuracy')
+                if expected_accuracy == 'precise':
+                    if expected_configured_accuracy != 'precise':
+                        raise ValueError('precise timing history requires an explicit precise expected configuration')
+                else:
+                    if expected_configured_accuracy not in (None, 'default'):
+                        raise ValueError('mismatched expected bundle solver accuracy mode')
+                    # Old explicit cost-history fixtures can predate this opt-in field.
+                    # Normalize only default mode; precise history requires explicit provenance.
+                    expected_configuration.setdefault('bundle_solver_accuracy', 'default')
+                historical_configuration = report.get('configuration')
+                if not isinstance(historical_configuration, dict):
+                    raise ValueError('missing evaluator configuration')
+                configured_accuracy = historical_configuration.get('bundle_solver_accuracy')
+                observed_modes = (historical_accuracy, report_accuracy, configured_accuracy)
+                if expected_accuracy == 'precise':
+                    if any(value != 'precise' for value in observed_modes):
+                        raise ValueError('missing or mismatched precise bundle solver accuracy mode')
+                else:
+                    if any(value not in (None, 'default') for value in observed_modes):
+                        raise ValueError('mismatched bundle solver accuracy mode')
+                    # Explicit historical evaluation files may predate this opt-in field.
+                    # Treat absent mode as default only for cost estimation, never reuse.
+                    historical_configuration = dict(historical_configuration)
+                    historical_configuration.setdefault('bundle_solver_accuracy', 'default')
+                    if historical_accuracy is None or report_accuracy is None or configured_accuracy is None:
+                        item['bundle_solver_accuracy_legacy_default_normalized'] = True
+            elif expected_accuracy != 'default':
+                raise ValueError('precise bundle solver accuracy is not available for baseline')
             historical_diagnostics = source_identity.get('bundle_diagnostics_enabled', False)
             historical_frames = source_identity.get('bundle_diagnostics_frames', [])
             if (historical_diagnostics is not identity.get('bundle_diagnostics_enabled', False)
@@ -228,7 +273,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     raise ValueError('missing or mismatched evaluator feature-cache metadata')
             elif isinstance(cache_metadata, dict) and cache_metadata.get('enabled'):
                 raise ValueError('mismatched baseline feature-cache metadata')
-            if report.get('configuration') != configuration:
+            if identity.get('variant') == 'baseline':
+                historical_configuration = report.get('configuration')
+                expected_configuration = configuration
+            if historical_configuration != expected_configuration:
                 raise ValueError('mismatched evaluator configuration')
 
             if identity.get('variant') == 'baseline':
@@ -507,7 +555,8 @@ def reusable_export(report_path, identity):
                 identity['variant'], identity['stereo_depth_policy'],
                 identity['stereo_pose_arbitration'],
                 identity.get('stereo_raw_reference_retry', False),
-                identity.get('stereo_owned_image_bundle', False))
+                identity.get('stereo_owned_image_bundle', False),
+                identity.get('bundle_solver_accuracy', 'default'))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -702,6 +751,8 @@ def main():
                         help='Retry failed configured references with guarded raw-supported stereo geometry')
     parser.add_argument('--stereo-owned-image-bundle', action='store_true',
                         help='Use selected reserved raw stereo image rows in the local bundle')
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+                        help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
                         help='Capture immutable local bundle snapshots for selected frame IDs')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
@@ -711,6 +762,8 @@ def main():
     if args.stereo_owned_image_bundle and (
             not args.stereo_pose_arbitration or not any(v != 'baseline' for v in args.variants)):
         parser.error('--stereo-owned-image-bundle requires --stereo-pose-arbitration and a SharedSlam variant')
+    if args.bundle_solver_accuracy == 'precise' and 'baseline' in args.variants:
+        parser.error('--bundle-solver-accuracy precise cannot be combined with the preserved baseline variant')
     bundle_diagnostics_frames = (sorted(args.bundle_diagnostics_frames)
                                  if args.bundle_diagnostics_frames is not None else [])
     if args.bundle_diagnostics_frames is not None:
@@ -742,6 +795,7 @@ def main():
                'stereo_pose_arbitration': args.stereo_pose_arbitration,
                'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
                'stereo_owned_image_bundle': args.stereo_owned_image_bundle,
+               'bundle_solver_accuracy': args.bundle_solver_accuracy,
                'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                'bundle_diagnostics_frames': bundle_diagnostics_frames,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
@@ -790,6 +844,7 @@ def main():
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
                       'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
                       'stereo_owned_image_bundle': args.stereo_owned_image_bundle if variant!='baseline' else False,
+                      'bundle_solver_accuracy': args.bundle_solver_accuracy if variant!='baseline' else 'default',
                       'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                       'bundle_diagnostics_frames': bundle_diagnostics_frames,
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
@@ -819,7 +874,8 @@ def main():
                 variant, args.stereo_depth_policy,
                 args.stereo_pose_arbitration and variant != 'baseline',
                 args.stereo_raw_reference_retry and variant != 'baseline',
-                args.stereo_owned_image_bundle and variant != 'baseline')
+                args.stereo_owned_image_bundle and variant != 'baseline',
+                args.bundle_solver_accuracy if variant != 'baseline' else 'default')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -848,6 +904,7 @@ def main():
                 if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
                 if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
                 if args.stereo_owned_image_bundle:command.append('--stereo-owned-image-bundle')
+                command.extend(['--bundle-solver-accuracy', args.bundle_solver_accuracy])
                 if bundle_diagnostics_frames:
                     command.extend(['--bundle-diagnostics-dir',
                                     str((folder / 'bundle-diagnostics').resolve()),

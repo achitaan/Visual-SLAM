@@ -474,7 +474,7 @@ def test_selected_pose_miss_counts_accumulate_and_cull_rejected_map_landmark(mon
         slam.close()
 
 
-def test_hard_stereo_conflict_ages_provisional_map_inliers_once(monkeypatch):
+def test_hard_stereo_conflict_retains_stereo_consistent_map_inliers(monkeypatch):
     slam = camera()
     install_miss_tracking_pipeline(slam, monkeypatch, map_rotation_degrees=2.0)
     image = np.zeros((376, 1241), np.uint8)
@@ -485,8 +485,9 @@ def test_hard_stereo_conflict_ages_provisional_map_inliers_once(monkeypatch):
         slam.map.landmarks[1].misses = 4  # held out of the map solve
         _, info = slam.process(1, image, image)
         assert info['map_pose_rejected_for_stereo_conflict']
-        assert slam.map.landmarks[0].misses == 4
-        assert 2 not in slam.map.landmarks  # one age reaches the existing cull limit
+        assert info['reference_association_validation']['eligible']
+        assert slam.map.landmarks[0].misses == 0
+        assert slam.map.landmarks[2].misses == 0
         assert slam.map.landmarks[1].misses == 4
     finally:
         slam.close()
@@ -504,7 +505,8 @@ def test_context_absent_hard_conflict_uses_enabled_tracking_snapshot(monkeypatch
         _, info = slam.process(1, image, image)
         assert info['map_pose_rejected_for_stereo_conflict']
         assert slam._arbitration_context is None
-        assert slam.map.landmarks[0].misses == 3
+        assert info['reference_association_validation']['eligible']
+        assert slam.map.landmarks[0].misses == 0
     finally:
         slam.close()
 

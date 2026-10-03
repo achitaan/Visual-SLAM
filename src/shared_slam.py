@@ -1045,6 +1045,215 @@ class SharedSlam:
         }
         return kept_associations, kept_tracks, diagnostics
 
+    @staticmethod
+    def _is_proper_se3(value):
+        try:
+            raw = np.asarray(value)
+            if np.iscomplexobj(raw):
+                return False
+            pose = np.asarray(raw, float)
+            return bool(
+                pose.shape == (4, 4)
+                and np.isfinite(pose).all()
+                and np.allclose(pose[3], [0., 0., 0., 1.], atol=1e-8, rtol=0.)
+                and np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-6, rtol=0.)
+                and np.isclose(np.linalg.det(pose[:3, :3]), 1., atol=1e-6, rtol=0.)
+            )
+        except (TypeError, ValueError, np.linalg.LinAlgError):
+            return False
+
+    def _live_stereo_calibration_identity(self):
+        """Hash the calibration currently used by the estimator and validator."""
+        digest = hashlib.sha256()
+        matrix = np.asarray(self.K)
+        q = np.asarray(self.stereo.Q) if self.stereo is not None else np.empty(0)
+        for value in (matrix, q):
+            digest.update(value.dtype.str.encode())
+            digest.update(value.tobytes())
+        if self.stereo is not None:
+            digest.update(np.float64(self.stereo.baseline).tobytes())
+        return digest.hexdigest()
+
+    @staticmethod
+    def _supported_record_is_well_formed(record, size):
+        if record is None:
+            return False
+        try:
+            pixels = np.asarray(record.pixels)
+            descriptors = np.asarray(record.descriptors)
+            points = np.asarray(record.points)
+            right_u = np.asarray(record.right_u)
+            landmark_ids = np.asarray(record.landmark_ids)
+            image_size = tuple(record.image_size)
+            frame = record.frame
+            calibration_identity = record.calibration_identity
+        except (AttributeError, TypeError, ValueError):
+            return False
+        try:
+            n = len(pixels) if pixels.ndim else -1
+            return bool(
+                n > 0
+                and pixels.shape == (n, 2)
+                and descriptors.ndim == 2 and descriptors.shape[0] == n
+                and descriptors.shape[1] > 0
+                and points.shape == (n, 3)
+                and right_u.shape == (n,)
+                and landmark_ids.shape == (n,)
+                and all(np.issubdtype(a.dtype, np.integer)
+                        or np.issubdtype(a.dtype, np.floating)
+                        for a in (pixels, descriptors, points, right_u))
+                and np.issubdtype(landmark_ids.dtype, np.integer)
+                and np.isfinite(pixels).all()
+                and np.isfinite(descriptors).all()
+                and not np.isinf(points).any()
+                and not np.isinf(right_u).any()
+                and np.all(pixels >= 0)
+                and np.all(pixels < np.asarray(size, float))
+                and len(image_size) == 2
+                and all(isinstance(v, (int, np.integer))
+                        and not isinstance(v, (bool, np.bool_)) and v > 0
+                        for v in image_size)
+                and tuple(image_size) == tuple(size)
+                and isinstance(frame, (int, np.integer)) and not isinstance(frame, (bool, np.bool_))
+                and frame >= 0
+                and isinstance(calibration_identity, str) and bool(calibration_identity)
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _hard_reference_retention_guard(
+        self, index, previous_index, previous_frame, measured_frame, verified,
+        source_pose, reference_pose, source_revision, size,
+    ):
+        """Fail closed unless a reverse-verified reference is tied to live endpoints.
+
+        Caller holds ``map.lock`` from source-pose capture through this check and
+        the subsequent fixed-pose association validation.
+        """
+        report = {'eligible': False, 'reason': 'invalid_reference_metadata'}
+        source = self.previous_supported_stereo
+        current = self.current_supported_stereo
+        try:
+            live_identity = self._live_stereo_calibration_identity()
+            q = np.asarray(self.stereo.Q, float)
+            matrix = np.asarray(self.K, float)
+            baseline = float(self.stereo.baseline)
+            offset = float(self.stereo.disparity_offset)
+            disparity = np.asarray(self.current_disparity)
+            source_geometry, geometry_index = self.previous_stereo_geometry
+            statuses = self.map.statuses
+            poses = self.map.poses
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return {**report, 'reason': 'missing_live_endpoint_or_calibration'}
+
+        def fail(reason):
+            return {**report, 'reason': reason}
+
+        if (not self.config.stereo_pose_arbitration or self.stereo is None
+                or not isinstance(verified, dict) or verified.get('reverse_checked') is not True):
+            return fail('reverse_verification_or_feature_flag_missing')
+        if not self._supported_record_is_well_formed(source, size):
+            return fail('malformed_source_record')
+        if not self._supported_record_is_well_formed(current, size):
+            return fail('malformed_target_record')
+        if (not isinstance(index, (int, np.integer)) or isinstance(index, (bool, np.bool_))
+                or not isinstance(previous_index, (int, np.integer))
+                or isinstance(previous_index, (bool, np.bool_))
+                or not isinstance(source_revision, (int, np.integer))
+                or isinstance(source_revision, (bool, np.bool_))
+                or not isinstance(self.map.revision, (int, np.integer))
+                or isinstance(self.map.revision, (bool, np.bool_))):
+            return fail('malformed_endpoint_or_revision_type')
+        index = int(index)
+        previous_index = int(previous_index)
+        if (not isinstance(geometry_index, (int, np.integer))
+                or isinstance(geometry_index, (bool, np.bool_))
+                or int(geometry_index) != int(previous_index)
+                or int(source.frame) != int(previous_index)
+                or int(current.frame) != int(index)
+                or int(index) != len(poses)
+                or int(previous_index) < 0 or int(previous_index) >= len(poses)
+                or not 1 <= int(index)-int(previous_index) <= 3):
+            return fail('endpoint_or_frame_gap_mismatch')
+        try:
+            source_geometry_size = tuple(source_geometry.image_size)
+            fit_source_size = tuple(previous_frame.image_size)
+            fit_target_size = tuple(measured_frame.image_size)
+        except (AttributeError, TypeError, ValueError):
+            return fail('malformed_endpoint_image_size')
+        if any(len(value) != 2 or not all(
+                   isinstance(v, (int, np.integer))
+                   and not isinstance(v, (bool, np.bool_)) and v > 0
+                   for v in value) or value != tuple(size) for value in
+               (source_geometry_size, fit_source_size, fit_target_size)):
+            return fail('endpoint_image_size_mismatch')
+        if len(statuses) != len(poses) or statuses[previous_index] not in ('tracking', 'relocalized'):
+            return fail('source_frame_not_accepted')
+        latest_accepted = [i for i, status in enumerate(statuses)
+                           if status in ('tracking', 'relocalized')]
+        if not latest_accepted or latest_accepted[-1] != int(previous_index):
+            return fail('source_frame_not_latest_accepted')
+        if (not np.isfinite([baseline, offset]).all() or baseline <= 0
+                or matrix.shape != (3, 3) or not np.isfinite(matrix).all()
+                or matrix[0, 0] <= 0 or matrix[1, 1] <= 0
+                or not np.allclose(matrix[2], [0., 0., 1.], atol=1e-8, rtol=0.)
+                or q.shape != (4, 4) or not np.isfinite(q).all()
+                or q[3, 2] == 0 or q[2, 3] <= 0):
+            return fail('invalid_live_calibration')
+        if (live_identity != self.stereo_calibration_identity
+                or source.calibration_identity != live_identity
+                or current.calibration_identity != live_identity):
+            return fail('stale_calibration_identity')
+        if (disparity.ndim != 2
+                or disparity.shape != (int(size[1]), int(size[0]))):
+            return fail('invalid_current_disparity_shape')
+        # Shape/content checks bind the immutable raw records to the exact frames
+        # used for reference fitting, while allowing map-fit depth restoration.
+        try:
+            geometry_pixels = np.asarray(source_geometry.pixels)
+            geometry_descriptors = np.asarray(source_geometry.descriptors)
+            fit_source_pixels = np.asarray(previous_frame.pixels)
+            fit_source_descriptors = np.asarray(previous_frame.descriptors)
+            fit_target_pixels = np.asarray(measured_frame.pixels)
+            fit_target_descriptors = np.asarray(measured_frame.descriptors)
+        except (AttributeError, TypeError, ValueError):
+            return fail('malformed_endpoint_pixels_or_descriptors')
+        if (geometry_pixels.shape != source.pixels.shape
+                or geometry_descriptors.shape != source.descriptors.shape
+                or fit_source_pixels.shape != source.pixels.shape
+                or fit_source_descriptors.shape != source.descriptors.shape
+                or fit_target_pixels.shape != current.pixels.shape
+                or fit_target_descriptors.shape != current.descriptors.shape
+                or not np.array_equal(geometry_pixels, source.pixels)
+                or not np.array_equal(geometry_descriptors, source.descriptors)
+                or not np.array_equal(fit_source_pixels, source.pixels)
+                or not np.array_equal(fit_source_descriptors, source.descriptors)
+                or not np.array_equal(fit_target_pixels, current.pixels)
+                or not np.array_equal(fit_target_descriptors, current.descriptors)):
+            return fail('endpoint_pixels_or_descriptors_mismatch')
+        if (not self._is_proper_se3(source_pose)
+                or not self._is_proper_se3(verified.get('measurement'))
+                or not self._is_proper_se3(reference_pose)):
+            return fail('invalid_se3_pose')
+        live_source_pose = np.asarray(poses[previous_index], float)
+        if (not self._is_proper_se3(live_source_pose)
+                or not np.array_equal(live_source_pose, np.asarray(source_pose, float))):
+            return fail('source_pose_epoch_changed')
+        expected_pose = np.asarray(source_pose, float) @ np.asarray(verified['measurement'], float)
+        if not np.allclose(expected_pose, reference_pose, atol=1e-10, rtol=1e-10):
+            return fail('reference_pose_composition_mismatch')
+        if source_revision != self.map.revision:
+            return fail('map_revision_changed')
+        return {
+            'eligible': True, 'reason': 'validated_reverse_reference_endpoints',
+            'source_frame': int(source.frame), 'target_frame': int(current.frame),
+            'gap': int(index)-int(previous_index),
+            'calibration_identity': live_identity,
+            'source_map_revision': int(source_revision),
+            'reference_reverse_checked': True,
+            'current_disparity_shape': list(disparity.shape),
+        }
+
     def _age_provisional_map_inliers(self, previous_inlier_misses):
         """Age a successful map hypothesis once when a hard stereo conflict rejects it."""
         if previous_inlier_misses is None:
@@ -1229,9 +1438,10 @@ class SharedSlam:
                             self.verified_stereo_motion = (verified["measurement"].copy(), index)
                         if verified["reverse_checked"]:
                             verified_motion = (previous_index, verified["measurement"].copy())
-                        reference_pose = (
-                            self.map.poses[previous_index] @ verified["measurement"]
-                        )
+                        with self.map.lock:
+                            source_pose = self.map.poses[previous_index].copy()
+                            source_map_revision = self.map.revision
+                            reference_pose = source_pose @ verified["measurement"]
                         info["stereo_reference_verified"] = True
                         info["stereo_bidirectional_refinement"] = verified.get("bidirectional_refinement")
                         info["stereo_reference_verification"] = (
@@ -1266,6 +1476,10 @@ class SharedSlam:
                                 arbitration_report = {**arbitration['report'], 'choice': 'existing_reference',
                                                       'reason': ('hard_disagreement_fallback' if conflict
                                                                  else 'missing_map_hypothesis')}
+                            elif conflict and arbitration_report is not None:
+                                arbitration_report = {**arbitration_report,
+                                                      'choice': 'existing_reference',
+                                                      'reason': 'hard_disagreement_fallback'}
                             if arbitration_selected:
                                 # `associations` is assigned from `result` only
                                 # after this arbitration block. Snapshot the map
@@ -1287,14 +1501,93 @@ class SharedSlam:
                                     # established reference-keyframe recovery path.
                                     stereo_reference = True
                             else:
-                                if conflict:
-                                    # The successful map result was rejected by
-                                    # the independent hard-disagreement gate.
-                                    self._age_provisional_map_inliers(
-                                        map_inlier_miss_snapshot)
-                                associations = {}
-                                self.accepted_tracks = []
-                                stereo_reference = True
+                                reference_validation = None
+                                retained = False
+                                if conflict and self.config.stereo_pose_arbitration and result is not None:
+                                    # A reverse-verified hard-conflict candidate can
+                                    # reconnect to its old map only when the exact raw
+                                    # endpoints, live calibration, and composed pose
+                                    # still match the accepted reference transaction.
+                                    with self.map.lock:
+                                        reference_guard = self._hard_reference_retention_guard(
+                                            index, previous_index, previous_frame, measured,
+                                            verified, source_pose, reference_pose,
+                                            source_map_revision, size)
+                                        if reference_guard['eligible']:
+                                            map_associations = dict(result[1])
+                                            map_tracks = list(self.accepted_tracks)
+                                            associations, retained_tracks, connection = (
+                                                self._validate_stereo_associations_at_pose(
+                                                    reference_pose, map_associations, map_tracks,
+                                                    pixels, size, info.get('valid_3d', 0),
+                                                    map_inlier_miss_snapshot))
+                                            self.accepted_tracks = retained_tracks
+                                            retained = bool(connection['eligible'])
+                                        else:
+                                            connection = None
+                                    reservation_context = arbitration is not None
+                                    try:
+                                        live_calibration_identity = self._live_stereo_calibration_identity()
+                                    except (AttributeError, TypeError, ValueError):
+                                        live_calibration_identity = None
+                                    reference_validation = {
+                                        **reference_guard,
+                                        'eligible': bool(reference_guard['eligible'] and retained),
+                                        'reason': ('retained' if retained else
+                                                   connection['reason'] if connection is not None
+                                                   else reference_guard['reason']),
+                                        'source_frame': int(previous_index),
+                                        'target_frame': int(index),
+                                        'gap': int(index)-int(previous_index),
+                                        'live_calibration_identity': live_calibration_identity,
+                                        'calibration_identity': reference_guard.get(
+                                            'calibration_identity', live_calibration_identity),
+                                        'cached_calibration_identity': self.stereo_calibration_identity,
+                                        'source_calibration_identity': getattr(
+                                            self.previous_supported_stereo, 'calibration_identity', None),
+                                        'record_calibration_identity': getattr(
+                                            self.current_supported_stereo, 'calibration_identity', None),
+                                        'reference_reverse_checked': bool(verified.get('reverse_checked')),
+                                        'reservation_context_available': reservation_context,
+                                        'independent_fit_source': (
+                                            'reserved_supported_training_rows' if reservation_context
+                                            else 'map_coordinate_independent_stereo_reference'),
+                                        'independent_fit_depth_policy': (
+                                            'supported_raw' if reservation_context
+                                            else self.config.stereo_depth_policy),
+                                        'fit_depth_policy': (
+                                            'supported_raw' if reservation_context
+                                            else self.config.stereo_depth_policy),
+                                        'map_fit_depth_policy': self.config.stereo_depth_policy,
+                                        'prediction_seed_supplied': not reservation_context,
+                                        'current_right_measurement': (
+                                            'supported_only_raw_disparity_at_actual_observation'
+                                            if connection is not None else 'not_remeasured_guard_rejected'),
+                                        'original_final_solve_positions': int(info.get('valid_3d', 0)),
+                                        'association_validation': connection,
+                                    }
+                                    if not reference_validation['eligible']:
+                                        if connection is None:
+                                            # The validator did not run, so reconcile
+                                            # the provisional _track reset exactly once.
+                                            self._age_provisional_map_inliers(
+                                                map_inlier_miss_snapshot)
+                                        associations = {}
+                                        self.accepted_tracks = []
+                                        stereo_reference = True
+                                else:
+                                    if conflict:
+                                        # No immutable reverse-verified endpoint
+                                        # proof: retain the established forced-KF path.
+                                        self._age_provisional_map_inliers(
+                                            map_inlier_miss_snapshot)
+                                    associations = {}
+                                    self.accepted_tracks = []
+                                    stereo_reference = True
+                                if reference_validation is not None:
+                                    info['reference_association_validation'] = reference_validation
+                                    if arbitration_report is not None:
+                                        arbitration_report['reference_association_validation'] = reference_validation
                             result = (reference_pose, associations)
                             info.update(
                                 num_matches=verified["matches"],

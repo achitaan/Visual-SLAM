@@ -56,6 +56,7 @@ CURATED_TESTS = (
     'tests/test_stereo_arbitration_tracking.py',
     'tests/test_stereo_reference_retention.py',
     'tests/test_stereo_full_pool_fallback.py',
+    'tests/test_stereo_hard_conflict_selection.py',
     'tests/test_stereo_pose_arbitration_cli.py',
 )
 

@@ -23,6 +23,7 @@ def extraction_signature(slam, opencv):
         'stereo': parameters(slam.stereo.stereo) if slam.stereo is not None else None,
         'stereo_depth_policy': slam.config.stereo_depth_policy,
         'stereo_pose_arbitration': bool(getattr(slam.config, 'stereo_pose_arbitration', False)),
+        'stereo_raw_reference_retry': bool(getattr(slam.config, 'stereo_raw_reference_retry', False)),
         'stereo_search_config': asdict(slam.stereo_search_config),
     }
     if slam.stereo is not None:

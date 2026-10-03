@@ -59,6 +59,7 @@ CURATED_TESTS = (
     'tests/test_stereo_full_pool_fallback.py',
     'tests/test_stereo_hard_conflict_selection.py',
     'tests/test_stereo_pose_arbitration_cli.py',
+    'tests/test_stereo_raw_reference_retry.py',
 )
 
 
@@ -142,7 +143,8 @@ def dependency_runtime_identity(repo=None):
     }
 
 
-def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False):
+def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbitration=False,
+                                  stereo_raw_reference_retry=False):
     """Return the exact evaluator config represented by a development variant."""
     if variant == 'baseline':
         return {'feature_extractor': 'preserved_stereo_defaults', 'loop_mode': 'off'}
@@ -153,7 +155,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
     loop_mode = {'map-only': 'off', 'bundle': 'off', 'live': 'live', 'offline': 'offline'}[variant]
     return dict(MappingConfig(bundle_enabled=variant != 'map-only', loop_mode=loop_mode,
                               stereo_depth_policy=stereo_depth_policy,
-                              stereo_pose_arbitration=stereo_pose_arbitration).__dict__)
+                              stereo_pose_arbitration=stereo_pose_arbitration,
+                              stereo_raw_reference_retry=stereo_raw_reference_retry).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -190,6 +193,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_pose_arbitration')
                     is not identity.get('stereo_pose_arbitration')):
                 raise ValueError('mismatched stereo-pose-arbitration mode')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_raw_reference_retry')
+                    is not identity.get('stereo_raw_reference_retry')):
+                raise ValueError('mismatched stereo-raw-reference-retry mode')
             if report.get('stereo') is not True:
                 raise ValueError('sensor mode is not stereo')
             if report.get('coverage') != coverage:
@@ -370,7 +377,8 @@ def reusable_export(report_path, identity):
         if identity.get('variant') != 'baseline':
             expected_configuration = current_mapping_configuration(
                 identity['variant'], identity['stereo_depth_policy'],
-                identity['stereo_pose_arbitration'])
+                identity['stereo_pose_arbitration'],
+                identity.get('stereo_raw_reference_retry', False))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -559,6 +567,8 @@ def main():
     parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback'],default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
+    parser.add_argument('--stereo-raw-reference-retry', action='store_true',
+                        help='Retry failed configured references with guarded raw-supported stereo geometry')
     parser.add_argument('--retrieval',choices=['current','indexed','exhaustive'],default='current')
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
@@ -583,6 +593,7 @@ def main():
                'feature_cache': str(args.feature_cache.resolve()) if args.feature_cache else None,
                'stereo_depth_policy': args.stereo_depth_policy,
                'stereo_pose_arbitration': args.stereo_pose_arbitration,
+               'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
                'performance': {'matching_backend':args.matching_backend,'retrieval':args.retrieval,
                                'cpu_optimizations':not args.no_cpu_optimizations,'opencv_threads':args.opencv_threads}}
     try:
@@ -627,6 +638,7 @@ def main():
                       'cached':args.feature_cache is not None and variant!='baseline',
                       'stereo_depth_policy': args.stereo_depth_policy if variant!='baseline' else 'preserved_defaults',
                       'stereo_pose_arbitration': args.stereo_pose_arbitration if variant!='baseline' else False,
+                      'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
                       'performance': requested['performance'] if variant!='baseline' else {'preserved_defaults':True},
                       'reference':hashlib.sha256((args.poses_root/f'{seq}.txt').read_bytes()).hexdigest()}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
@@ -652,7 +664,8 @@ def main():
                      and _finite_positive(r.get('elapsed_s'))]
             expected_configuration = current_mapping_configuration(
                 variant, args.stereo_depth_policy,
-                args.stereo_pose_arbitration and variant != 'baseline')
+                args.stereo_pose_arbitration and variant != 'baseline',
+                args.stereo_raw_reference_retry and variant != 'baseline')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -679,6 +692,7 @@ def main():
                                 '--opencv-threads',str(args.opencv_threads),
                                 '--stereo-depth-policy',args.stereo_depth_policy])
                 if args.stereo_pose_arbitration:command.append('--stereo-pose-arbitration')
+                if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
                 if args.no_cpu_optimizations:command.append('--no-cpu-optimizations')
                 if args.feature_cache:command.extend(['--feature-cache',str(args.feature_cache)])
             command.extend(['--stop-file',str(root/'stop.request')])

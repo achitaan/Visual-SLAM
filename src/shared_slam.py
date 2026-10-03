@@ -64,6 +64,7 @@ class MappingConfig:
     stereo_feature_contrast_threshold: float = 0.02
     stereo_depth_policy: str = "supported"
     stereo_pose_arbitration: bool = False
+    stereo_raw_reference_retry: bool = False
 
 
 class SharedSlam:
@@ -95,6 +96,8 @@ class SharedSlam:
             raise ValueError('Verified stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_pose_arbitration:
             raise ValueError('Stereo pose arbitration requires two calibrated cameras')
+        if stereo is None and self.config.stereo_raw_reference_retry:
+            raise ValueError('Raw stereo reference retry requires two calibrated cameras')
         self.previous_supported_stereo = None
         self.current_supported_stereo = None
         self._supported_extraction = None
@@ -255,7 +258,8 @@ class SharedSlam:
             )
             self.current_disparity = disparity
             points, right_u = self._measure_stereo_pixels(
-                pixels, capture_supported=self.config.stereo_pose_arbitration)
+                pixels, capture_supported=(self.config.stereo_pose_arbitration
+                                           or self.config.stereo_raw_reference_retry))
         return pixels, desc, points, right_u
 
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations):
@@ -1604,18 +1608,25 @@ class SharedSlam:
 
     def _full_supported_match_pairs(
         self, source, target, previous_index, index, previous_frame, measured_frame, size,
+        physical_canonical=False,
     ):
-        """Build all mutual descriptor pairs with unique physical endpoints.
+        """Build mutual descriptor pairs with the selected physical identity policy.
 
         Depth availability is intentionally not a match filter: the existing
         reference estimator independently gates forward and reverse PnP rows.
+        The reserved-conflict fallback keeps its conservative drop-alias policy;
+        ordinary raw retry keeps all appearances through matching, then
+        canonicalizes unambiguous exact-pixel edges and depth geometry.
         """
         report = {
             'attempted': True,
-            'fit_source': 'full_supported_reference',
+            'fit_source': ('raw_supported_reference_retry' if physical_canonical
+                           else 'full_supported_reference'),
             'fit_depth_policy': 'supported_raw',
             'held_out_arbitration_used': False,
         }
+        if physical_canonical:
+            report['physical_identity'] = 'exact_float32_pixels_canonicalized'
 
         def fail(reason):
             return None, {**report, 'eligible': False, 'reason': reason}
@@ -1691,7 +1702,20 @@ class SharedSlam:
                            or np.any(pairs[:, 1] >= len(target.pixels))):
             return fail('full_supported_match_index_out_of_range')
         raw_count = len(pairs)
-        if raw_count:
+        if physical_canonical:
+            pairs = self._collapse_physical_matches(
+                pairs, source.pixels, target.pixels)
+            source_points, source_usable = self._canonical_physical_geometry_points(
+                source.pixels, source.points)
+            target_points, target_usable = self._canonical_physical_geometry_points(
+                target.pixels, target.points)
+            if len(pairs):
+                pairs = pairs[source_usable[pairs[:, 0]] & target_usable[pairs[:, 1]]]
+            report['finite_supported_geometry_rows'] = {
+                'source': int(np.isfinite(source_points).all(axis=1).sum()),
+                'target': int(np.isfinite(target_points).all(axis=1).sum()),
+            }
+        elif raw_count:
             _, pair_inverse, pair_counts = np.unique(
                 pairs, axis=0, return_inverse=True, return_counts=True)
             _, source_match_inverse, source_match_counts = np.unique(
@@ -1726,18 +1750,28 @@ class SharedSlam:
 
     def _estimate_full_supported_reference(
         self, source, target, previous_index, index, previous_frame, measured_frame, size,
+        physical_canonical=False,
     ):
         pairs, report = self._full_supported_match_pairs(
-            source, target, previous_index, index, previous_frame, measured_frame, size)
+            source, target, previous_index, index, previous_frame, measured_frame, size,
+            physical_canonical=physical_canonical)
         if pairs is None:
             return None, report
-        source_frame = StereoLoopFrame(source.pixels, source.points,
+        source_points = source.points
+        target_points = target.points
+        if physical_canonical:
+            source_points, _ = self._canonical_physical_geometry_points(
+                source.pixels, source.points)
+            target_points, _ = self._canonical_physical_geometry_points(
+                target.pixels, target.points)
+        source_frame = StereoLoopFrame(source.pixels, source_points,
                                        source.descriptors, source.image_size)
-        target_frame = StereoLoopFrame(target.pixels, target.points,
+        target_frame = StereoLoopFrame(target.pixels, target_points,
                                        target.descriptors, target.image_size)
         try:
             verified = self.profile.call(
-                'stereo_pose_full_supported_fallback_fit', estimate_stereo_reference,
+                ('stereo_pose_raw_supported_retry_fit' if physical_canonical
+                 else 'stereo_pose_full_supported_fallback_fit'), estimate_stereo_reference,
                 source_frame, target_frame, self.K,
                 min_inliers=self.config.min_inliers, initial_pose=None,
                 matcher=lambda first, second: pairs.copy())
@@ -1788,6 +1822,79 @@ class SharedSlam:
                           'reference_inliers': int(inliers),
                           'reference_median_reprojection_px': median_error,
                           'reference_inlier_features': target_features.astype(int).tolist()}
+
+    def _estimate_raw_supported_reference_retry(
+        self, source, target, previous_index, index, previous_frame, measured_frame, size,
+    ):
+        """Retry a failed configured reference fit on immutable raw stereo records."""
+        report = {
+            'attempted': True,
+            'gate': 'configured_reference_failed_and_reserved_context_unavailable',
+            'configured_reference_rejection': 'configured_reference_returned_none',
+            'reservation_context_available': False,
+            'held_out_arbitration_used': False,
+            'fit_source': 'raw_supported_reference_retry',
+            'fit_depth_policy': 'supported_raw',
+            'prediction_seed_supplied': False,
+        }
+
+        def fail(reason, **fields):
+            return None, {**report, 'eligible': False, 'reason': reason, **fields}, None, None, None
+
+        if not self.config.stereo_raw_reference_retry or self.stereo is None:
+            return fail('raw_reference_retry_disabled')
+        try:
+            with self.map.lock:
+                if (not isinstance(previous_index, (int, np.integer))
+                        or isinstance(previous_index, (bool, np.bool_))
+                        or not 0 <= int(previous_index) < len(self.map.poses)):
+                    return fail('invalid_source_pose_index')
+                source_pose_raw = np.asarray(self.map.poses[int(previous_index)])
+                source_revision = self.map.revision
+                if (not isinstance(source_revision, (int, np.integer))
+                        or isinstance(source_revision, (bool, np.bool_))
+                        or not self._is_proper_se3(source_pose_raw)):
+                    return fail('invalid_source_map_epoch')
+                source_pose = np.asarray(source_pose_raw, float).copy()
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return fail('missing_source_map_epoch')
+
+        try:
+            verified, fit_report = self._estimate_full_supported_reference(
+                source, target, previous_index, index, previous_frame,
+                measured_frame, size, physical_canonical=True)
+        except (cv.error, np.linalg.LinAlgError, TypeError, ValueError, IndexError):
+            verified, fit_report = None, {
+                'eligible': False, 'reason': 'raw_supported_reference_fit_error',
+                'reverse_checked': False,
+            }
+        report = {**report, **fit_report}
+        if verified is None:
+            return None, {**report, 'eligible': False,
+                          'reason': fit_report.get('reason', 'raw_supported_reference_failed')}, None, None, None
+
+        try:
+            with self.map.lock:
+                reference_pose = source_pose @ np.asarray(verified['measurement'], float)
+                source_guard = self._hard_reference_retention_guard(
+                    index, previous_index, previous_frame, measured_frame,
+                    verified, source_pose, reference_pose, source_revision, size)
+        except (AttributeError, TypeError, ValueError, IndexError, np.linalg.LinAlgError):
+            source_guard = {'eligible': False, 'reason': 'raw_reference_source_guard_error'}
+            reference_pose = None
+        if not source_guard.get('eligible'):
+            return None, {**report, 'eligible': False,
+                          'reason': source_guard.get('reason', 'raw_reference_source_guard_failed'),
+                          'source_guard': source_guard,
+                          'reverse_checked': True}, None, None, None
+        return (verified,
+                {**report, 'eligible': True,
+                 'reason': 'raw_supported_reference_verified',
+                 'source_guard': source_guard,
+                 'source_frame': int(previous_index), 'target_frame': int(index),
+                 'source_map_revision': int(source_revision),
+                 'reverse_checked': True},
+                source_pose, int(source_revision), reference_pose)
 
     @staticmethod
     def _supported_record_is_well_formed(record, size):
@@ -1864,7 +1971,8 @@ class SharedSlam:
         def fail(reason):
             return {**report, 'reason': reason}
 
-        if (not self.config.stereo_pose_arbitration or self.stereo is None
+        if (not (self.config.stereo_pose_arbitration
+                 or self.config.stereo_raw_reference_retry) or self.stereo is None
                 or not isinstance(verified, dict) or verified.get('reverse_checked') is not True):
             return fail('reverse_verification_or_feature_flag_missing')
         if not self._supported_record_is_well_formed(source, size):
@@ -1950,9 +2058,10 @@ class SharedSlam:
                 or not self._is_proper_se3(verified.get('measurement'))
                 or not self._is_proper_se3(reference_pose)):
             return fail('invalid_se3_pose')
-        live_source_pose = np.asarray(poses[previous_index], float)
-        if (not self._is_proper_se3(live_source_pose)
-                or not np.array_equal(live_source_pose, np.asarray(source_pose, float))):
+        live_source_pose_raw = np.asarray(poses[previous_index])
+        if (not self._is_proper_se3(live_source_pose_raw)
+                or not np.array_equal(np.asarray(live_source_pose_raw, float),
+                                      np.asarray(source_pose, float))):
             return fail('source_pose_epoch_changed')
         expected_pose = np.asarray(source_pose, float) @ np.asarray(verified['measurement'], float)
         if not np.allclose(expected_pose, reference_pose, atol=1e-10, rtol=1e-10):
@@ -1999,15 +2108,18 @@ class SharedSlam:
             )
         self.loop_worker.poll(self.map)
         self._prepare_frame_images(image, right)
-        if self.config.stereo_pose_arbitration:
+        raw_stereo_enabled = (self.config.stereo_pose_arbitration
+                              or self.config.stereo_raw_reference_retry)
+        if raw_stereo_enabled:
             self._supported_extraction = None
             self._arbitration_context = None
         pixels, desc, points, right_u = self._extract(image, right)
         size = (image.shape[1], image.shape[0])
         arbitration_report = None
         arbitration_measurement = None
-        if self.config.stereo_pose_arbitration:
+        if raw_stereo_enabled:
             self.current_supported_stereo = self._capture_supported_stereo(index, pixels, desc, size)
+        if self.config.stereo_pose_arbitration:
             self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
                 index, self.current_supported_stereo)
         info = {
@@ -2128,6 +2240,14 @@ class SharedSlam:
             stereo_reference = False
             full_supported_fallback_attempted = False
             full_supported_fallback_report = None
+            raw_reference_retry_attempted = False
+            raw_reference_retry_succeeded = False
+            raw_reference_retry_report = None
+            raw_reference_retry_source_pose = None
+            raw_reference_retry_source_revision = None
+            raw_reference_retry_pose = None
+            raw_reference_retry_final_rejected = False
+            raw_reference_retry_pose_selected = False
             arbitration_selected = False
             pre_full_reserved_arbitration = None
             reserved_arbitration_attempted = False
@@ -2166,11 +2286,61 @@ class SharedSlam:
                         initial_pose=prior,
                         matcher=reference_matcher,
                     ))
+                    if (verified is None and arbitration is None
+                            and self.config.stereo_raw_reference_retry):
+                        raw_reference_retry_attempted = True
+                        reservation_unavailable_report = arbitration_report
+                        (raw_verified, raw_reference_retry_report,
+                         raw_reference_retry_source_pose,
+                         raw_reference_retry_source_revision,
+                         raw_reference_retry_pose) = self._estimate_raw_supported_reference_retry(
+                            self.previous_supported_stereo,
+                            self.current_supported_stereo,
+                            previous_index, index, previous_frame, measured, size)
+                        raw_reference_retry_report = {
+                            **raw_reference_retry_report,
+                            'reservation_unavailable_report': reservation_unavailable_report,
+                            'held_out_arbitration_used': False,
+                        }
+                        # A failed reserved-fit diagnostic is not a selector for
+                        # the consumed full-pool retry and must not be relabeled
+                        # as an existing-reference arbitration choice.
+                        arbitration_report = None
+                        if raw_verified is not None:
+                            try:
+                                with self.map.lock:
+                                    retry_guard = self._hard_reference_retention_guard(
+                                        index, previous_index, previous_frame, measured,
+                                        raw_verified, raw_reference_retry_source_pose,
+                                        raw_reference_retry_pose,
+                                        raw_reference_retry_source_revision, size)
+                            except (AttributeError, TypeError, ValueError, IndexError):
+                                retry_guard = {'eligible': False,
+                                               'reason': 'raw_reference_final_guard_error'}
+                            if not retry_guard.get('eligible'):
+                                raw_reference_retry_report = {
+                                    **raw_reference_retry_report,
+                                    'eligible': False,
+                                    'reason': retry_guard.get(
+                                        'reason', 'raw_reference_final_guard_failed'),
+                                    'source_guard': retry_guard,
+                                    'reverse_checked': True,
+                                }
+                                raw_verified = None
+                        if raw_verified is not None:
+                            verified = raw_verified
+                            raw_reference_retry_succeeded = True
+                        info['stereo_raw_reference_retry'] = raw_reference_retry_report
                     if verified is not None:
-                        with self.map.lock:
-                            source_pose = self.map.poses[previous_index].copy()
-                            source_map_revision = self.map.revision
-                            reference_pose = source_pose @ verified["measurement"]
+                        if raw_reference_retry_succeeded:
+                            source_pose = raw_reference_retry_source_pose
+                            source_map_revision = raw_reference_retry_source_revision
+                            reference_pose = raw_reference_retry_pose
+                        else:
+                            with self.map.lock:
+                                source_pose = self.map.poses[previous_index].copy()
+                                source_map_revision = self.map.revision
+                                reference_pose = source_pose @ verified["measurement"]
                         conflict = False
                         half_conflict = False
                         half_translation_error = half_rotation_error = None
@@ -2188,6 +2358,8 @@ class SharedSlam:
                             half_conflict = (half_translation_error > 0.5
                                              or half_rotation_error > 1.5)
                             conflict = half_conflict
+                        if raw_reference_retry_succeeded:
+                            raw_reference_retry_pose_selected = bool(result is None or conflict)
 
                         # A valid reserved half-pool fit can still be biased by its
                         # partition. When it hard-conflicts with a successful map
@@ -2319,9 +2491,10 @@ class SharedSlam:
                             if (arbitration is not None and result is not None
                                     and not full_supported_fallback_attempted):
                                 arbitration_measurement = verified['measurement'].copy()
-                            if verified['reverse_checked'] and index-previous_index == 1:
+                            if (verified['reverse_checked'] and index-previous_index == 1
+                                    and not raw_reference_retry_succeeded):
                                 self.verified_stereo_motion = (verified['measurement'].copy(), index)
-                            if verified['reverse_checked']:
+                            if verified['reverse_checked'] and not raw_reference_retry_succeeded:
                                 verified_motion = (previous_index, verified['measurement'].copy())
                             info['stereo_reference_verified'] = True
                             info['stereo_bidirectional_refinement'] = verified.get('bidirectional_refinement')
@@ -2390,7 +2563,9 @@ class SharedSlam:
                             else:
                                 reference_validation = None
                                 retained = False
-                                if conflict and self.config.stereo_pose_arbitration and result is not None:
+                                if (conflict and result is not None
+                                        and (self.config.stereo_pose_arbitration
+                                             or raw_reference_retry_succeeded)):
                                     # A reverse-verified hard-conflict candidate can
                                     # reconnect to its old map only when the exact raw
                                     # endpoints, live calibration, and composed pose
@@ -2412,6 +2587,8 @@ class SharedSlam:
                                             retained = bool(connection['eligible'])
                                         else:
                                             connection = None
+                                            if raw_reference_retry_succeeded:
+                                                raw_reference_retry_final_rejected = True
                                     reservation_context = arbitration is not None
                                     try:
                                         live_calibration_identity = self._live_stereo_calibration_identity()
@@ -2439,19 +2616,23 @@ class SharedSlam:
                                         'held_out_arbitration_used': False,
                                         'independent_fit_source': (
                                             'full_supported_reference' if full_supported_fallback_attempted
+                                            else 'raw_supported_reference_retry' if raw_reference_retry_succeeded
                                             else 'reserved_supported_training_rows' if reservation_context
                                             else 'map_coordinate_independent_stereo_reference'),
                                         'independent_fit_depth_policy': (
-                                            'supported_raw' if (reservation_context
+                                            'supported_raw' if (raw_reference_retry_succeeded
+                                                                or reservation_context
                                                                 or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'fit_depth_policy': (
-                                            'supported_raw' if (reservation_context
+                                            'supported_raw' if (raw_reference_retry_succeeded
+                                                                or reservation_context
                                                                 or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'map_fit_depth_policy': self.config.stereo_depth_policy,
                                         'prediction_seed_supplied': (
-                                            False if full_supported_fallback_attempted
+                                            False if (raw_reference_retry_succeeded
+                                                      or full_supported_fallback_attempted)
                                             else not reservation_context),
                                         'current_right_measurement': (
                                             'supported_only_raw_disparity_at_actual_observation'
@@ -2460,14 +2641,21 @@ class SharedSlam:
                                         'association_validation': connection,
                                     }
                                     if not reference_validation['eligible']:
-                                        if connection is None:
+                                        if connection is None and not raw_reference_retry_final_rejected:
                                             # The validator did not run, so reconcile
                                             # the provisional _track reset exactly once.
                                             self._age_provisional_map_inliers(
                                                 map_inlier_miss_snapshot)
-                                        associations = {}
-                                        self.accepted_tracks = []
-                                        stereo_reference = True
+                                        if not raw_reference_retry_final_rejected:
+                                            associations = {}
+                                            self.accepted_tracks = []
+                                            stereo_reference = True
+                                    if raw_reference_retry_succeeded:
+                                        raw_reference_retry_report = {
+                                            **raw_reference_retry_report,
+                                            'association_validation': reference_validation,
+                                        }
+                                        info['stereo_raw_reference_retry'] = raw_reference_retry_report
                                 else:
                                     if conflict:
                                         # No immutable reverse-verified endpoint
@@ -2481,18 +2669,65 @@ class SharedSlam:
                                     info['reference_association_validation'] = reference_validation
                                     if arbitration_report is not None:
                                         arbitration_report['reference_association_validation'] = reference_validation
-                            result = (reference_pose, associations)
-                            info.update(
-                                num_matches=verified["matches"],
-                                num_inliers=verified["inliers"],
-                                inlier_ratio=verified["inliers"] / verified["matches"],
-                                reprojection_error=verified["median_reprojection_px"],
-                                pose_source="stereo_tracking_reference",
-                                reference_inlier_features=verified["target_features"],
-                                map_pose_rejected_for_stereo_conflict=conflict,
-                            )
-                            if arbitration_selected:
-                                info['pose_source'] = 'reserved_stereo_arbitration'
+                            if raw_reference_retry_final_rejected:
+                                raw_reference_retry_report = {
+                                    **raw_reference_retry_report,
+                                    'eligible': False,
+                                    'installed': False,
+                                    'reason': 'raw_reference_final_source_guard_failed',
+                                    'held_out_arbitration_used': False,
+                                    'association_validation': reference_validation,
+                                }
+                                info['stereo_raw_reference_retry'] = raw_reference_retry_report
+                                for key in (
+                                    'stereo_reference_verified',
+                                    'stereo_bidirectional_refinement',
+                                    'stereo_reference_verification',
+                                    'map_reference_translation_error_m',
+                                    'map_reference_rotation_error_deg',
+                                    'map_pose_rejected_for_stereo_conflict',
+                                ):
+                                    info.pop(key, None)
+                                for key in ('num_matches', 'num_inliers', 'inlier_ratio',
+                                            'reprojection_error', 'pose_source'):
+                                    if key in stats:
+                                        info[key] = stats[key]
+                                    else:
+                                        info.pop(key, None)
+                                info.pop('reference_inlier_features', None)
+                                if self.config.stereo_pose_arbitration:
+                                    arbitration_report = {
+                                        **(reservation_unavailable_report or {}),
+                                        'choice': 'map',
+                                        'reason': 'raw_reference_final_source_guard_failed',
+                                        'held_out_arbitration_used': False,
+                                    }
+                                verified = None
+                            else:
+                                result = (reference_pose, associations)
+                                info.update(
+                                    num_matches=verified["matches"],
+                                    num_inliers=verified["inliers"],
+                                    inlier_ratio=verified["inliers"] / verified["matches"],
+                                    reprojection_error=verified["median_reprojection_px"],
+                                    pose_source="stereo_tracking_reference",
+                                    reference_inlier_features=verified["target_features"],
+                                    map_pose_rejected_for_stereo_conflict=conflict,
+                                )
+                                if arbitration_selected:
+                                    info['pose_source'] = 'reserved_stereo_arbitration'
+                        if raw_reference_retry_succeeded and not raw_reference_retry_final_rejected:
+                            if verified['reverse_checked'] and index-previous_index == 1:
+                                self.verified_stereo_motion = (verified['measurement'].copy(), index)
+                            if verified['reverse_checked']:
+                                verified_motion = (previous_index, verified['measurement'].copy())
+                            raw_reference_retry_report = {
+                                **raw_reference_retry_report,
+                                'installed': True,
+                                'pose_selected': raw_reference_retry_pose_selected,
+                                'held_out_arbitration_used': False,
+                            }
+                            info['stereo_raw_reference_retry'] = raw_reference_retry_report
             if self.stereo is not None and result is None:
                 reference, reference_stats = self._keyframe_stereo_reference(
                     pixels, desc, points, size
@@ -2589,7 +2824,7 @@ class SharedSlam:
                 StereoLoopFrame(pixels.copy(), points.copy(), desc.copy(), size),
                 index,
             )
-            if self.config.stereo_pose_arbitration:
+            if raw_stereo_enabled:
                 self.previous_supported_stereo = self._supported_stereo_after_acceptance(
                     self.current_supported_stereo, associations)
         # Bound the tracking working set, not the persistent map. Old, valid

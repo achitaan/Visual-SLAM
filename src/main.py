@@ -103,6 +103,8 @@ def main() -> None:
     parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
+    parser.add_argument('--stereo-raw-reference-retry', action='store_true',
+                        help='Retry a failed configured stereo reference with guarded raw-supported geometry')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path)
@@ -116,6 +118,8 @@ def main() -> None:
         parser.error('--stereo-depth-policy verified_fallback requires --slam --stereo')
     if args.stereo_pose_arbitration and not (args.slam and args.stereo):
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
+    if args.stereo_raw_reference_retry and not (args.slam and args.stereo):
+        parser.error('--stereo-raw-reference-retry requires --slam --stereo')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -190,7 +194,8 @@ def main() -> None:
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
     shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera,
                         config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
-                                             stereo_pose_arbitration=args.stereo_pose_arbitration),
+                                             stereo_pose_arbitration=args.stereo_pose_arbitration,
+                                             stereo_raw_reference_retry=args.stereo_raw_reference_retry),
                         performance=performance) if args.slam else None
     if shared is not None:
         shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)

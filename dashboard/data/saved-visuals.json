@@ -1,5 +1,10 @@
 [
   {
+    "file": "motion-regularizer-04.png",
+    "label": "Rejected motion regularizer: matched ON/OFF accuracy",
+    "group": "KITTI04 frames0-79; fresh same-source runs; ATE+116.8%, drift worse; loops off; saved experiment"
+  },
+  {
     "file": "raw-stereo-reference-comparison.png",
     "label": "Raw reference retry: measured gains and regressions",
     "group": "04/80 and 01/350; fresh 01 VO control; historical shared context separate; rotation gate failed; loops off"

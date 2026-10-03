@@ -149,6 +149,10 @@ gate; full-sequence testing remains paused.
 
 [Physical landmark identity validation](docs/benchmark/physical-identity-validation.md) reports the latest correctness repair, improved 04 accuracy, and the retained 01 accuracy and runtime regressions.
 
+[Raw stereo reference retry](docs/benchmark/raw-stereo-reference-retry.md) describes
+an opt-in experiment for configured-reference failures. It retains bidirectional
+geometric verification; its accuracy must be evaluated separately from earlier results.
+
 Use `--slam` to select persistent landmark tracking and local bundle adjustment;
 add `--stereo` for calibrated stereo input. Commands without `--slam` retain the
 original VO implementations for comparison. Monocular initialization uses two-view

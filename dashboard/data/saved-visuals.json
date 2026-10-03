@@ -1,5 +1,10 @@
 [
   {
+    "file": "raw-stereo-reference04-overview.png",
+    "label": "Raw reference retry: KITTI 04 regression check",
+    "group": "80 frames; saved uncached run; zero lost; retry not needed; 01 validation pending; loops off"
+  },
+  {
     "file": "physical-identity-comparison.png",
     "label": "Physical landmark identity: measured accuracy trade-offs",
     "group": "04/80 and 01/350; saved uncached runs; accuracy gate failed; loops off"

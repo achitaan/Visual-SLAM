@@ -1,10 +1,16 @@
 # Stereo reliability development
 
 The experimental snapshot is preserved on `codex/shared-slam-reconstruction`.
-Reliability work continues on `codex/stereo-reliability-rework`. The original paired
+Reliability and performance integration continues on `codex/stereo-reliability-integration`. The original paired
 benchmark and its scheduler remain paused while diagnostic gates are established.
 
-## Paused progress checkpoint
+Current results and remaining regressions are documented in
+[physical landmark identity validation](benchmark/physical-identity-validation.md).
+[Raw stereo reference retry](benchmark/raw-stereo-reference-retry.md) is a separate
+opt-in experiment. The checkpoints below retain their original source revisions;
+their metrics do not validate later implementations.
+
+## Retained paused progress checkpoint
 
 Implementation and scheduled validation are paused at the user's request. The
 current frozen source fingerprint is `db696b4f7393`. This revision adds independent

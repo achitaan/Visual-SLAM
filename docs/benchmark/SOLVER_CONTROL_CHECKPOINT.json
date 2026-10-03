@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "status": "fresh_partial_04_80_three_arm_failed_accuracy_gate",
+  "scope": "partial 04/80 diagnostic only; not release validation",
+  "source_fingerprint": "67dac6c9a49c807b2a39eaa428821c5ade6f38a0968d66161d2c308d7ba3cc16",
+  "source_backend_group": {
+    "source_fingerprint": "67dac6c9a49c807b2a39eaa428821c5ade6f38a0968d66161d2c308d7ba3cc16",
+    "runtime_identity": {
+      "version": 1,
+      "dependencies": {
+        "python": "3.12.14",
+        "implementation": "CPython",
+        "platform": "win32",
+        "machine": "AMD64",
+        "files": {
+          "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+          "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+          "requirements-depth.txt": "7e0b3202030746a9150dec7ac3a8206165a23f2fa68888866e93eaadf8a00e9e",
+          "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+        },
+        "packages": {
+          "bokeh": "3.10.0",
+          "cloudpickle": "3.1.2",
+          "colorama": "0.4.6",
+          "contourpy": "1.4.0",
+          "cycler": "0.12.1",
+          "fonttools": "4.66.1",
+          "iniconfig": "2.3.0",
+          "Jinja2": "3.1.6",
+          "joblib": "1.6.0",
+          "kiwisolver": "1.5.1",
+          "MarkupSafe": "3.0.3",
+          "matplotlib": "3.11.2",
+          "narwhals": "2.26.0",
+          "numpy": "2.5.3",
+          "opencv-contrib-python": "5.0.0.93",
+          "packaging": "26.3",
+          "pillow": "12.3.0",
+          "pluggy": "1.6.0",
+          "Pygments": "2.21.0",
+          "pyparsing": "3.3.3",
+          "pytest": "9.1.1",
+          "python-dateutil": "2.9.0.post0",
+          "pyyaml": "6.0.3",
+          "PyYAML": "6.0.3",
+          "scikit-learn": "1.9.1",
+          "scipy": "1.18.1",
+          "six": "1.17.0",
+          "threadpoolctl": "3.7.0",
+          "torch": "2.7.1+cu126",
+          "torchvision": "0.29.1+cpu",
+          "tornado": "6.5.10",
+          "websockets": "17.1",
+          "xyzservices": "2026.9.1"
+        }
+      },
+      "dependencies_sha256": "1a597e43a5f4520a84101167a0c01b3aaba9c5f86d6f1089fed85a26c8e789cc"
+    },
+    "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+    "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+    "matching_backend": "cuda",
+    "coverage": "partial",
+    "source_config_identity_matches_except_declared_modes": true,
+    "metrics_reused": false
+  },
+  "cases": {
+    "default_off": {
+      "policy": "default",
+      "owned_image_bundle": false,
+      "run": "results/integration/solver-control-bundle/67dac6c9a49c/04-owned-off-default-1791056735600171800/run",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.11188367637566381,
+        "raw_ate_rmse_m": 0.27379108167601507,
+        "segment_count": 1,
+        "translation_percent": 0.2807531045984703,
+        "rotation_deg_per_m": 0.005652783299876321
+      },
+      "lost_frames": 0,
+      "elapsed_seconds": 42.44656909999321,
+      "peak_memory_mib": 969.9921875,
+      "keyframes": 11,
+      "bundle_adjustments_reported": 9,
+      "bundle_adjustments_applied": 9,
+      "effective_solver_modes": {
+        "legacy_defaults": 9
+      },
+      "matching_backend": {
+        "requested": "cuda",
+        "cuda_available": true,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": "2.7.1+cu126",
+        "cuda_runtime_version": "12.6",
+        "cuda_device_index": 0,
+        "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+        "cuda_device_capability": [
+          7,
+          5
+        ],
+        "cuda_calls": 158,
+        "cpu_calls": 0,
+        "ambiguous_rows_on_cpu": 6806,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 25.97412109375,
+        "peak_cuda_reserved_mb": 46.0
+      }
+    },
+    "precise_off": {
+      "policy": "precise",
+      "owned_image_bundle": false,
+      "run": "results/integration/solver-control-bundle/67dac6c9a49c/04-owned-off-precise-1791056788460709000/run",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.11083822707176941,
+        "raw_ate_rmse_m": 0.3083361331122733,
+        "segment_count": 1,
+        "translation_percent": 0.31492877773091477,
+        "rotation_deg_per_m": 0.0051843788718701515
+      },
+      "lost_frames": 0,
+      "elapsed_seconds": 55.18959329999052,
+      "peak_memory_mib": 962.8125,
+      "keyframes": 11,
+      "bundle_adjustments_reported": 9,
+      "bundle_adjustments_applied": 9,
+      "effective_solver_modes": {
+        "precise_lsmr": 9
+      },
+      "matching_backend": {
+        "requested": "cuda",
+        "cuda_available": true,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": "2.7.1+cu126",
+        "cuda_runtime_version": "12.6",
+        "cuda_device_index": 0,
+        "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+        "cuda_device_capability": [
+          7,
+          5
+        ],
+        "cuda_calls": 158,
+        "cpu_calls": 0,
+        "ambiguous_rows_on_cpu": 6848,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 25.98095703125,
+        "peak_cuda_reserved_mb": 46.0
+      }
+    },
+    "precise_on": {
+      "policy": "precise",
+      "owned_image_bundle": true,
+      "run": "results/integration/solver-control-bundle/67dac6c9a49c/04-owned-on-precise-1791056853561926600/run",
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.16393180558439177,
+        "raw_ate_rmse_m": 0.3225197101442554,
+        "segment_count": 1,
+        "translation_percent": 0.4103762784198215,
+        "rotation_deg_per_m": 0.004814453738664574
+      },
+      "lost_frames": 0,
+      "elapsed_seconds": 69.96675309998682,
+      "peak_memory_mib": 982.51171875,
+      "keyframes": 11,
+      "bundle_adjustments_reported": 9,
+      "bundle_adjustments_applied": 9,
+      "effective_solver_modes": {
+        "precise_lsmr": 9
+      },
+      "matching_backend": {
+        "requested": "cuda",
+        "cuda_available": true,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": "2.7.1+cu126",
+        "cuda_runtime_version": "12.6",
+        "cuda_device_index": 0,
+        "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+        "cuda_device_capability": [
+          7,
+          5
+        ],
+        "cuda_calls": 158,
+        "cpu_calls": 0,
+        "ambiguous_rows_on_cpu": 6852,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 25.9541015625,
+        "peak_cuda_reserved_mb": 46.0
+      }
+    }
+  },
+  "metric_changes_percent": {
+    "precise_off_vs_default_off_percent": {
+      "ate_rmse_m": -0.9344073574988454,
+      "translation_percent": 12.172856710283607,
+      "rotation_deg_per_m": -8.286261884767764
+    },
+    "precise_on_vs_precise_off_percent": {
+      "ate_rmse_m": 47.901865552435694,
+      "translation_percent": 30.307646502365728,
+      "rotation_deg_per_m": -7.135380001117387
+    }
+  },
+  "cycle": {
+    "status": "completed_three_arms_failed_gate",
+    "started_utc": "2026-10-03T19:04:45+00:00",
+    "finished_utc": "2026-10-03T19:48:52.894609+00:00",
+    "path": "results/integration/solver-control-cycle/67dac6c9a49c-1791056733244689200",
+    "terminal_gate": {
+      "status": "fail",
+      "scope": "partial_fresh_04_80_solver_causal_control",
+      "all_three_cases_complete": true,
+      "release_ready": false,
+      "source_fingerprint": "67dac6c9a49c807b2a39eaa428821c5ade6f38a0968d66161d2c308d7ba3cc16",
+      "inputs_equal": true,
+      "metrics_reused": false,
+      "ground_truth_policy": "evaluator_only",
+      "cases": {
+        "default_off": {
+          "metrics": {
+            "frames": 80,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 0.11188367637566381,
+            "raw_ate_rmse_m": 0.27379108167601507,
+            "segment_count": 1,
+            "translation_percent": 0.2807531045984703,
+            "rotation_deg_per_m": 0.005652783299876321
+          },
+          "lost_frames": 0,
+          "runtime_s": 42.44656909999321,
+          "peak_memory_mb": 969.9921875
+        },
+        "precise_off": {
+          "metrics": {
+            "frames": 80,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 0.11083822707176941,
+            "raw_ate_rmse_m": 0.3083361331122733,
+            "segment_count": 1,
+            "translation_percent": 0.31492877773091477,
+            "rotation_deg_per_m": 0.0051843788718701515
+          },
+          "lost_frames": 0,
+          "runtime_s": 55.18959329999052,
+          "peak_memory_mb": 962.8125
+        },
+        "precise_on": {
+          "metrics": {
+            "frames": 80,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 0.16393180558439177,
+            "raw_ate_rmse_m": 0.3225197101442554,
+            "segment_count": 1,
+            "translation_percent": 0.4103762784198215,
+            "rotation_deg_per_m": 0.004814453738664574
+          },
+          "lost_frames": 0,
+          "runtime_s": 69.96675309998682,
+          "peak_memory_mb": 982.51171875
+        }
+      },
+      "comparisons": {
+        "precision": {
+          "candidate": "precise_off",
+          "control": "default_off",
+          "metrics": {
+            "ate_rmse_m": {
+              "candidate": 0.11083822707176941,
+              "control": 0.11188367637566381,
+              "change_percent": -0.9344073574988454
+            },
+            "translation_percent": {
+              "candidate": 0.31492877773091477,
+              "control": 0.2807531045984703,
+              "change_percent": 12.172856710283607
+            },
+            "rotation_deg_per_m": {
+              "candidate": 0.0051843788718701515,
+              "control": 0.005652783299876321,
+              "change_percent": -8.286261884767764
+            }
+          }
+        },
+        "augmentation": {
+          "candidate": "precise_on",
+          "control": "precise_off",
+          "metrics": {
+            "ate_rmse_m": {
+              "candidate": 0.16393180558439177,
+              "control": 0.11083822707176941,
+              "change_percent": 47.901865552435694
+            },
+            "translation_percent": {
+              "candidate": 0.4103762784198215,
+              "control": 0.31492877773091477,
+              "change_percent": 30.307646502365728
+            },
+            "rotation_deg_per_m": {
+              "candidate": 0.004814453738664574,
+              "control": 0.0051843788718701515,
+              "change_percent": -7.135380001117387
+            }
+          }
+        }
+      },
+      "failures": [
+        {
+          "comparison": "precision",
+          "metric": "translation_percent",
+          "reason": "regression_exceeds_five_percent"
+        },
+        {
+          "comparison": "augmentation",
+          "metric": "ate_rmse_m",
+          "reason": "regression_exceeds_five_percent"
+        },
+        {
+          "comparison": "augmentation",
+          "metric": "translation_percent",
+          "reason": "regression_exceeds_five_percent"
+        }
+      ]
+    },
+    "uncompleted_cases": {}
+  },
+  "sequence_01_ran": false,
+  "sequence_01_reason": "Only the bounded fresh 04/80 solver-control comparison was scheduled.",
+  "ground_truth_used_for_estimation": false,
+  "bundle_objectives_compared_across_runs": false,
+  "release_ready": false,
+  "accuracy_improvement_claim": false,
+  "publication_assets": {
+    "comparison": "plots/bundle-solver-controls-04-80-trajectory-and-metrics.png",
+    "default_off": "plots/bundle-solver-controls-04-80-default-off-overview.png",
+    "precise_off": "plots/bundle-solver-controls-04-80-precise-off-overview.png",
+    "precise_on": "plots/bundle-solver-controls-04-80-precise-on-overview.png"
+  },
+  "history": {
+    "previous_target_relative_partial_gate_failure": "TARGET_RELATIVE_BUNDLE_CHECKPOINT.json",
+    "previous_result_kept_separate": true
+  },
+  "accuracy_gate_status": "fail",
+  "accuracy_gate_failures": [
+    {
+      "comparison": "precision",
+      "metric": "translation_percent",
+      "reason": "regression_exceeds_five_percent"
+    },
+    {
+      "comparison": "augmentation",
+      "metric": "ate_rmse_m",
+      "reason": "regression_exceeds_five_percent"
+    },
+    {
+      "comparison": "augmentation",
+      "metric": "translation_percent",
+      "reason": "regression_exceeds_five_percent"
+    }
+  ],
+  "source_checkpoint_sha": "ebcfec12cc9952d739019d9f68a75914e9db270f",
+  "validation": {
+    "backend_passed": 450,
+    "backend_skipped": 0,
+    "backend_seconds": 77.81,
+    "focused_passed": 15,
+    "focused_seconds": 7.83,
+    "backend_tests_sha256": "24871ce92eb4acd52a730fe7e3785568adcd19901dd1b6692d971207d9d664df",
+    "backend_log_sha256": "3d41c84456258c4261c5f5ba0c41407efff44c1ccfe1b6e6749028e8b46acead",
+    "source_unchanged": true,
+    "accuracy_gate_passed": false
+  },
+  "saved_geometry_review": {
+    "first_bundle_frame": 14,
+    "original_inputs_equal": true,
+    "ground_truth_used": false,
+    "new_solves_performed": false,
+    "all_nine_bundle_solves_reached_outer_evaluation_cap": true,
+    "tiny_feasible_objective_improvement_establishes_trajectory_cause": false,
+    "audit_sha256": "18e33c9b2ab9d249131ab92aac4c3b06ad23a3ade54df8d975b522bdb914c5f6"
+  }
+}

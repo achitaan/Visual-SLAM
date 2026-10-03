@@ -61,8 +61,10 @@ were checked. All 350 poses, keyframe observations and 133,623 PLY points are
 finite. The independent stereo-motion audit contains 345 measurements, with
 maximum disagreement of 0.436 m and 0.412 degrees, below the existing 0.5 m and
 1.5 degree limits. Passing these consistency guards does not waive the rotation
-accuracy regression. The development fingerprint still lacks dependency/runtime
-identity; artifact inspection does not waive that harness gap.
+accuracy regression. This revision's development fingerprint lacks
+dependency/runtime identity; artifact inspection does not waive that historical
+harness gap. The later runner repair records dependencies/runtime and validates
+finite, exact exports; these older scores cannot satisfy its new source gate.
 
 [Machine-readable results](CONNECTED_STEREO_FOCUSED_RESULTS.json),
 [accuracy comparison](plots/connected-stereo-focused-comparison.png), and

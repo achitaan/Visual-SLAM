@@ -85,7 +85,9 @@ diagnostic caches and mismatched completed reports cannot be reused. This runner
 now has an owned process-tree deadline covering preparation, evaluation and
 plotting. Scheduled full validation remains paused for accuracy and coverage
 gates. The bounded development runner includes tests in its gate fingerprint;
-dependency/runtime identity and finite-artifact reuse still need hardening.
+dependency/runtime identity, finite-artifact checks and exact source/evaluator
+hashes now guard completed-result reuse. Legacy reports remain separate and
+cannot satisfy the new gate.
 
 Next, repair the demonstrated depth-support regression using independently
 verified geometry, profile extraction and descriptor matching, and repeat the
@@ -250,3 +252,12 @@ records actual 04/80 and 01/350 results at `b01684a`. It improves 01 position,
 translation and tracking coverage, but rotation, runtime and memory still
 regress against supported mapping. The 6.5-minute cycle does not pass the release
 gate; its graphs and source groups remain separate from future repairs.
+
+Hard-conflict reference retention now has an opt-in fixed-pose validation path.
+It requires bidirectional verification, matching accepted endpoints and live
+calibration, proper SE(3) poses and current supported stereo observations. It
+never refits the selected reference pose or relaxes pose acceptance. Failed
+support retains the established clear/forced-keyframe fallback. Context-absent
+reference fitting may use restored depth and a prediction seed; it is not a
+held-out supported-only fit. Targeted synthetic checks do not establish improved
+benchmark accuracy; a fresh frozen replay is required.

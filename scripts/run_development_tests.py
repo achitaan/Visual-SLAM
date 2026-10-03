@@ -54,6 +54,7 @@ CURATED_TESTS = (
     'tests/test_development_timing_history.py',
     'tests/test_stereo_pose_arbitration.py',
     'tests/test_stereo_arbitration_tracking.py',
+    'tests/test_stereo_reference_retention.py',
     'tests/test_stereo_pose_arbitration_cli.py',
 )
 

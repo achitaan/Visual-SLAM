@@ -166,5 +166,19 @@
     ],
     "interpretation": "A feasible lower objective exists at the first divergence. Capped solver numerics need investigation; this does not prove a trajectory accuracy fix.",
     "next_experiment": "Equivalent target-relative source camera and singleton point coordinates, unchanged objective, budgets and acceptance gates."
+  },
+  "cuda_environment_validation": {
+    "scope": "current_source_full_suite_in_cuda_environment",
+    "passed": 428,
+    "skipped": 0,
+    "elapsed_seconds": 65.96,
+    "source_runtime_fingerprint": "4eed46c2c5895ee6cf0421886f127952a4017c4c2f449b0dd4072ef449306162",
+    "torch": "2.7.1+cu126",
+    "source_unchanged": true,
+    "diagnostic_matching_backend": "cuda",
+    "estimator_default_backend": "cpu",
+    "new_trajectory_accuracy_or_speed_claim": false,
+    "prior_cpu_results_reused_as_gpu_results": false,
+    "release_ready": false
   }
 }

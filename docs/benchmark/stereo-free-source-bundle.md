@@ -97,3 +97,31 @@ robust loss, solver budget and geometric gates unchanged. Shared points must
 retain their camera and world-point dependencies. A shared trust region can
 still couple solver steps, so improved convergence and trajectory accuracy
 must both be measured in fresh tests before further expansion.
+
+## GPU test environment
+
+The same estimator source subsequently passed all 428 tests in the CUDA
+environment (PyTorch 2.7.1+cu126), including the four optional matching tests
+previously skipped on CPU. The full suite took 65.96 seconds. Its distinct
+source/runtime fingerprint is
+`4eed46c2c5895ee6cf0421886f127952a4017c4c2f449b0dd4072ef449306162`.
+This validates the test environment and matching equivalence; it is not a
+new trajectory benchmark or a measured speedup for this revision.
+
+Upcoming diagnostics use explicit `--matching-backend cuda`. This requires
+a CUDA-enabled environment installed with `requirements-performance-gpu.txt`.
+CPU remains available with `--matching-backend cpu`; the general estimator
+default is unchanged. Keep CPU and GPU runtime identities and timings separate.
+An example bounded smoke command, with dataset paths supplied locally, is:
+
+```sh
+python scripts/run_development_tests.py --profile quick --variants bundle \
+  --data-root path/to/kitti --poses-root path/to/poses \
+  --output results/gpu-quick --matching-backend cuda \
+  --stereo-depth-policy verified_fallback --stereo-pose-arbitration \
+  --stereo-raw-reference-retry
+```
+
+Descriptor matching uses the GPU; feature extraction, geometric estimation and
+SciPy bundle adjustment still use CPU. Passing the CUDA tests does not change
+the failed CPU accuracy gate above or approve full validation.

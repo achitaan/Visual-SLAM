@@ -1,0 +1,119 @@
+{
+  "status": "fresh_partial_capture_parity_pass_accuracy_unresolved",
+  "release_ready": false,
+  "sequence": "04",
+  "frames_per_run": 21,
+  "fresh_runs": 4,
+  "source_fingerprint": "2f5feb2daf678c2b883a4f2ad46cf9b254d7662042390b06e45d76c0db96885e",
+  "source_unchanged": true,
+  "matching_backend": "cuda",
+  "bundle_solver_accuracy": "precise",
+  "loop_mode": "off",
+  "selected_trace_frames": [
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "tests": {
+    "full_suite": 467,
+    "full_suite_elapsed_s": 81.89,
+    "focused_capture": 17
+  },
+  "parity": {
+    "exact_trajectory_sparse_preview": true,
+    "persistent_map_equal": true,
+    "tracking_decisions_equal": true,
+    "matching_and_depth_counts_equal": true,
+    "complete_hashed_frame_records": 14
+  },
+  "cases": [
+    {
+      "case": "on_trace",
+      "frames": 21,
+      "lost_frames": 0,
+      "elapsed_s": 22.77945179998642,
+      "peak_memory_mb": 1017.95703125,
+      "keyframes": 4,
+      "landmarks": 3737,
+      "cuda_calls": 40,
+      "cpu_calls": 0,
+      "ground_truth_used_for_estimation": false,
+      "export_sha256": {
+        "poses.txt": "90dfcc353e3b72cbe919cd695779194cd46977cdcf5b5a36a6eedd39f9a64780",
+        "sparse.ply": "59db19b9d4795b6aa15edfd0131860598af9ba54337d01f8a8399f182deb23c4",
+        "preview.json": "16ea07bfdb6a86accb51458695a4c4ca00c772115c355f1576f250c58b1c5d23"
+      }
+    },
+    {
+      "case": "on_plain",
+      "frames": 21,
+      "lost_frames": 0,
+      "elapsed_s": 15.083212500001537,
+      "peak_memory_mb": 950.4609375,
+      "keyframes": 4,
+      "landmarks": 3737,
+      "cuda_calls": 40,
+      "cpu_calls": 0,
+      "ground_truth_used_for_estimation": false,
+      "export_sha256": {
+        "poses.txt": "90dfcc353e3b72cbe919cd695779194cd46977cdcf5b5a36a6eedd39f9a64780",
+        "sparse.ply": "59db19b9d4795b6aa15edfd0131860598af9ba54337d01f8a8399f182deb23c4",
+        "preview.json": "16ea07bfdb6a86accb51458695a4c4ca00c772115c355f1576f250c58b1c5d23"
+      }
+    },
+    {
+      "case": "off_trace",
+      "frames": 21,
+      "lost_frames": 0,
+      "elapsed_s": 20.801229699980468,
+      "peak_memory_mb": 1018.40234375,
+      "keyframes": 4,
+      "landmarks": 3736,
+      "cuda_calls": 40,
+      "cpu_calls": 0,
+      "ground_truth_used_for_estimation": false,
+      "export_sha256": {
+        "poses.txt": "c30cbd4b0c6021cdcd71686e97328d5fb88cb930898539af572fda4fbb59ce80",
+        "sparse.ply": "03e121f02823e43222dfbeb7fd290e652ec78d6e806730f115a9f1b030dc55e1",
+        "preview.json": "d0b21f51878ac5203a6014e596050b230f06fe9ba451a848b399e78204c82b71"
+      }
+    },
+    {
+      "case": "off_plain",
+      "frames": 21,
+      "lost_frames": 0,
+      "elapsed_s": 13.106188900012057,
+      "peak_memory_mb": 940.12109375,
+      "keyframes": 4,
+      "landmarks": 3736,
+      "cuda_calls": 40,
+      "cpu_calls": 0,
+      "ground_truth_used_for_estimation": false,
+      "export_sha256": {
+        "poses.txt": "c30cbd4b0c6021cdcd71686e97328d5fb88cb930898539af572fda4fbb59ce80",
+        "sparse.ply": "03e121f02823e43222dfbeb7fd290e652ec78d6e806730f115a9f1b030dc55e1",
+        "preview.json": "d0b21f51878ac5203a6014e596050b230f06fe9ba451a848b399e78204c82b71"
+      }
+    }
+  ],
+  "ground_truth_used_for_diagnosis": false,
+  "independent_unused_evidence_certified": false,
+  "limits": [
+    "21-frame diagnostic; no full-sequence accuracy gate",
+    "matching component uses GPU; other estimator stages use CPU",
+    "detailed capture adds serialization overhead",
+    "unknown reference pools remain unknown",
+    "large-map transient capture memory not validated",
+    "prior image-factor accuracy regression remains unresolved"
+  ],
+  "publication_source_fingerprint": "b89f7c452546a43b319c71df93ea7341becd2bbd70f09ea484ed4a4b76e932fa",
+  "publication_change_after_captures": "Only a trailing blank line in the new test module was removed; estimator hashes unchanged",
+  "publication_full_suite": {
+    "passed": 467,
+    "elapsed_s": 74.85
+  }
+}

@@ -162,10 +162,14 @@ class MappingConfig:
 
 class SharedSlam:
     def __init__(self, matrix, stereo=None, config=None, performance=None,
-                 bundle_diagnostic_writer=None):
+                 bundle_diagnostic_writer=None, tracking_diagnostics_writer=None):
         self.performance = performance or PerformanceConfig()
         self.bundle_diagnostic_writer = bundle_diagnostic_writer
         self.bundle_diagnostic_errors = []
+        self.tracking_diagnostics_writer = tracking_diagnostics_writer
+        self.tracking_diagnostic_errors = []
+        self._tracking_trace_probe_label = None
+        self._tracking_trace_cohort_frame = None
         self.matcher = DescriptorMatcher(self.performance.matching_backend)
         self._landmark_cache = None
         self._identity_conflict_cache = {}
@@ -453,6 +457,11 @@ class SharedSlam:
         return pixels, desc, points, right_u
 
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations):
+        if (getattr(self, "_tracking_trace_frame", -1) == index
+                and self._tracking_trace_enabled(index)
+                and not getattr(self, "_tracking_trace_selected_emitted", False)):
+            self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
+                "pending_acceptance", associations, pixels, right_u, None, {})
         pixels, desc, points, right_u = (
             pixels.copy(),
             desc.copy(),
@@ -918,6 +927,7 @@ class SharedSlam:
                 initial_pose=seed,
                 diagnostics=diagnostics,
             )
+            measured_right = None
             if solution is not None and self.stereo is not None:
                 _, measured_right = self._measure_stereo_pixels(observations)
                 solution, stereo_diagnostics = refine_stereo_map_pose(
@@ -927,8 +937,54 @@ class SharedSlam:
                     self.stereo.disparity_offset,
                 )
                 diagnostics.update(stereo_diagnostics)
+            if self._tracking_trace_enabled(getattr(self, "_tracking_trace_frame", -1)):
+                valid_indices = (
+                    np.asarray(solution[1], dtype=int).reshape(-1)
+                    if solution is not None else np.empty(0, dtype=int)
+                )
+                inlier_ids = [int(identifiers[j]) for j in valid_indices
+                              if 0 <= j < len(identifiers)]
+                rows = []
+                for row_index, (landmark_id, point, pixel) in enumerate(
+                        zip(identifiers, positions, observations)):
+                    feature = int(measurements[landmark_id][1])
+                    right_value = None
+                    right_valid = False
+                    if measured_right is not None and row_index < len(measured_right):
+                        candidate_right = float(measured_right[row_index])
+                        if np.isfinite(candidate_right):
+                            right_value = candidate_right
+                            right_valid = True
+                    rows.append({
+                        "landmark_id": int(landmark_id),
+                        "world_position": np.asarray(point, dtype=float).copy(),
+                        "pixel": np.asarray(pixel, dtype=np.float32).copy(),
+                        "detector_feature_index": feature,
+                        "right_u": right_value,
+                        "right_u_valid": right_valid,
+                        "right_role": "map_refinement_measurement" if right_valid else "not_measured",
+                    })
+                self._tracking_trace_event(self._tracking_trace_frame, "solve_probe", {
+                    "attempt_index": int(getattr(self, "_tracking_trace_probe_count", 0)),
+                    "kind": str(getattr(self, "_tracking_trace_probe_kind", "map_pose_solve")),
+                    "relocalize": bool(relocalize),
+                    "pool_complete": True,
+                    "input_row_count": len(rows),
+                    "rows": rows,
+                    "returned_status": "failed" if solution is None else "accepted",
+                    "inlier_landmark_ids": inlier_ids,
+                    "pose_diagnostics": diagnostics,
+                    "candidate_pose": None if solution is None else np.asarray(solution[0]).copy(),
+                    "initial_pose": None if seed is None else np.asarray(seed).copy(),
+                    "geometry_seed_dependency": not relocalize,
+                })
+                self._tracking_trace_probe_count = int(
+                    getattr(self, "_tracking_trace_probe_count", 0)) + 1
             return solution, diagnostics, identifiers, positions, observations
 
+        self._tracking_trace_probe_kind = (
+            "flow_assisted_primary" if not relocalize else "relocalization_primary"
+        )
         result, pose_diagnostics, ids, world, observed = solve(candidates)
         source = "descriptor_map" if relocalize else "flow_assisted_map"
         augmented_correspondences = len(candidates)
@@ -937,6 +993,7 @@ class SharedSlam:
             # A large, coherent cluster of repeated-texture flow can dominate
             # RANSAC while failing spatial or stereo checks. Independently matched
             # map descriptors must still get a solve with the same acceptance gates.
+            self._tracking_trace_probe_kind = "descriptor_fallback"
             fallback, fallback_diagnostics, fallback_ids, fallback_world, fallback_observed = solve(descriptor_candidates)
             if fallback is not None:
                 flow_rejection = pose_diagnostics.get("pose_rejection_reason")
@@ -2373,6 +2430,290 @@ class SharedSlam:
                 ],
             }
 
+    def tracking_diagnostics_manifest(self):
+        writer = self.tracking_diagnostics_writer
+        if writer is None:
+            return {"enabled": False, "selected_frames": []}
+        try:
+            manifest = _owned_diagnostic_value(writer.manifest())
+            if self.tracking_diagnostic_errors:
+                manifest.setdefault("errors", []).extend(
+                    _owned_diagnostic_value(self.tracking_diagnostic_errors)
+                )
+            return manifest
+        except Exception as error:
+            self.tracking_diagnostic_errors.append({
+                "frame": None, "phase": "manifest",
+                "error_type": type(error).__name__,
+            })
+            return {
+                "enabled": True, "selected_frames": list(writer.frames),
+                "frames": [], "errors": list(self.tracking_diagnostic_errors),
+            }
+
+    def _tracking_trace_enabled(self, frame):
+        writer = getattr(self, "tracking_diagnostics_writer", None)
+        if writer is None:
+            return False
+        try:
+            return bool(writer.should_capture(int(frame)))
+        except Exception as error:
+            self.tracking_diagnostic_errors.append({
+                "frame": int(frame), "phase": "select",
+                "error_type": type(error).__name__,
+            })
+            return False
+
+    def _tracking_trace_event(self, frame, phase, payload):
+        writer = getattr(self, "tracking_diagnostics_writer", None)
+        if writer is None:
+            return False
+        try:
+            ok = writer.record_event(int(frame), str(phase), payload)
+            if not ok:
+                self.tracking_diagnostic_errors.append({
+                    "frame": int(frame), "phase": str(phase),
+                    "error_type": "EventRejected",
+                })
+            return bool(ok)
+        except Exception as error:
+            self.tracking_diagnostic_errors.append({
+                "frame": int(frame), "phase": str(phase),
+                "error_type": type(error).__name__,
+            })
+            try:
+                writer.record_error(int(frame), str(phase), type(error).__name__)
+            except Exception:
+                pass
+            return False
+
+    def _tracking_trace_frame_header(self, frame):
+        try:
+            with self.map.lock:
+                start = max(0, len(self.map.poses) - 4)
+                limit = min(len(self.map.poses), len(self.map.statuses),
+                            len(self.map.pose_anchors), len(self.map.relative_poses))
+                recent = [
+                    {"frame": int(fid), "status": str(self.map.statuses[fid]),
+                     "anchor_keyframe_id": self.map.pose_anchors[fid],
+                     "camera_to_world": np.asarray(self.map.poses[fid]).copy(),
+                     "relative_pose": np.asarray(self.map.relative_poses[fid]).copy()}
+                    for fid in range(start, limit)
+                ]
+                return {
+                    "schema": "tracking_frame_start_v1", "frame": int(frame),
+                    "revision": int(self.map.revision),
+                    "geometry_revision": int(self.map.geometry_revision),
+                    "metric": bool(self.map.metric),
+                    "current_pose_count": len(self.map.poses),
+                    "current_keyframe_count": len(self.map.keyframes),
+                    "current_landmark_count": len(self.map.landmarks),
+                    "recent_frame_states": recent,
+                    "rows": [], "input_row_count": 0,
+                    "camera_matrix": self.K.copy(),
+                    "baseline": None if self.stereo is None else float(self.stereo.baseline),
+                    "disparity_offset": None if self.stereo is None else float(self.stereo.disparity_offset),
+                }
+        except Exception as error:
+            return {"schema": "tracking_frame_start_v1", "frame": int(frame),
+                    "snapshot_valid": False, "snapshot_error_type": type(error).__name__,
+                    "rows": [], "input_row_count": 0}
+
+    def _tracking_trace_frame_state(self, frame, *, include_landmarks=False,
+                                    landmark_ids=None, stage="frame_state"):
+        """Copy a bounded map epoch/ownership snapshot under the state lock."""
+        try:
+            with self.map.lock:
+                poses = [
+                    {"frame": int(fid), "status": str(self.map.statuses[fid]),
+                     "anchor_keyframe_id": self.map.pose_anchors[fid],
+                     "camera_to_world": np.asarray(self.map.poses[fid]).copy(),
+                     "relative_pose": np.asarray(self.map.relative_poses[fid]).copy()}
+                    for fid in range(min(len(self.map.poses), len(self.map.statuses),
+                                         len(self.map.pose_anchors), len(self.map.relative_poses)))
+                ]
+                keyframes = [
+                    {"keyframe_id": int(kid), "frame": int(kf.frame),
+                     "camera_to_world": np.asarray(kf.pose).copy()}
+                    for kid, kf in sorted(self.map.keyframes.items())
+                ]
+                if landmark_ids is None:
+                    ids = sorted(self.map.landmarks) if include_landmarks else []
+                else:
+                    ids = sorted({int(value) for value in landmark_ids
+                                  if int(value) in self.map.landmarks})
+                rows = []
+                for lid in ids:
+                    landmark = self.map.landmarks[lid]
+                    rows.append({
+                        "record_type": "landmark", "landmark_id": int(lid),
+                        "position": np.asarray(landmark.position).copy(),
+                        "persistent_anchor_keyframe_id": int(landmark.anchor),
+                        "misses": int(landmark.misses),
+                    })
+                    for keyframe_id, observation in sorted(landmark.observations.items()):
+                        keyframe = self.map.keyframes.get(int(keyframe_id))
+                        feature_ids = []
+                        feature_pixels = []
+                        if keyframe is not None:
+                            feature_ids = [int(value) for value in np.flatnonzero(
+                                np.asarray(keyframe.landmark_ids) == int(lid)
+                            )]
+                            feature_pixels = [
+                                np.asarray(keyframe.pixels[index], np.float32).copy()
+                                for index in feature_ids
+                            ]
+                        right_u = observation.right_u
+                        rows.append({
+                            "record_type": "observation", "landmark_id": int(lid),
+                            "keyframe_id": int(keyframe_id),
+                            "frame_id": (None if keyframe is None else int(keyframe.frame)),
+                            "pixel": np.asarray(observation.pixel, np.float32).copy(),
+                            "right_u": (None if right_u is None else float(right_u)),
+                            "right_u_valid": bool(right_u is not None and np.isfinite(right_u)),
+                            "keyframe_feature_ids": feature_ids,
+                            "keyframe_feature_pixels": feature_pixels,
+                        })
+                return {
+                    "schema": "tracking_map_state_v1", "frame": int(frame),
+                    "stage": str(stage), "revision": int(self.map.revision),
+                    "geometry_revision": int(self.map.geometry_revision),
+                    "metric": bool(self.map.metric),
+                    "next_landmark_id": int(self.map.next_landmark),
+                    "pose_rows": poses, "keyframe_rows": keyframes,
+                    "rows": rows, "input_row_count": len(rows),
+                    "landmark_count": len(self.map.landmarks),
+                    "captured_landmark_count": len(ids),
+                    "observation_count": int(sum(len(self.map.landmarks[lid].observations)
+                                                  for lid in ids)),
+                    "stereo_motion": [
+                        {"source_frame": int(pair[0]), "target_frame": int(pair[1]),
+                         "measurement": np.asarray(value).copy()}
+                        for pair, value in sorted(self.map.stereo_motion.items())
+                    ],
+                }
+        except Exception as error:
+            self.tracking_diagnostic_errors.append({
+                "frame": int(frame), "phase": str(stage),
+                "error_type": type(error).__name__,
+            })
+            return {
+                "schema": "tracking_map_state_v1", "frame": int(frame),
+                "stage": str(stage), "snapshot_valid": False,
+                "snapshot_error_type": type(error).__name__,
+                "snapshot_complete": False, "rows": [], "input_row_count": 0,
+            }
+
+    def _tracking_trace_reference_context(self, frame, report, info):
+        arbitration = self._arbitration_context
+        if not isinstance(arbitration, dict):
+            return {
+                "reference_pool_status": "unknown_uninstrumented",
+                "fit_consumption_complete": False,
+                "unused_claim_allowed": False,
+                "reason": "no_arbitration_pool_ledger",
+            }
+        previous = arbitration.get("previous")
+        current = arbitration.get("current")
+        training = arbitration.get("training_rows")
+        fit = arbitration.get("fit_pairs_snapshot")
+        held = arbitration.get("held_pairs")
+        captured = isinstance(previous, SupportedStereoFrame) and isinstance(
+            current, SupportedStereoFrame) and isinstance(training, dict)
+        if not captured:
+            return {
+                "reference_pool_status": "unknown_uninstrumented",
+                "fit_consumption_complete": False,
+                "unused_claim_allowed": False,
+                "reason": "reference_row_pool_incomplete",
+            }
+
+        def owned_frame(record):
+            right = np.asarray(record.right_u, np.float32)
+            points = np.asarray(record.points, np.float32)
+            return {
+                "frame_id": int(record.frame),
+                "image_size": tuple(record.image_size),
+                "pixels": np.asarray(record.pixels, np.float32).copy(),
+                "right_u": [None if not np.isfinite(value) else float(value) for value in right],
+                "right_u_valid": np.isfinite(right).tolist(),
+                "points": [[None if not np.isfinite(value) else float(value) for value in row]
+                           for row in points],
+                "points_valid": np.isfinite(points).all(axis=1).tolist(),
+                "landmark_id_claims": np.asarray(record.landmark_ids, np.int64).copy(),
+                "calibration_identity": str(record.calibration_identity),
+            }
+        choice = report if isinstance(report, dict) else {}
+        fit_disjoint = np.asarray(held if held is not None else [], dtype=np.int64).reshape(-1, 2)
+        fit_pairs = np.asarray(fit if fit is not None else [], dtype=np.int64).reshape(-1, 2)
+        train_pairs = np.asarray(training.get("fit_pairs", []), dtype=np.int64).reshape(-1, 2)
+        pairs_match = np.array_equal(fit_pairs, train_pairs)
+        arbitration_choice = choice.get("choice")
+        full_consumed = bool(
+            isinstance(info.get("full_supported_reference_fallback"), dict)
+            or info.get("full_supported_reference_attempted", False)
+        )
+        selection_consumed = bool(
+            "choice" in choice and arbitration_choice is not None
+            and ("score" in choice or "independent" in choice or "map" in choice)
+        )
+        fit_rows = np.asarray(training.get("forward_inlier_pairs", []), dtype=np.int64).reshape(-1, 2)
+        reverse_rows = np.asarray(training.get("reverse_inlier_pairs", []), dtype=np.int64).reshape(-1, 2)
+        return {
+            "reference_pool_status": (
+                "reserved_ledger_captured_other_reference_unknown"
+                if pairs_match else "unknown_uninstrumented"
+            ),
+            "reserved_pool_complete": bool(pairs_match),
+            "fit_consumption_complete": False,
+            "unused_claim_allowed": False,
+            "reason": None if pairs_match else "fit_pair_ledger_mismatch",
+            "source": owned_frame(previous), "target": owned_frame(current),
+            "fit_pairs": fit_pairs, "forward_inlier_pairs": fit_rows,
+            "reverse_inlier_pairs": reverse_rows,
+            "fit_disjoint_rows": fit_disjoint,
+            "fit_disjoint_role": "fit_disjoint",
+            "selection_consumed": bool(selection_consumed),
+            "estimator_unused": False,
+            "holdout_status": ("fit_disjoint_selection_consumed" if selection_consumed
+                               else "selection_use_unknown"),
+            "arbitration_report": dict(choice),
+            "pose_source": info.get("pose_source"),
+            "full_supported_reference_consumed": bool(full_consumed),
+        }
+
+    def _tracking_trace_selected(self, frame, phase, pose, status, associations,
+                                 pixels, right_u, arbitration_report, info):
+        """Copy selected evidence without adding any measurement or fitting call."""
+        if not self._tracking_trace_enabled(frame):
+            return
+        try:
+            payload = self._tracking_trace_frame_state(
+                frame, include_landmarks=True, stage=phase)
+            payload.update(
+                accepted_pose=np.asarray(pose).copy(), tracking_status=str(status),
+                pose_source=info.get("pose_source"),
+                accepted_associations=[{"detector_feature_index": int(feature),
+                                        "landmark_id": int(lid)}
+                                       for feature, lid in sorted(associations.items())],
+                accepted_tracks=[{"landmark_id": int(lid),
+                                  "pixel": np.asarray(pixel, np.float32).copy()}
+                                 for lid, pixel in self.accepted_tracks],
+                detector_pixels=np.asarray(pixels, np.float32).copy(),
+                detector_right_u=[None if not np.isfinite(value) else float(value)
+                                  for value in right_u],
+                reference_context=self._tracking_trace_reference_context(
+                    frame, arbitration_report, info),
+                fit_consumption_complete=False,
+                unused_evidence_certified=False,
+            )
+            self._tracking_trace_event(frame, phase, payload)
+            if phase == "selected_pre_keyframe":
+                self._tracking_trace_selected_emitted = True
+        except Exception as error:
+            self.tracking_diagnostic_errors.append({
+                "frame": int(frame), "phase": phase, "error_type": type(error).__name__})
+
     def _bundle_diagnostic_tracking_context(self, frame, image_size):
         """Snapshot existing predictor inputs without invoking prediction logic."""
         with self.map.lock:
@@ -3348,6 +3689,20 @@ class SharedSlam:
             )
         self.loop_worker.poll(self.map)
         self._prepare_frame_images(image, right)
+        trace_capture = self._tracking_trace_enabled(index)
+        self._tracking_trace_frame = int(index) if trace_capture else -1
+        self._tracking_trace_probe_count = 0
+        self._tracking_trace_selected_emitted = False
+        if trace_capture:
+            try:
+                self._tracking_trace_cohort_frame = min(self.tracking_diagnostics_writer.frames)
+                self._tracking_trace_event(index, "frame_start_state",
+                                           self._tracking_trace_frame_header(index))
+            except Exception as error:
+                self.tracking_diagnostic_errors.append({
+                    "frame": int(index), "phase": "begin", "error_type": type(error).__name__})
+                trace_capture = False
+                self._tracking_trace_frame = -1
         diagnostic_capture = False
         if self.bundle_diagnostic_writer is not None:
             try:
@@ -3375,7 +3730,7 @@ class SharedSlam:
             self.current_supported_stereo = self._capture_supported_stereo(index, pixels, desc, size)
         if self.config.stereo_pose_arbitration:
             capture_training_rows = bool(
-                diagnostic_capture or self.config.stereo_owned_image_bundle
+                diagnostic_capture or trace_capture or self.config.stereo_owned_image_bundle
             )
             if capture_training_rows:
                 self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(
@@ -4042,6 +4397,9 @@ class SharedSlam:
                     lid for lid, _ in self.accepted_tracks if lid in self.map.landmarks
                 }
                 info["tracked_landmarks"] = len(tracked_landmarks)
+                if trace_capture:
+                    self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
+                        status, associations, pixels, right_u, arbitration_report, info)
                 if (
                     stereo_reference
                     or index - last.frame >= self.config.keyframe_interval
@@ -4050,6 +4408,9 @@ class SharedSlam:
                     anchor = self._keyframe(
                         index, pose, pixels, desc, points, right_u, associations
                     )
+        if trace_capture and not self._tracking_trace_selected_emitted:
+            self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
+                status, associations, pixels, right_u, arbitration_report, info)
         if info["tracking_ok"]:
             self.previous_gray = self.current_gray.copy()
             tracks = {}
@@ -4061,6 +4422,9 @@ class SharedSlam:
             tracks.update({lid: p for lid, p in self.accepted_tracks})
             self.previous_tracks = list(tracks.items())
         self.map.record(pose, status, anchor)
+        if trace_capture:
+            self._tracking_trace_selected(index, "accepted_pre_ba", pose,
+                status, associations, pixels, right_u, arbitration_report, info)
         if arbitration_report is not None:
             info['stereo_pose_arbitration'] = arbitration_report
         if arbitration_measurement is not None and info['tracking_ok']:
@@ -4075,6 +4439,10 @@ class SharedSlam:
             self.map.add_stereo_motion(previous_index, index, measurement)
         bundle_called = False
         bundle_skip_reason = None
+        if trace_capture and index == self._tracking_trace_cohort_frame:
+            self._tracking_trace_event(index, "cohort_map_before_ba",
+                self._tracking_trace_frame_state(index, include_landmarks=True,
+                                                 stage="cohort_map_before_ba"))
         if (
             info["tracking_ok"]
             and anchor is not None
@@ -4267,6 +4635,10 @@ class SharedSlam:
                 bundle_skip_reason = "bundle_not_invoked"
         if diagnostic_capture and not bundle_called:
             self._skip_bundle_diagnostic(index, bundle_skip_reason or "bundle_not_invoked")
+        if trace_capture and index == self._tracking_trace_cohort_frame:
+            self._tracking_trace_event(index, "cohort_map_after_ba",
+                self._tracking_trace_frame_state(index, include_landmarks=True,
+                                                 stage="cohort_map_after_ba"))
         if arbitration_measurement is not None and info['tracking_ok']:
             with self.map.lock:
                 after_bundle = self._arbitrate_supported_pose(
@@ -4312,6 +4684,20 @@ class SharedSlam:
         )
         if self.config.stereo_depth_policy in ('verified_fallback', 'verified_all'):
             info['stereo_depth_verification'] = dict(self.stereo_depth_verification)
+        if trace_capture:
+            try:
+                ledger = self._tracking_trace_reference_context(index, arbitration_report, info)
+                self._tracking_trace_event(index, "frame_end", {
+                    **ledger, "tracking_status": status,
+                    "accepted_pose": np.asarray(self.map.poses[index]).copy(),
+                    "revision": int(self.map.revision),
+                    "geometry_revision": int(self.map.geometry_revision),
+                    "unused_evidence_certified": False,
+                })
+                self.tracking_diagnostics_writer.finish_frame(index, tracking_status=status)
+            except Exception as error:
+                self.tracking_diagnostic_errors.append({
+                    "frame": int(index), "phase": "finish", "error_type": type(error).__name__})
         self.diagnostics.append(
             {
                 k: v

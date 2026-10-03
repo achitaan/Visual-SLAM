@@ -117,6 +117,10 @@ def main():
                         help='Owned run-output folder for selected bundle adjustment snapshots')
     parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
                         help='Frame IDs to capture when bundle adjustment runs')
+    parser.add_argument('--tracking-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for bounded tracking evidence traces')
+    parser.add_argument('--tracking-diagnostics-frames', type=int, nargs='+',
+                        help='Distinct nonnegative frame IDs to trace (maximum seven)')
     parser.add_argument('--opencv-threads', type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -150,6 +154,20 @@ def main():
         diagnostic_dir = args.bundle_diagnostics_dir.resolve()
         if not diagnostic_dir.is_relative_to(output_dir):
             parser.error('--bundle-diagnostics-dir must be inside the run output directory')
+    if (args.tracking_diagnostics_dir is None) != (args.tracking_diagnostics_frames is None):
+        parser.error('--tracking-diagnostics-dir and --tracking-diagnostics-frames must be supplied together')
+    if args.tracking_diagnostics_frames is not None:
+        frames = args.tracking_diagnostics_frames
+        if any(frame < 0 for frame in frames):
+            parser.error('--tracking-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(frames)) != len(frames):
+            parser.error('--tracking-diagnostics-frames must not contain duplicates')
+        if len(frames) > 7:
+            parser.error('--tracking-diagnostics-frames supports a max 7 selected frames')
+        output_dir = args.output.resolve()
+        diagnostic_dir = args.tracking_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(output_dir):
+            parser.error('--tracking-diagnostics-dir must be inside the run output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -285,13 +303,25 @@ def main():
             args.bundle_diagnostics_dir,
             frames=tuple(args.bundle_diagnostics_frames),
         )
+    tracking_diagnostics_writer = None
+    if args.tracking_diagnostics_dir is not None:
+        from tracking_diagnostics import TrackingDiagnosticsWriter
+        tracking_diagnostics_writer = TrackingDiagnosticsWriter(
+            args.tracking_diagnostics_dir,
+            frames=tuple(args.tracking_diagnostics_frames),
+        )
+    tracking_writer_kwargs = (
+        {"tracking_diagnostics_writer": tracking_diagnostics_writer}
+        if tracking_diagnostics_writer is not None else {}
+    )
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
                      stereo_raw_reference_retry=args.stereo_raw_reference_retry,
                      stereo_owned_image_bundle=args.stereo_owned_image_bundle,
                      bundle_solver_accuracy=args.bundle_solver_accuracy), performance=performance,
-                     bundle_diagnostic_writer=bundle_diagnostic_writer)
+                     bundle_diagnostic_writer=bundle_diagnostic_writer,
+                     **tracking_writer_kwargs)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -383,11 +413,22 @@ def main():
     else:
         bundle_diagnostic_manifest = {"enabled": False, "selected_frames": []}
         bundle_diagnostic_errors = []
+    if tracking_diagnostics_writer is not None:
+        for frame in tracking_diagnostics_writer.frames:
+            if frame >= processed_frames:
+                tracking_diagnostics_writer.mark_skipped(frame, 'frame_not_processed')
+        tracking_diagnostic_manifest = slam.tracking_diagnostics_manifest()
+        tracking_diagnostic_errors = list(slam.tracking_diagnostic_errors)
+    else:
+        tracking_diagnostic_manifest = {"enabled": False, "selected_frames": []}
+        tracking_diagnostic_errors = []
     run_payload = export_run(slam, args.output, paths, image_loader=loader,
                              include_images=not bool(interruption))
-    if bundle_diagnostic_writer is not None:
+    if bundle_diagnostic_writer is not None or tracking_diagnostics_writer is not None:
         run_payload['bundle_diagnostics'] = bundle_diagnostic_manifest
         run_payload['bundle_diagnostic_errors'] = list(slam.bundle_diagnostic_errors)
+        run_payload['tracking_diagnostics'] = tracking_diagnostic_manifest
+        run_payload['tracking_diagnostic_errors'] = tracking_diagnostic_errors
         write_json(args.output / 'run.json', run_payload)
     source_folder = args.output / "source"
     source_folder.mkdir(exist_ok=True)
@@ -438,6 +479,8 @@ def main():
     report["feature_cache"] = cache.metadata() if cache else {"enabled": False}
     report['bundle_diagnostics'] = bundle_diagnostic_manifest
     report['bundle_diagnostic_errors'] = bundle_diagnostic_errors
+    report['tracking_diagnostics'] = tracking_diagnostic_manifest
+    report['tracking_diagnostic_errors'] = tracking_diagnostic_errors
     report["interruption"] = interruption
     (args.output / "evaluator.py").write_bytes(evaluator_source)
     report["telemetry"] = observer.metadata() if observer else {"enabled": False}

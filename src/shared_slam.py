@@ -181,7 +181,7 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
-        if self.config.stereo_depth_policy not in ('supported', 'verified_fallback'):
+        if self.config.stereo_depth_policy not in ('supported', 'verified_fallback', 'verified_all'):
             raise ValueError('Invalid stereo depth policy')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
             raise ValueError('Verified stereo depth requires two calibrated cameras')
@@ -192,6 +192,9 @@ class SharedSlam:
         if self.config.stereo_owned_image_bundle and (
                 stereo is None or not self.config.stereo_pose_arbitration):
             raise ValueError('Owned stereo bundle requires calibrated stereo and pose arbitration')
+        if (self.config.stereo_owned_image_bundle
+                and self.config.stereo_depth_policy == 'verified_all'):
+            raise ValueError('Owned stereo bundle does not accept verified_all measurement provenance')
         self.previous_supported_stereo = None
         self.current_supported_stereo = None
         self._supported_extraction = None
@@ -253,13 +256,89 @@ class SharedSlam:
     def _measure_supported_stereo_pixels(self, pixels):
         return self._measure_stereo_pixels(pixels, supported_only=True)
 
+    def _depth_fit_policy_label(self):
+        policy = getattr(getattr(self, 'config', None), 'stereo_depth_policy', 'supported')
+        return ('verified_all' if policy == 'verified_all'
+                else 'supported_raw')
+
+    def _depth_measurement_source_label(self):
+        policy = getattr(getattr(self, 'config', None), 'stereo_depth_policy', 'supported')
+        return ('verified_right_image_correspondence'
+                if policy == 'verified_all'
+                else 'raw_supported_stereo_disparity')
+
     def _measure_stereo_pixels(self, pixels, supported_only=False, capture_supported=False):
         """Sample metric depth at the actual left observations, including flow tracks."""
         points = np.full((len(pixels), 3), np.nan)
         right_u = np.full(len(pixels), np.nan)
-        if self.stereo is None or self.current_disparity is None or not len(pixels):
+        if self.stereo is None or not len(pixels):
             return points, right_u
         finite = np.isfinite(pixels).all(axis=1)
+        if self.config.stereo_depth_policy == 'verified_all':
+            if self.current_left_gray is None or self.current_right_gray is None:
+                self.stereo_depth_verification['missing_images'] = (
+                    self.stereo_depth_verification.get('missing_images', 0) + int(len(pixels)))
+                if capture_supported:
+                    self._supported_extraction = (points.copy(), right_u.copy())
+                return points, right_u
+            if (np.ndim(self.current_left_gray) != 2
+                    or np.ndim(self.current_right_gray) != 2
+                    or np.shape(self.current_left_gray) != np.shape(self.current_right_gray)):
+                self.stereo_depth_verification['invalid_images'] = (
+                    self.stereo_depth_verification.get('invalid_images', 0) + int(len(pixels)))
+                if capture_supported:
+                    self._supported_extraction = (points.copy(), right_u.copy())
+                return points, right_u
+            height, width = self.current_left_gray.shape
+            inside = finite & (pixels[:, 0] >= 0) & (pixels[:, 0] <= width-1)
+            inside &= (pixels[:, 1] >= 0) & (pixels[:, 1] <= height-1)
+            ids = np.flatnonzero(inside)
+            raw_q = np.asarray(self.stereo.Q)
+            if (np.iscomplexobj(raw_q) or raw_q.shape != (4, 4)
+                    or not np.issubdtype(raw_q.dtype, np.number)
+                    or not np.isfinite(raw_q).all()):
+                self.stereo_depth_verification['invalid_calibration'] = (
+                    self.stereo_depth_verification.get('invalid_calibration', 0) + int(len(ids)))
+                if capture_supported:
+                    self._supported_extraction = (points.copy(), right_u.copy())
+                return points, right_u
+            q = raw_q.astype(float, copy=True)
+            if (q[3, 2] <= 0 or q[2, 3] <= 0
+                    or not np.isfinite(self.inverse_K).all()):
+                self.stereo_depth_verification['invalid_calibration'] = (
+                    self.stereo_depth_verification.get('invalid_calibration', 0) + int(len(ids)))
+                if capture_supported:
+                    self._supported_extraction = (points.copy(), right_u.copy())
+                return points, right_u
+            measured = np.full(len(ids), np.nan)
+            counters = {'candidates': len(ids), 'verified': 0}
+            if len(ids) and self.current_left_gray is not None and self.current_right_gray is not None:
+                q32, q23 = float(q[3, 2]), float(q[2, 3])
+                if np.isfinite([q32, q23, q[3, 3]]).all() and q32 > 0 and q23 > 0:
+                    bf, offset = q23/q32, -float(q[3, 3])/q32
+                    bounds = (max(0., offset+bf/100.), min(96., offset+bf/.1))
+                    if bounds[0] < bounds[1]:
+                        measured, counters = self.profile.call(
+                            'stereo_depth_verification', verify_stereo_depth_candidates,
+                            self.current_left_gray, self.current_right_gray,
+                            np.asarray(pixels, float)[ids], self.stereo_search_config, bounds)
+            for key, value in counters.items():
+                self.stereo_depth_verification[key] = self.stereo_depth_verification.get(key, 0)+int(value)
+            disparity = np.asarray(pixels, float)[ids, 0] - measured
+            denominator = q[3, 2]*disparity + q[3, 3]
+            depth = np.divide(q[2, 3], denominator,
+                              out=np.full(len(ids), np.nan), where=denominator > 0)
+            valid = np.isfinite(measured) & (disparity > 0.) & (disparity < 96.)
+            valid &= np.isfinite(depth) & (depth > .1) & (depth < 100.)
+            accepted = ids[valid]
+            rays = np.c_[np.asarray(pixels, float)[accepted], np.ones(len(accepted))] @ self.inverse_K.T
+            points[accepted] = rays * depth[valid, None]
+            right_u[accepted] = measured[valid]
+            if capture_supported:
+                self._supported_extraction = (points.copy(), right_u.copy())
+            return points, right_u
+        if self.current_disparity is None:
+            return points, right_u
         height, width = self.current_disparity.shape
         inside = finite & (pixels[:, 0] >= 0) & (pixels[:, 0] <= width-1)
         inside &= (pixels[:, 1] >= 0) & (pixels[:, 1] <= height-1)
@@ -336,6 +415,12 @@ class SharedSlam:
         if image is None:
             raise ValueError("Missing image")
         gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        right_gray = None
+        if (self.stereo is not None and right is not None
+                and self.config.stereo_depth_policy == 'verified_all'):
+            right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
+            self.current_left_gray = np.asarray(gray, np.float32)
+            self.current_right_gray = np.asarray(right_gray, np.float32)
         keypoints, desc = self.detector.detectAndCompute(gray, None)
         pixels = np.array([k.pt for k in keypoints], np.float32).reshape(-1, 2)
         desc = desc if desc is not None else np.empty((0, 128), np.float32)
@@ -344,9 +429,13 @@ class SharedSlam:
         if self.stereo is not None:
             if right is None or right.shape[:2] != image.shape[:2]:
                 raise ValueError("Stereo requires matching right image")
-            right_gray = (
-                cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
-            )
+            if right_gray is None:
+                right_gray = (
+                    cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
+                )
+            if self.config.stereo_depth_policy == 'verified_all':
+                self.current_left_gray = np.asarray(gray, np.float32)
+                self.current_right_gray = np.asarray(right_gray, np.float32)
             disparity = (
                 self.stereo.stereo.compute(gray, right_gray).astype(np.float32) / 16.0
             )
@@ -998,7 +1087,8 @@ class SharedSlam:
             raise ValueError('Missing image')
         self.current_gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
         self.stereo_depth_verification = {}
-        if self.config.stereo_depth_policy == 'verified_fallback' and self.stereo is not None:
+        if (self.config.stereo_depth_policy in ('verified_fallback', 'verified_all')
+                and self.stereo is not None):
             # Refresh before extraction, including diagnostic cache hits.
             self.current_left_gray = np.asarray(self.current_gray, np.float32)
             self.current_right_gray = (None if right is None else np.asarray(
@@ -1406,8 +1496,8 @@ class SharedSlam:
         return result
 
     def _capture_supported_stereo(self, index, pixels, desc, size):
-        # Native extraction copies the supported surface before restoration.
-        # A cache hit skips that producer, so derive it from raw disparity only.
+        # Native extraction snapshots policy-selected measurements before any
+        # later restoration. A cache hit remeasures from the current stereo pair.
         raw = self._supported_extraction
         if raw is None:
             raw = self._measure_supported_stereo_pixels(pixels)
@@ -1746,7 +1836,7 @@ class SharedSlam:
             'attempted': True,
             'fit_source': ('raw_supported_reference_retry' if physical_canonical
                            else 'full_supported_reference'),
-            'fit_depth_policy': 'supported_raw',
+            'fit_depth_policy': self._depth_fit_policy_label(),
             'held_out_arbitration_used': False,
         }
         if physical_canonical:
@@ -1958,7 +2048,7 @@ class SharedSlam:
             'reservation_context_available': False,
             'held_out_arbitration_used': False,
             'fit_source': 'raw_supported_reference_retry',
-            'fit_depth_policy': 'supported_raw',
+            'fit_depth_policy': self._depth_fit_policy_label(),
             'prediction_seed_supplied': False,
         }
 
@@ -2448,8 +2538,8 @@ class SharedSlam:
                 "target_right_u": maybe_vector([current.right_u[target_id]]),
                 "source_camera_point": maybe_vector(previous.points[source_id]),
                 "target_camera_point": maybe_vector(current.points[target_id]),
-                "source_depth_source": "raw_supported_stereo_disparity",
-                "target_depth_source": "raw_supported_stereo_disparity",
+                "source_depth_source": self._depth_measurement_source_label(),
+                "target_depth_source": self._depth_measurement_source_label(),
                 # A SupportedStereoFrame link is a claim carried forward by
                 # tracking; the authoritative observation is recorded below.
                 "source_claimed_landmark_id": int(previous.landmark_ids[source_id]),
@@ -3634,7 +3724,7 @@ class SharedSlam:
                                     'reservation_context_available': True,
                                     'held_out_arbitration_used': False,
                                     'fit_source': 'full_supported_reference',
-                                    'fit_depth_policy': 'supported_raw',
+                                    'fit_depth_policy': self._depth_fit_policy_label(),
                                     'full_supported_fallback': full_supported_fallback_report,
                                 }
                                 info['full_supported_reference_fallback'] = full_supported_fallback_report
@@ -3654,7 +3744,7 @@ class SharedSlam:
                                     'reservation_context_available': True,
                                     'held_out_arbitration_used': False,
                                     'fit_source': 'full_supported_reference',
-                                    'fit_depth_policy': 'supported_raw',
+                                    'fit_depth_policy': self._depth_fit_policy_label(),
                                     'full_supported_fallback': full_supported_fallback_report,
                                 }
                                 info['full_supported_reference_fallback'] = full_supported_fallback_report
@@ -3796,14 +3886,16 @@ class SharedSlam:
                                             else 'reserved_supported_training_rows' if reservation_context
                                             else 'map_coordinate_independent_stereo_reference'),
                                         'independent_fit_depth_policy': (
-                                            'supported_raw' if (raw_reference_retry_succeeded
-                                                                or reservation_context
-                                                                or full_supported_fallback_attempted)
+                                            self._depth_fit_policy_label()
+                                            if (raw_reference_retry_succeeded
+                                                or reservation_context
+                                                or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'fit_depth_policy': (
-                                            'supported_raw' if (raw_reference_retry_succeeded
-                                                                or reservation_context
-                                                                or full_supported_fallback_attempted)
+                                            self._depth_fit_policy_label()
+                                            if (raw_reference_retry_succeeded
+                                                or reservation_context
+                                                or full_supported_fallback_attempted)
                                             else self.config.stereo_depth_policy),
                                         'map_fit_depth_policy': self.config.stereo_depth_policy,
                                         'prediction_seed_supplied': (
@@ -3811,7 +3903,9 @@ class SharedSlam:
                                                       or full_supported_fallback_attempted)
                                             else not reservation_context),
                                         'current_right_measurement': (
-                                            'supported_only_raw_disparity_at_actual_observation'
+                                            ('verified_right_image_at_actual_observation'
+                                             if self.config.stereo_depth_policy == 'verified_all'
+                                             else 'supported_only_raw_disparity_at_actual_observation')
                                             if connection is not None else 'not_remeasured_guard_rejected'),
                                         'original_final_solve_positions': int(info.get('valid_3d', 0)),
                                         'association_validation': connection,
@@ -4208,7 +4302,7 @@ class SharedSlam:
             feature_points=pixels.tolist(),
             inlier_mask=[j in inlier_features for j in range(len(pixels))],
         )
-        if self.config.stereo_depth_policy == 'verified_fallback':
+        if self.config.stereo_depth_policy in ('verified_fallback', 'verified_all'):
             info['stereo_depth_verification'] = dict(self.stereo_depth_verification)
         self.diagnostics.append(
             {

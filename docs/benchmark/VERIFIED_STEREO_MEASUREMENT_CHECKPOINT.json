@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "status": "experimental_backend_checked_dataset_validation_pending",
+  "source_fingerprint": "ba56a7277d33621256c98263d1d4aa6f43c9b9121c4c4b916fc68c2eaf0ee73b",
+  "tests_sha256": "190063e8c8f16893f4575150f8d3a43cda452b1c7a26ad1bba54918865dc78ac",
+  "evaluator_sha256": "1e91b813831bd64b2f8ae570abed796518420e7296f8826bdcc556814286d547",
+  "dependency_identity_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657",
+  "backend_tests": {
+    "passed": 414,
+    "skipped": 4,
+    "test_seconds": 62.7
+  },
+  "mode": "verified_all",
+  "default_mode_changed": false,
+  "owned_image_bundle_allowed": false,
+  "new_dataset_runs": [],
+  "accuracy_improvement_demonstrated": false,
+  "release_ready": false,
+  "ground_truth_policy": "evaluator_only",
+  "next_gate": "fresh matched04/80 verified_all versus verified_fallback, owned image augmentation OFF, loops OFF",
+  "failed_prior_experiment_source_fingerprint": "7a31a63ea1778ff76dbc0b818a1dd8984f009a7b2c6dcf5f502f1279fccd41a1"
+}

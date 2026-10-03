@@ -1,19 +1,118 @@
 {
-  "schema_version": 1,
-  "status": "experimental_backend_checked_benchmark_pending",
+  "schema_version": 2,
+  "status": "failed_accuracy_gate",
+  "source_commit": "e65ebb2bdd9ea5335634313eea142e770aa5ecde",
   "source_fingerprint": "7a31a63ea1778ff76dbc0b818a1dd8984f009a7b2c6dcf5f502f1279fccd41a1",
-  "evaluator_sha256": "73da1d14e9c6ed4de3c790e1a50a934932446f6efd4c9c9208492acd472b045d",
-  "tests_sha256": "92f87e917bfd301004a09f8fdc960b446afd26fb3b03356c97dd7025fe2cfd6f",
-  "dependency_identity_sha256": "213d2cdee58cfe00f0ca490991ae63a2d949f4d5a684f3837286b1d65f50b657",
-  "backend_tests": {
-    "passed": 411,
-    "skipped": 4,
-    "test_seconds": 60.42
+  "scope": {
+    "sequence": "04",
+    "frames_requested": 80,
+    "frame_indices": "0-79",
+    "coverage": "partial",
+    "loop_mode": "off",
+    "comparison": "fresh matched uncached bundle feature ON vs OFF; exact identities matched except feature flag"
   },
-  "estimator_default_enabled": false,
-  "new_replay_results": [],
-  "accuracy_improvement_demonstrated": false,
-  "release_ready": false,
-  "next_gate": "fresh fixed-configuration stereo04/80 ON and OFF, then stereo01 affected diagnostic if04 passes",
-  "ground_truth_policy": "evaluator_only"
+  "identities": {
+    "source_fingerprint_recomputed": "7a31a63ea1778ff76dbc0b818a1dd8984f009a7b2c6dcf5f502f1279fccd41a1",
+    "runtime_identity_sha256": "7e89f260a0675a4bf6701e12b0537701ada76873716435dbbc04c44262e350bf",
+    "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+    "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+    "equal_except_experiment_flag": true,
+    "metrics_reused": false,
+    "ground_truth_policy": "evaluator_only",
+    "source_unchanged": true
+  },
+  "export_validation": {
+    "validator": "scripts/run_development_tests.py::reusable_export",
+    "experimental_on": true,
+    "control_off": true,
+    "checks": [
+      "exact requested development identity",
+      "finite SO(3) pose export for all 80 frames",
+      "finite sparse-map export and declared vertex-count consistency",
+      "tracking state/frame ordering and report consistency",
+      "source archive and evaluator hashes against frozen source",
+      "configuration equality between report and run metadata"
+    ],
+    "both_reports_completed": true,
+    "tracking_frames": 80,
+    "lost_frames": {"on": 0, "off": 0},
+    "loops": {"on": 0, "off": 0}
+  },
+  "runs": {
+    "experimental_on": {
+      "relative_run": "results/integration/owned-image-bundle/7a31a63ea177/04-owned-on-1791044078101696700/run",
+      "stereo_owned_image_bundle": true,
+      "ate_rmse_m": 0.22234520902791394,
+      "translation_percent": 0.8304924158479833,
+      "rotation_deg_per_m": 0.010405130230633655,
+      "lost_frames": 0,
+      "runtime_seconds": 64.45028489999822,
+      "peak_memory_mib": 286.3828125,
+      "landmarks": 11328,
+      "keyframes": 12,
+      "loops": 0
+    },
+    "control_off": {
+      "relative_run": "results/integration/owned-image-bundle/7a31a63ea177/04-owned-off-1791044148690836200/run",
+      "stereo_owned_image_bundle": false,
+      "ate_rmse_m": 0.11188367637566381,
+      "translation_percent": 0.2807531045984703,
+      "rotation_deg_per_m": 0.005652783299876321,
+      "lost_frames": 0,
+      "runtime_seconds": 67.26935080002295,
+      "peak_memory_mib": 265.23046875,
+      "landmarks": 10288,
+      "keyframes": 11,
+      "loops": 0
+    }
+  },
+  "gate": {
+    "status": "fail",
+    "release_ready": false,
+    "accuracy_improvement_demonstrated": false,
+    "changes_percent_on_vs_off": {
+      "ate_rmse_m": 98.72890865809714,
+      "translation_percent": 195.80880932224898,
+      "rotation_deg_per_m": 84.07092008747819
+    },
+    "all_three_accuracy_metrics_regressed_beyond_declared_five_percent_gate": true
+  },
+  "augmentation_audit": {
+    "relative_audit": ".worktrees/stereo-arbitration/results/owned_image_bundle_actual04_frame14_phase_audit_v1.json",
+    "audit_sha256": "945594a384d3a4aab97fd61d72f253e1892bdfd993a5233a243b2c1a8d8366df",
+    "status": "accepted_and_applied",
+    "frame": 14,
+    "ground_truth_read": false,
+    "pose_fit_performed": false,
+    "finite_packets": true,
+    "covariance_claim": false,
+    "intentionally_reuses_sensor_evidence": true,
+    "accepted_factors": 108,
+    "unique_image_rows_added": 214,
+    "candidate_points": 218,
+    "reused_selected_points": 2,
+    "optimized_single_view_points": 106,
+    "ownership_rejected_edges": 8,
+    "original_affected_cost": [130.8101708674928, 21.240474632306398],
+    "augmented_cost": [172.5383165842993, 36.42747579320686],
+    "preserved_hard_motion_gates_passed": true,
+    "solver_success_flag": false,
+    "accuracy_claim": false
+  },
+  "sequence_01": {
+    "status": "not_run",
+    "reason": "04/80 accuracy gate failed; expansion stopped"
+  },
+  "publication_assets": [
+    "docs/benchmark/plots/owned-image-bundle-04-80-failed-gate.png",
+    "docs/benchmark/plots/owned-image-bundle-04-experimental-on-overview.png",
+    "docs/benchmark/plots/owned-image-bundle-04-control-off-overview.png",
+    "dashboard/public/saved-visuals/owned-image-bundle-04-80-failed-gate.png",
+    "dashboard/public/saved-visuals/owned-image-bundle-04-experimental-on-overview.png",
+    "dashboard/public/saved-visuals/owned-image-bundle-04-control-off-overview.png"
+  ],
+  "historical_capture_only_evidence": "docs/benchmark/stereo-training-observations.md",
+  "backend_tests_at_frozen_source": {"passed": 411, "skipped": 4},
+  "publication_checks_rerun": false,
+  "release_ready": false
 }

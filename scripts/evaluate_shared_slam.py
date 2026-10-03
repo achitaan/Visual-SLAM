@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
@@ -130,7 +130,7 @@ def main():
     )
     args = parser.parse_args()
     if not args.stereo and args.stereo_depth_policy != 'supported':
-        parser.error('--stereo-depth-policy verified_fallback requires --stereo')
+        parser.error('--stereo-depth-policy verification requires --stereo')
     if args.stereo_pose_arbitration and not args.stereo:
         parser.error('--stereo-pose-arbitration requires --stereo')
     if args.stereo_raw_reference_retry and not args.stereo:

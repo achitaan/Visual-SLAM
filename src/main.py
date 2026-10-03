@@ -101,7 +101,7 @@ def main() -> None:
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
@@ -122,7 +122,7 @@ def main() -> None:
     parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
     if args.stereo_depth_policy != 'supported' and not (args.slam and args.stereo):
-        parser.error('--stereo-depth-policy verified_fallback requires --slam --stereo')
+        parser.error('--stereo-depth-policy verification requires --slam --stereo')
     if args.stereo_pose_arbitration and not (args.slam and args.stereo):
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
     if args.stereo_raw_reference_retry and not (args.slam and args.stereo):

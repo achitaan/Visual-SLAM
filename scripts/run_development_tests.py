@@ -39,6 +39,7 @@ CURATED_TESTS = (
     'tests/test_bundle_diagnostics_cli.py',
     'tests/test_stereo_subpixel_depth.py',
     'tests/test_verified_stereo_depth.py',
+    'tests/test_verified_all_stereo_acquisition.py',
     'tests/test_bidirectional_refinement.py',
     'tests/test_stereo_motion_prior.py',
     'tests/test_stereo_map_refinement.py',
@@ -692,7 +693,7 @@ def main():
     parser.add_argument('--timing-history', type=Path, nargs='+', action='append', default=[],
                         help='Explicit completed evaluation JSON files used only to estimate runtime')
     parser.add_argument('--matching-backend',choices=['cpu','cuda','auto'],default='cpu')
-    parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback'],default='supported')
+    parser.add_argument('--stereo-depth-policy',choices=['supported','verified_fallback','verified_all'],default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Enable reserved-evidence stereo pose arbitration for SLAM variants')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',

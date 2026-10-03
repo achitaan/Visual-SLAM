@@ -43,10 +43,44 @@ The frozen estimator fingerprint is
 The full backend suite passes: 381 tests, with four optional GPU skips. The run
 completed in 56.62 seconds and source/runtime fingerprints remained unchanged.
 
-No KITTI score is attributed to this revision yet. The first 04/80 diagnostic
-was deferred: its conservative preparation, replay and reporting estimate was
-246 seconds, exceeding the remaining bounded cycle allowance. Begin the next
-cycle with that smoke gate, then the stateful 01/350 diagnostic if the correctness
-and runtime gates permit. Do not use scores from the previous raw-reference
-revision as validation of this experiment. The known rotation regression,
-coherent raw-motion bias and full-sequence reliability requirements remain open.
+Two fresh, uncached KITTI 04 runs processed frames 0–79 on that same frozen
+revision. They used identical calibration, inputs, mapping configuration and
+evaluation; only the regularizer flag differed. Loop correction was disabled.
+
+| Mode | SE(3)-aligned ATE (m) | Translation drift (%) | Rotation drift (deg/m) | Lost frames | Estimator time (s) | Peak memory (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Regularizer off | 0.111884 | 0.280753 | 0.005653 | 0 | 60.00 | 264.34 |
+| Regularizer on | 0.242564 | 1.085377 | 0.010650 | 0 | 57.91 | 287.05 |
+
+**The experiment is rejected by the focused accuracy gate.** ATE increased
+116.8%, translation drift 286.6%, and rotation drift 88.4%. There is only one
+eligible 100 m segment in this short prefix; these are diagnostic results,
+not full-sequence benchmark claims. The off control reproduces the previous
+raw-reference implementation's exported poses exactly. KITTI 01 was not started
+because this first gate failed.
+
+![Actual trajectory, position errors, sparse map and tracking states](plots/motion-regularizer-04.png)
+
+The on run exports 79 factors and finite poses and sparse geometry. All nine
+accepted bundle adjustments reduce both declared objectives. Their raw stereo
+motions match the off control, but the regularizer suppresses useful multiview
+corrections of coherent accumulated raw-motion bias. Reducing a reprojection
+objective or preserving pairwise motions does not establish trajectory accuracy.
+
+A saved-row mathematical audit also finds that the raw motion is not a
+stationary point of the stereo-image objective used to form its Schur metric.
+The corresponding linear term is missing from the zero-centered approximation.
+However, that term is much smaller than the quadratic penalty on several useful
+off-control corrections. Recentring alone is therefore not an evidenced fix;
+measurement bias and repeated sensor evidence remain material.
+
+One private supervisor's post-run reporting raised a TypeError after its worker
+completed successfully. The original manifest and logs are retained. Its saved
+estimator artifacts, source archives, finite exports and recomputed metrics were
+audited independently; the reporting error is not presented as a clean cycle.
+
+The regularizer stays disabled and separate from the integration branch. Next
+work should diagnose the underlying stereo observation model and landmark
+quality, rather than tune its strength to this sequence. The original 01 rotation
+regression and wider stereo/monocular, live-loop and reconstruction acceptance
+requirements remain open.

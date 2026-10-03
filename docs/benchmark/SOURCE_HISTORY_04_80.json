@@ -1,0 +1,136 @@
+{
+  "schema": "source_history_three_arm_summary_v1",
+  "status": "fail",
+  "scope": "fresh_partial_kitti04_80_accuracy_comparison",
+  "source_fingerprint": "7fb08abbe717906b199bc96cd057291d28715d08630ad06d42128a43fc0896f7",
+  "frames": 80,
+  "input_identity_equal": true,
+  "reference_identity_equal": true,
+  "metrics_reused": false,
+  "ground_truth_policy": "evaluator_only",
+  "release_ready": false,
+  "cases": [
+    {
+      "case": "default_control",
+      "owned": false,
+      "source_history": false,
+      "solver_accuracy": "default",
+      "ate_rmse_m": 0.11188367637566381,
+      "translation_percent": 0.2807531045984703,
+      "rotation_deg_per_m": 0.005652783299876321,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 43.13423940000939,
+      "map_vertices": 10288,
+      "history_rows": 0,
+      "history_cost_before": 0,
+      "history_cost_after": 0,
+      "peak_host_memory_mib": 969.53515625,
+      "cuda_matching_calls": 158,
+      "cpu_matcher_fallback_calls": 0
+    },
+    {
+      "case": "owned_control",
+      "owned": true,
+      "source_history": false,
+      "solver_accuracy": "precise",
+      "ate_rmse_m": 0.16393180558439177,
+      "translation_percent": 0.4103762784198215,
+      "rotation_deg_per_m": 0.004814453738664574,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 77.48906280001393,
+      "map_vertices": 10415,
+      "history_rows": 0,
+      "history_cost_before": 0,
+      "history_cost_after": 0,
+      "peak_host_memory_mib": 974.7265625,
+      "cuda_matching_calls": 158,
+      "cpu_matcher_fallback_calls": 0
+    },
+    {
+      "case": "source_history",
+      "owned": true,
+      "source_history": true,
+      "solver_accuracy": "precise",
+      "ate_rmse_m": 0.11145013933750803,
+      "translation_percent": 0.29838505974983515,
+      "rotation_deg_per_m": 0.004622060548186882,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 89.28770590000204,
+      "map_vertices": 10434,
+      "history_rows": 562,
+      "history_cost_before": 273.87492934749923,
+      "history_cost_after": 17.202595730316887,
+      "peak_host_memory_mib": 992.8203125,
+      "cuda_matching_calls": 158,
+      "cpu_matcher_fallback_calls": 0
+    }
+  ],
+  "comparisons": [
+    {
+      "control": "default_control",
+      "candidate": "source_history",
+      "metrics": {
+        "ate_rmse_m": {
+          "control": 0.11188367637566381,
+          "candidate": 0.11145013933750803,
+          "change_percent": -0.3874890888462823
+        },
+        "translation_percent": {
+          "control": 0.2807531045984703,
+          "candidate": 0.29838505974983515,
+          "change_percent": 6.280235147027802
+        },
+        "rotation_deg_per_m": {
+          "control": 0.005652783299876321,
+          "candidate": 0.004622060548186882,
+          "change_percent": -18.233898188030484
+        }
+      },
+      "lost_frames_control": 0,
+      "lost_frames_candidate": 0
+    },
+    {
+      "control": "owned_control",
+      "candidate": "source_history",
+      "metrics": {
+        "ate_rmse_m": {
+          "control": 0.16393180558439177,
+          "candidate": 0.11145013933750803,
+          "change_percent": -32.01432818957532
+        },
+        "translation_percent": {
+          "control": 0.4103762784198215,
+          "candidate": 0.29838505974983515,
+          "change_percent": -27.289886028796605
+        },
+        "rotation_deg_per_m": {
+          "control": 0.004814453738664574,
+          "candidate": 0.004622060548186882,
+          "change_percent": -3.9961582543122987
+        }
+      },
+      "lost_frames_control": 0,
+      "lost_frames_candidate": 0
+    }
+  ],
+  "failures": [
+    {
+      "control": "default_control",
+      "metric": "translation_percent",
+      "reason": "accuracy_regression_exceeds_5_percent",
+      "change_percent": 6.280235147027802
+    }
+  ],
+  "validation": {
+    "backend_tests_passed": 486,
+    "backend_elapsed_s": 87.89,
+    "source_unchanged": true,
+    "focused_tests_passed": 17,
+    "tests_sha256": "21b288c3686040cbbd91d6aae33037041de84cd13cce1c24971e020f60479a9f"
+  },
+  "performance_scope": "Saved partial runs only; no overall CPU-to-GPU speed claim",
+  "configuration_policy": "Same frozen source/input/runtime; only declared owned-image/source-history flags and solver policy differ"
+}

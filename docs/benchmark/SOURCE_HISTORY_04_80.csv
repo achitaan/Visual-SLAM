@@ -1,0 +1,4 @@
+case,owned,source_history,solver_accuracy,ate_rmse_m,translation_percent,rotation_deg_per_m,lost_frames,frames,runtime_s,map_vertices,history_rows,history_cost_before,history_cost_after
+default_control,False,False,default,0.11188367637566381,0.2807531045984703,0.005652783299876321,0,80,43.13423940000939,10288,0,0,0
+owned_control,True,False,precise,0.16393180558439177,0.4103762784198215,0.004814453738664574,0,80,77.48906280001393,10415,0,0,0
+source_history,True,True,precise,0.11145013933750803,0.29838505974983515,0.004622060548186882,0,80,89.28770590000204,10434,562,273.87492934749923,17.202595730316887

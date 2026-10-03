@@ -143,6 +143,25 @@ def test_invalid_path_and_missing_depth_metadata_are_rejected(tmp_path, monkeypa
         'not a readable evaluation file', 'mismatched evaluator configuration']
 
 
+@pytest.mark.parametrize('requested', [False, True])
+def test_source_history_mode_cannot_share_timing_identity(tmp_path, monkeypatch, requested):
+    module = load_runner(monkeypatch)
+    identity = expected_case()
+    identity['stereo_source_history_bundle'] = requested
+    report = evaluation_report()
+    report['development_identity']['stereo_source_history_bundle'] = not requested
+    path = tmp_path / 'evaluation.json'
+    path.write_text(json.dumps(report), encoding='utf-8')
+
+    estimate = module.estimate_case_runtime(
+        350, [], [path], identity, 'partial', expected_configuration(),
+        'current-source-fingerprint', fallback_rate=4.0)
+
+    assert not estimate['timing_history']['accepted']
+    assert estimate['timing_history']['rejected'][0]['reason'] == (
+        'mismatched stereo-source-history-bundle mode')
+
+
 def test_slowest_compatible_current_or_historical_rate_sets_budget(tmp_path, monkeypatch):
     module = load_runner(monkeypatch)
     path = tmp_path / 'evaluation.json'

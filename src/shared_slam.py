@@ -153,11 +153,16 @@ class MappingConfig:
     stereo_pose_arbitration: bool = False
     stereo_raw_reference_retry: bool = False
     stereo_owned_image_bundle: bool = False
+    stereo_source_history_bundle: bool = False
     bundle_solver_accuracy: str = "default"
 
     def __post_init__(self):
         if self.bundle_solver_accuracy not in ("default", "precise"):
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
+        if self.stereo_source_history_bundle and not self.stereo_owned_image_bundle:
+            raise ValueError(
+                "stereo_source_history_bundle requires stereo_owned_image_bundle"
+            )
 
 
 class SharedSlam:
@@ -203,6 +208,11 @@ class SharedSlam:
         if self.config.stereo_owned_image_bundle and (
                 stereo is None or not self.config.stereo_pose_arbitration):
             raise ValueError('Owned stereo bundle requires calibrated stereo and pose arbitration')
+        if getattr(self.config, "stereo_source_history_bundle", False) and (
+                stereo is None or not self.config.stereo_owned_image_bundle):
+            raise ValueError(
+                'Source-history bundle requires calibrated stereo and owned image bundle'
+            )
         if (self.config.stereo_owned_image_bundle
                 and self.config.stereo_depth_policy == 'verified_all'):
             raise ValueError('Owned stereo bundle does not accept verified_all measurement provenance')
@@ -239,6 +249,8 @@ class SharedSlam:
             setattr(self, name, self.profile.wrap(name, getattr(self, name)))
         self.previous_gray = None
         self.previous_tracks = []
+        self._previous_tracks_frame = None
+        self._source_history_capture = None
         self.accepted_tracks = []
         self.previous_stereo_geometry = None
         self.verified_stereo_motion = None
@@ -3682,12 +3694,372 @@ class SharedSlam:
         except (TypeError, ValueError, OverflowError):
             return None
 
+    def _live_source_calibration_identity(self):
+        """Match the raw-frame identity contract captured by SupportedStereoFrame."""
+        try:
+            digest = hashlib.sha256()
+            for value in (np.asarray(self.K), np.asarray(self.stereo.Q)):
+                array = np.asarray(value)
+                if (np.iscomplexobj(array) or not np.issubdtype(array.dtype, np.number)
+                        or not np.isfinite(array).all()):
+                    return None
+                digest.update(array.dtype.str.encode())
+                digest.update(array.tobytes())
+            baseline = float(self.stereo.baseline)
+            if not np.isfinite(baseline) or baseline <= 0:
+                return None
+            digest.update(np.float64(baseline).tobytes())
+            return digest.hexdigest()
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None
+
+    def _source_history_endpoint(self, frame_id):
+        """Return a detached live endpoint snapshot for source-history guards."""
+        frame_id = int(frame_id)
+        if (frame_id < 0 or frame_id >= len(self.map.poses)
+                or frame_id >= len(self.map.statuses)
+                or frame_id >= len(self.map.pose_anchors)):
+            return None
+        pose_raw = np.asarray(self.map.poses[frame_id])
+        anchor_id = self.map.pose_anchors[frame_id]
+        keyframe = self.map.keyframes.get(anchor_id)
+        if (np.iscomplexobj(pose_raw) or not self._is_proper_se3(pose_raw)
+                or keyframe is None):
+            return None
+        anchor_raw = np.asarray(keyframe.pose)
+        if np.iscomplexobj(anchor_raw) or not self._is_proper_se3(anchor_raw):
+            return None
+        return {
+            "frame": frame_id,
+            "pose": np.array(pose_raw, dtype=float, copy=True),
+            "status": self.map.statuses[frame_id],
+            "anchor_keyframe_id": int(anchor_id),
+            "anchor_pose": np.array(anchor_raw, dtype=float, copy=True),
+        }
+
+    def _capture_source_history_snapshot(self, target_frame=None):
+        """Own the last accepted tracking pixels before the target frame replaces them."""
+        if not getattr(self.config, "stereo_source_history_bundle", False):
+            return None
+        snapshot = {"status": "skipped", "reason": "source_history_unavailable",
+                    "tracks": []}
+        try:
+            frame_id = self._previous_tracks_frame
+            if (frame_id is None or not isinstance(frame_id, (int, np.integer))
+                    or isinstance(frame_id, (bool, np.bool_))):
+                snapshot["reason"] = "accepted_track_frame_unavailable"
+                return snapshot
+            frame_id = int(frame_id)
+            if target_frame is not None and frame_id != int(target_frame) - 1:
+                snapshot["reason"] = "accepted_track_frame_not_immediate_source"
+                return snapshot
+            supported = self.previous_supported_stereo
+            live_source_identity = self._live_source_calibration_identity()
+            if (supported is None or int(supported.frame) != frame_id
+                    or supported.calibration_identity != self.stereo_calibration_identity
+                    or live_source_identity != self.stereo_calibration_identity):
+                snapshot["reason"] = "supported_source_endpoint_mismatch"
+                return snapshot
+            width, height = map(int, supported.image_size)
+            if (width <= 0 or height <= 0 or self.previous_gray is None
+                    or np.asarray(self.previous_gray).shape[:2] != (height, width)):
+                snapshot["reason"] = "source_image_domain_unavailable"
+                return snapshot
+            live_calibration = self._live_owned_bundle_calibration()
+            if live_calibration is None:
+                snapshot["reason"] = "invalid_source_calibration"
+                return snapshot
+
+            with self.map.lock:
+                endpoint = self._source_history_endpoint(frame_id)
+                if endpoint is None or endpoint["status"] not in ("tracking", "relocalized"):
+                    snapshot["reason"] = "source_map_endpoint_unavailable"
+                    return snapshot
+                raw_tracks = list(self.previous_tracks)
+                by_id, pixel_claims, conflicted_ids = {}, {}, set()
+                for item in raw_tracks:
+                    try:
+                        if not isinstance(item, (tuple, list)) or len(item) != 2:
+                            continue
+                        raw_id, raw_pixel = item
+                        if (not isinstance(raw_id, (int, np.integer))
+                                or isinstance(raw_id, (bool, np.bool_))):
+                            continue
+                        landmark_id = int(raw_id)
+                        raw_pixel = np.asarray(raw_pixel)
+                        if (np.iscomplexobj(raw_pixel)
+                                or not np.issubdtype(raw_pixel.dtype, np.number)):
+                            continue
+                        pixel = np.asarray(raw_pixel, dtype=np.float32)
+                        if (landmark_id < 0 or landmark_id not in self.map.landmarks
+                                or pixel.shape != (2,) or not np.isfinite(pixel).all()
+                                or pixel[0] < 0 or pixel[0] >= width
+                                or pixel[1] < 0 or pixel[1] >= height):
+                            continue
+                        landmark = self.map.landmarks[landmark_id]
+                        key = self._physical_pixel_key(pixel)
+                        if landmark_id in conflicted_ids:
+                            continue
+                        prior = by_id.get(landmark_id)
+                        if prior is not None and self._physical_pixel_key(prior) != key:
+                            by_id.pop(landmark_id, None)
+                            conflicted_ids.add(landmark_id)
+                            continue
+                        by_id[landmark_id] = pixel.copy()
+                        pixel_claims.setdefault(key, set()).add(landmark_id)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                conflicting_pixels = {
+                    key for key, identifiers in pixel_claims.items() if len(identifiers) > 1
+                }
+                tracks = [
+                    {"landmark_id": int(landmark_id), "pixel": pixel.copy()}
+                    for landmark_id, pixel in sorted(by_id.items())
+                    if self._physical_pixel_key(pixel) not in conflicting_pixels
+                ]
+                if not tracks:
+                    snapshot["reason"] = "no_accepted_multiview_source_tracks"
+                    return snapshot
+                snapshot = {
+                    "status": "eligible",
+                    "reason": None,
+                    "frame": frame_id,
+                    "tracks": tracks,
+                    "source_pose": endpoint["pose"].copy(),
+                    "source_status": endpoint["status"],
+                    "source_anchor_keyframe_id": endpoint["anchor_keyframe_id"],
+                    "source_anchor_pose": endpoint["anchor_pose"].copy(),
+                    "image_size": (width, height),
+                    "calibration_identity": self.stereo_calibration_identity,
+                    "source_calibration_identity": live_source_identity,
+                    "live_calibration_identity": live_calibration,
+                    "capture_revision": int(self.map.revision),
+                    "capture_geometry_revision": int(self.map.geometry_revision),
+                    "conflicting_physical_pixels": int(len(conflicting_pixels)),
+                }
+            return snapshot
+        except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
+            snapshot["reason"] = "source_history_snapshot_invalid"
+            return snapshot
+
+    def _owned_source_history_provider(
+        self, capture, arbitration, arbitration_report, info,
+        verified_motion, consumed_full_pool,
+    ):
+        """Supply selected left-only source rows with source-state revalidation."""
+        expected = {}
+
+        def reject(reason):
+            return (), {"status": "rejected", "reason": reason,
+                        "source_frame": capture.get("frame") if isinstance(capture, dict) else None,
+                        "captured_rows": (len(capture.get("tracks", []))
+                                         if isinstance(capture, dict)
+                                         and isinstance(capture.get("tracks", []), (list, tuple)) else 0),
+                        "installed_rows": 0, "covariance_claim": False,
+                        "heldout_validation_claim": False}
+
+        def provider(payload):
+            if not isinstance(payload, dict) or not isinstance(capture, dict):
+                return reject("source_history_capture_missing")
+            phase = payload.get("source_history_phase", "prepare")
+            if phase == "validate":
+                if not expected:
+                    return reject("source_history_validation_without_prepare")
+                with self.map.lock:
+                    live_calibration = self._live_owned_bundle_calibration()
+                    endpoint = self._source_history_endpoint(expected["frame"])
+                    if (live_calibration != expected["live_calibration_identity"]
+                            or self._live_source_calibration_identity() != capture.get("calibration_identity")
+                            or endpoint is None
+                            or endpoint["status"] != expected["source_status"]
+                            or endpoint["anchor_keyframe_id"] != expected["source_anchor_keyframe_id"]
+                            or not np.array_equal(endpoint["pose"], expected["source_pose"])
+                            or not np.array_equal(endpoint["anchor_pose"], expected["source_anchor_pose"])):
+                        return reject("source_history_source_changed_before_apply")
+                    for landmark_id, point in expected["world_positions"].items():
+                        landmark = self.map.landmarks.get(landmark_id)
+                        if landmark is None or not np.array_equal(landmark.position, point):
+                            return reject("source_history_landmark_changed_before_apply")
+                    return (), {"status": "validated", "reason": None,
+                                "source_frame": expected["frame"],
+                                "installed_rows": len(expected["rows"]),
+                                "covariance_claim": False,
+                                "heldout_validation_claim": False}
+            if phase != "prepare":
+                return reject("unknown_source_history_phase")
+            if capture.get("status") != "eligible":
+                return reject(str(capture.get("reason") or "source_history_capture_ineligible"))
+            if (not isinstance(arbitration, dict)
+                    or not isinstance(verified_motion, tuple) or len(verified_motion) != 2):
+                return reject("reserved_reference_unavailable")
+            reserved = arbitration.get("verified")
+            previous = arbitration.get("previous")
+            capture_frame = capture.get("frame")
+            previous_frame = getattr(previous, "frame", None)
+            if (not isinstance(capture_frame, (int, np.integer))
+                    or isinstance(capture_frame, (bool, np.bool_))
+                    or not isinstance(previous_frame, (int, np.integer))
+                    or isinstance(previous_frame, (bool, np.bool_))):
+                return reject("malformed_source_frame_identity")
+            if (not isinstance(reserved, dict) or previous is None
+                    or int(previous_frame) != int(capture_frame)
+                    or not _reserved_training_selected_as_edge(
+                        info.get("pose_source"),
+                        arbitration_report.get("choice") if isinstance(arbitration_report, dict) else None,
+                        verified_motion[0], previous.frame, verified_motion[1],
+                        reserved.get("measurement"), bool(consumed_full_pool))):
+                return reject("reserved_reference_not_selected")
+            source_frame = int(capture_frame)
+            if payload.get("source_history_source_frame") != source_frame:
+                return reject("prepared_source_frame_mismatch")
+            if (tuple(capture.get("image_size", ())) != tuple(previous.image_size)
+                    or capture.get("calibration_identity") != previous.calibration_identity):
+                return reject("source_raw_endpoint_mismatch")
+            selected = {
+                int(value) for value in payload.get("source_history_selected_landmark_ids", [])
+                if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
+            }
+            selected_values = payload.get("source_history_selected_landmark_ids", [])
+            if (not isinstance(selected_values, (list, tuple))
+                    or any(not isinstance(value, (int, np.integer))
+                           or isinstance(value, (bool, np.bool_)) for value in selected_values)):
+                return reject("malformed_selected_landmark_ids")
+            if not selected:
+                return reject("no_selected_multiview_landmarks")
+            held_ids = {int(value) for value in arbitration.get("excluded_landmarks", set())}
+            held_pixels = set()
+            evidence = arbitration.get("evidence")
+            if evidence is None:
+                return reject("reserved_holdout_evidence_missing")
+            try:
+                raw_source_indices = np.asarray(evidence.source_ids)
+                if (raw_source_indices.ndim != 1
+                        or not np.issubdtype(raw_source_indices.dtype, np.integer)
+                        or np.issubdtype(raw_source_indices.dtype, np.bool_)):
+                    return reject("malformed_held_source_rows")
+                source_indices = np.asarray(raw_source_indices, dtype=np.int64)
+                if (not len(source_indices) or np.any(source_indices < 0)
+                        or np.any(source_indices >= len(previous.pixels))):
+                    return reject("malformed_held_source_rows")
+                held_pixels = {
+                    self._physical_pixel_key(previous.pixels[int(source_index)])
+                    for source_index in source_indices
+                }
+            except (AttributeError, TypeError, ValueError, IndexError):
+                return reject("malformed_held_source_rows")
+            original_values = payload.get("source_history_original_frame_landmark_ids", [])
+            owned_values = payload.get("source_history_owned_frame_landmark_ids", [])
+            for values in (original_values, owned_values):
+                if (not isinstance(values, (list, tuple))
+                        or any(not isinstance(value, (int, np.integer))
+                               or isinstance(value, (bool, np.bool_)) for value in values)):
+                    return reject("malformed_existing_source_landmark_ids")
+            original_ids = {int(value) for value in original_values}
+            owned_ids = {int(value) for value in owned_values}
+            existing_ids = original_ids | owned_ids
+            source_tracks = capture.get("tracks", [])
+            rows = []
+            world_positions = {}
+            try:
+                with self.map.lock:
+                    endpoint = self._source_history_endpoint(source_frame)
+                    live_calibration = self._live_owned_bundle_calibration()
+                    if (endpoint is None or endpoint["status"] != capture.get("source_status")
+                            or live_calibration != capture.get("live_calibration_identity")):
+                        return reject("source_endpoint_changed_since_capture")
+                    by_pixel = {}
+                    for item in source_tracks:
+                        raw_id = item.get("landmark_id")
+                        raw_pixel = np.asarray(item.get("pixel"))
+                        if (not isinstance(raw_id, (int, np.integer))
+                                or isinstance(raw_id, (bool, np.bool_))
+                                or np.iscomplexobj(raw_pixel)
+                                or not np.issubdtype(raw_pixel.dtype, np.number)):
+                            continue
+                        landmark_id = int(raw_id)
+                        pixel = np.asarray(raw_pixel, dtype=np.float32)
+                        if (landmark_id not in selected or landmark_id in held_ids
+                                or landmark_id in existing_ids):
+                            continue
+                        width, height = map(int, capture.get("image_size", (0, 0)))
+                        if (pixel.shape != (2,) or not np.isfinite(pixel).all()
+                                or width <= 0 or height <= 0
+                                or pixel[0] < 0 or pixel[0] >= width
+                                or pixel[1] < 0 or pixel[1] >= height):
+                            continue
+                        key = self._physical_pixel_key(pixel)
+                        if key in held_pixels:
+                            continue
+                        landmark = self.map.landmarks.get(landmark_id)
+                        if landmark is None or len(landmark.observations) < 2:
+                            continue
+                        world = np.asarray(landmark.position)
+                        if np.iscomplexobj(world) or world.shape != (3,) or not np.isfinite(world).all():
+                            continue
+                        rows.append({"frame_id": source_frame,
+                                     "landmark_id": landmark_id,
+                                     "pixel": pixel.copy()})
+                        world_positions[landmark_id] = np.array(world, dtype=float, copy=True)
+                        by_pixel.setdefault(key, set()).add(landmark_id)
+                    conflicting = {key for key, ids in by_pixel.items() if len(ids) > 1}
+                    if conflicting:
+                        rows = [row for row in rows
+                                if self._physical_pixel_key(row["pixel"]) not in conflicting]
+                    if not rows:
+                        return (), {"status": "skipped", "reason": "no_eligible_source_history_rows",
+                                    "source_frame": source_frame, "candidate_rows": 0,
+                                    "captured_rows": len(source_tracks),
+                                    "installed_rows": 0, "covariance_claim": False,
+                                    "heldout_validation_claim": False,
+                                    "tracking_fit_evidence_reused": True,
+                                    "exclusions": {
+                                        "held_landmarks": len(held_ids),
+                                        "held_source_pixels": len(held_pixels),
+                                        "already_owned_landmarks": len(existing_ids),
+                                    }}
+                    expected.update({
+                        "frame": source_frame,
+                        "source_status": endpoint["status"],
+                        "source_pose": endpoint["pose"],
+                        "source_anchor_keyframe_id": endpoint["anchor_keyframe_id"],
+                        "source_anchor_pose": endpoint["anchor_pose"],
+                        "live_calibration_identity": live_calibration,
+                        "world_positions": world_positions,
+                        "rows": rows,
+                    })
+            except (AttributeError, TypeError, ValueError, IndexError, OverflowError):
+                return reject("source_history_prepare_invalid")
+            return tuple(rows), {
+                "status": "eligible", "reason": None,
+                "source_frame": source_frame,
+                "candidate_rows": len(source_tracks),
+                "captured_rows": len(source_tracks),
+                "installed_rows": len(rows),
+                "installed_landmark_ids": sorted({row["landmark_id"] for row in rows}),
+                "tracking_fit_evidence_reused": True,
+                "covariance_claim": False,
+                "heldout_validation_claim": False,
+                "exclusions": {
+                    "held_landmarks": len(held_ids),
+                    "held_source_pixels": len(held_pixels),
+                    "already_owned_landmarks": len(existing_ids),
+                    "not_selected_multiview": max(0, len(source_tracks) - len(rows)),
+                },
+            }
+        return provider
+
     def process(self, index, image, right=None):
         if index != len(self.map.poses):
             raise ValueError(
                 "Frames must arrive in consecutive order, starting at zero"
             )
         self.loop_worker.poll(self.map)
+        source_history_capture = (
+            self._capture_source_history_snapshot(index)
+            if getattr(self.config, "stereo_source_history_bundle", False) else None
+        )
+        if getattr(self.config, "stereo_source_history_bundle", False):
+            self._source_history_capture = source_history_capture
         self._prepare_frame_images(image, right)
         trace_capture = self._tracking_trace_enabled(index)
         self._tracking_trace_frame = int(index) if trace_capture else -1
@@ -4421,6 +4793,8 @@ class SharedSlam:
             # Never replace a verified flow measurement with a nearby detector pixel.
             tracks.update({lid: p for lid, p in self.accepted_tracks})
             self.previous_tracks = list(tracks.items())
+            if getattr(self.config, "stereo_source_history_bundle", False):
+                self._previous_tracks_frame = int(index)
         self.map.record(pose, status, anchor)
         if trace_capture:
             self._tracking_trace_selected(index, "accepted_pre_ba", pose,
@@ -4563,6 +4937,14 @@ class SharedSlam:
                             self._owned_stereo_training_provider(
                                 index, size, owned_training_context, arbitration_report,
                                 info, verified_motion, full_supported_fallback_attempted,
+                            )
+                        )
+                    if getattr(self.config, "stereo_source_history_bundle", False):
+                        bundle_kwargs["source_history_provider"] = (
+                            self._owned_source_history_provider(
+                                source_history_capture, owned_training_context,
+                                arbitration_report, info, verified_motion,
+                                full_supported_fallback_attempted,
                             )
                         )
                     report = local_bundle_adjustment(

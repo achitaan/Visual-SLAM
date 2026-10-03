@@ -82,6 +82,7 @@ def local_bundle_adjustment(
     diagnostic_sink=None,
     training_factor_provider=None,
     solver_accuracy="default",
+    source_history_provider=None,
 ):
     if solver_accuracy not in ("default", "precise"):
         raise ValueError("solver_accuracy must be 'default' or 'precise'")
@@ -97,9 +98,14 @@ def local_bundle_adjustment(
 
     diagnostics_enabled = diagnostic_sink is not None
     provider_enabled = training_factor_provider is not None
+    source_history_enabled = source_history_provider is not None
     snapshot_enabled = diagnostics_enabled or provider_enabled
     diagnostic_errors = [] if diagnostics_enabled else None
     training_bundle_summary = None
+    source_history_rows = None
+    source_history_source_frame = None
+    source_history_summary = None
+    source_history_validation_payload = None
 
     def emit_diagnostic(phase, payload):
         if not diagnostics_enabled:
@@ -114,6 +120,15 @@ def local_bundle_adjustment(
 
     def attach_diagnostic_errors(report):
         if training_bundle_summary is not None:
+            if source_history_enabled and source_history_summary is not None:
+                if (isinstance(report, dict) and report.get("reason") is not None
+                        and source_history_summary.get("status") == "active"):
+                    source_history_summary.update(
+                        status="rejected", reason=str(report.get("reason"))
+                    )
+                training_bundle_summary["source_history_bundle"] = _diagnostic_value(
+                    source_history_summary
+                )
             if (isinstance(report, dict) and report.get("reason") is not None
                     and training_bundle_summary.get("status") == "active"):
                 training_bundle_summary.update(
@@ -505,6 +520,26 @@ def local_bundle_adjustment(
         errors[z <= 0.] = 1e4
         return errors.ravel()
 
+    def source_history_residual(x):
+        rows = source_history_rows
+        if not rows:
+            return np.empty(0)
+        poses, all_points = unpack(x)
+        points = all_points[np.asarray([item["point_index"] for item in rows], dtype=np.intp)]
+        cameras = np.asarray([
+            frame_pose_for(x, int(item["frame_id"]), poses) for item in rows
+        ], dtype=float)
+        camera_points = np.einsum(
+            "ni,nij->nj", points-cameras[:, :3, 3], cameras[:, :3, :3]
+        )
+        z = camera_points[:, 2]
+        homogeneous = camera_points @ matrix.T
+        projected = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
+        pixels = np.asarray([item["pixel"] for item in rows], dtype=float)
+        errors = np.clip(projected-pixels, -1e4, 1e4)
+        errors[z <= 0.] = 1e4
+        return errors.ravel()
+
     def camera_poses_for(x):
         if not optimized:
             poses, _ = unpack(x)
@@ -579,7 +614,10 @@ def local_bundle_adjustment(
         ]
         if owned_training_rows is None:
             return original
-        return np.r_[original, owned_training_residual(x)]
+        values = np.r_[original, owned_training_residual(x)]
+        if source_history_rows:
+            values = np.r_[values, source_history_residual(x)]
+        return values
 
     prepared_payload = None
     if snapshot_enabled:
@@ -692,6 +730,24 @@ def local_bundle_adjustment(
             "holdout_validation_claim": False,
             "selected_factors": 0,
         }
+        if source_history_enabled:
+            source_history_summary = {
+                "requested": True,
+                "status": "skipped",
+                "reason": "owned_factor_pool_not_active",
+                "captured_rows": 0,
+                "candidate_rows": 0,
+                "installed_rows": 0,
+                "installed_landmark_ids": [],
+                "exclusions": {},
+                "duplicate_rows_collapsed": 0,
+                "components_added": 0,
+                "cost_before": 0.0,
+                "cost_after": 0.0,
+                "tracking_fit_evidence_reused": True,
+                "covariance_claim": False,
+                "heldout_validation_claim": False,
+            }
         try:
             provider_payload = copy.deepcopy(prepared_payload)
             provider_payload["training_factor_phase"] = "prepare"
@@ -877,6 +933,202 @@ def local_bundle_adjustment(
                         })
                 if not candidate_rows:
                     raise ValueError("no_new_owned_image_rows")
+                # Optional left-only observations from the actual accepted
+                # previous-frame track cache. This adds no pose or point
+                # variables: each row reuses one selected multiview point and
+                # the source camera already introduced by the owned factors.
+                if source_history_enabled:
+                    source_history_summary.update(
+                        status="skipped", reason="source_history_not_eligible",
+                        candidate_rows=0, installed_rows=0,
+                        installed_landmark_ids=[], components_added=0,
+                    )
+                    source_frames = {int(factor.source_frame) for factor in factors}
+                    if len(source_frames) == 1:
+                        source_history_source_frame = next(iter(source_frames))
+                        source_chart_available = (
+                            source_history_source_frame in frame_to_keyframe
+                            or source_history_source_frame in source_reference_keyframes
+                        )
+                        if source_chart_available:
+                            original_frame_ids = sorted(
+                                int(diagnostic_selected_ids[int(point_index)])
+                                for point_index, keyframe_id, _observation in records
+                                if int(diagnostic_frame_ids[int(keyframe_id)])
+                                == source_history_source_frame
+                            )
+                            owned_frame_ids = sorted(
+                                int(row["ident"]) for row in candidate_rows
+                                if int(row["frame_id"]) == source_history_source_frame
+                            )
+                            history_payload = copy.deepcopy(prepared_payload)
+                            history_payload.update({
+                                "source_history_phase": "prepare",
+                                "source_history_source_frame": int(source_history_source_frame),
+                                "source_history_selected_landmark_ids": sorted(selected_by_id),
+                                "source_history_original_frame_landmark_ids": original_frame_ids,
+                                "source_history_owned_frame_landmark_ids": owned_frame_ids,
+                            })
+                            try:
+                                proposed_rows, history_report = source_history_provider(history_payload)
+                                if not isinstance(history_report, dict):
+                                    history_report = {"status": "rejected",
+                                                      "reason": "malformed_source_history_report"}
+                                source_history_summary.update(_diagnostic_value(history_report))
+                                source_history_summary["requested"] = True
+                                source_history_summary["tracking_fit_evidence_reused"] = True
+                                source_history_summary["covariance_claim"] = False
+                                source_history_summary["heldout_validation_claim"] = False
+                                if history_report.get("status") not in ("captured", "eligible", "prepared"):
+                                    proposed_rows = ()
+                                    source_history_summary.update(
+                                        status="skipped",
+                                        reason=history_report.get("reason", "source_history_not_eligible"),
+                                    )
+                                else:
+                                    source_history_validation_payload = copy.deepcopy(history_payload)
+                                    source_history_validation_payload["source_history_phase"] = "validate"
+                            except Exception as error:
+                                proposed_rows = ()
+                                source_history_summary.update(
+                                    status="skipped",
+                                    reason=f"source_history_provider_{type(error).__name__}",
+                                )
+                            if isinstance(proposed_rows, (list, tuple)):
+                                exclusions = dict(source_history_summary.get("exclusions", {}))
+                                existing_source = {
+                                    (source_history_source_frame, ident)
+                                    for ident in original_frame_ids + owned_frame_ids
+                                }
+                                existing_source_pixels = {}
+                                for row_index, (point_index, keyframe_id, observation) in enumerate(records):
+                                    frame_id = int(diagnostic_frame_ids[int(keyframe_id)])
+                                    if frame_id != source_history_source_frame:
+                                        continue
+                                    ident = int(diagnostic_selected_ids[int(record_points[row_index])])
+                                    try:
+                                        key = _training_pixel_key(frame_id, observation.pixel)[1]
+                                    except Exception:
+                                        continue
+                                    existing_source_pixels.setdefault(key, set()).add(ident)
+                                for owned_row in candidate_rows:
+                                    if int(owned_row["frame_id"]) != source_history_source_frame:
+                                        continue
+                                    try:
+                                        key = _training_pixel_key(
+                                            source_history_source_frame, owned_row["pixel"]
+                                        )[1]
+                                    except Exception:
+                                        continue
+                                    existing_source_pixels.setdefault(key, set()).add(
+                                        int(owned_row["ident"])
+                                    )
+                                grouped = []
+                                source_conflict = False
+                                for item in proposed_rows:
+                                    try:
+                                        if not isinstance(item, dict):
+                                            raise ValueError("malformed_row")
+                                        raw_frame_id = item["frame_id"]
+                                        raw_ident = item["landmark_id"]
+                                        if (not isinstance(raw_frame_id, (int, np.integer))
+                                                or isinstance(raw_frame_id, (bool, np.bool_))
+                                                or not isinstance(raw_ident, (int, np.integer))
+                                                or isinstance(raw_ident, (bool, np.bool_))):
+                                            raise ValueError("noninteger_source_identity")
+                                        frame_id = int(raw_frame_id)
+                                        ident = int(raw_ident)
+                                        raw_pixel = np.asarray(item["pixel"])
+                                        if (np.iscomplexobj(raw_pixel)
+                                                or not np.issubdtype(raw_pixel.dtype, np.number)):
+                                            raise ValueError("nonreal_source_pixel")
+                                        pixel = np.asarray(raw_pixel, dtype=np.float32)
+                                        key = _training_pixel_key(frame_id, pixel)
+                                        if frame_id != source_history_source_frame:
+                                            raise ValueError("source_frame_mismatch")
+                                        if ident not in selected_by_id:
+                                            exclusions["not_selected_multiview"] = exclusions.get(
+                                                "not_selected_multiview", 0) + 1
+                                            continue
+                                        if (frame_id, ident) in existing_source:
+                                            exclusions["same_frame_landmark_already_owned"] = exclusions.get(
+                                                "same_frame_landmark_already_owned", 0) + 1
+                                            continue
+                                        physical_owners = existing_source_pixels.get(key[1], set())
+                                        if physical_owners and ident not in physical_owners:
+                                            source_conflict = True
+                                            exclusions["physical_pixel_conflicts_with_existing_owner"] = exclusions.get(
+                                                "physical_pixel_conflicts_with_existing_owner", 0) + 1
+                                            continue
+                                        grouped.append({"frame_id": frame_id,
+                                                        "landmark_id": ident,
+                                                        "point_index": selected_by_id[ident],
+                                                        "pixel": pixel.copy(),
+                                                        "pixel_key": key[1]})
+                                    except Exception:
+                                        exclusions["invalid_or_mismatched_row"] = exclusions.get(
+                                            "invalid_or_mismatched_row", 0) + 1
+                                id_pixels = {}
+                                pixel_ids = {}
+                                for row_item in grouped:
+                                    id_pixels.setdefault(row_item["landmark_id"], set()).add(
+                                        row_item["pixel_key"])
+                                    pixel_ids.setdefault(row_item["pixel_key"], set()).add(
+                                        row_item["landmark_id"])
+                                conflicting_ids = {
+                                    ident for ident, keys in id_pixels.items() if len(keys) > 1
+                                }
+                                conflicting_pixels = {
+                                    pixel for pixel, ids in pixel_ids.items() if len(ids) > 1
+                                }
+                                if source_conflict:
+                                    # Fail closed for the history sub-pool while
+                                    # preserving independently valid owned factors.
+                                    grouped = []
+                                    id_pixels = {}
+                                    pixel_ids = {}
+                                    conflicting_ids = set()
+                                    conflicting_pixels = set()
+                                    exclusions["source_physical_ownership_conflict_fail_closed"] = 1
+                                    source_history_summary["reason"] = (
+                                        "source_physical_ownership_conflict"
+                                    )
+                                if conflicting_ids:
+                                    exclusions["landmark_multiple_source_pixels"] = len(conflicting_ids)
+                                if conflicting_pixels:
+                                    exclusions["physical_pixel_multiple_landmarks"] = len(conflicting_pixels)
+                                unique_history = []
+                                seen_history = set()
+                                for row_item in grouped:
+                                    pair = (row_item["landmark_id"], row_item["pixel_key"])
+                                    if (row_item["landmark_id"] in conflicting_ids
+                                            or row_item["pixel_key"] in conflicting_pixels):
+                                        continue
+                                    if pair in seen_history:
+                                        source_history_summary["duplicate_rows_collapsed"] = int(
+                                            source_history_summary.get("duplicate_rows_collapsed", 0)) + 1
+                                        continue
+                                    seen_history.add(pair)
+                                    unique_history.append(row_item)
+                                source_history_rows = unique_history
+                                source_history_summary.update({
+                                    "source_frame": int(source_history_source_frame),
+                                    "candidate_rows": int(len(grouped)),
+                                    "installed_rows": int(len(unique_history)),
+                                    "installed_landmark_ids": sorted({
+                                        int(item["landmark_id"]) for item in unique_history
+                                    }),
+                                    "exclusions": exclusions,
+                                    "components_added": int(2 * len(unique_history)),
+                                    "status": "active" if unique_history else "skipped",
+                                    "reason": None if unique_history else
+                                        source_history_summary.get("reason", "no_eligible_history_rows"),
+                                })
+                    else:
+                        source_history_summary.update(
+                            reason="ambiguous_owned_source_frames",
+                            source_frame_candidates=sorted(source_frames),
+                        )
                 extra_ids = sorted(used_single_ids)
                 extra_index = {ident: len(landmarks) + i for i, ident in enumerate(extra_ids)}
                 # Rebind singleton rows after deterministic point-index assignment.
@@ -944,7 +1196,11 @@ def local_bundle_adjustment(
                         Rotation.from_matrix(relative_pose[:3, :3]).as_rotvec(), relative_pose[:3, 3]]
                     augmented_scale = np.r_[augmented_scale,
                         1., 1., 1., length_scale, length_scale, length_scale]
-                augmented_pattern = lil_matrix((old_rows + 3 * len(candidate_rows), len(augmented_initial)), dtype=int)
+                history_count = len(source_history_rows or [])
+                augmented_pattern = lil_matrix((
+                    old_rows + 3 * len(candidate_rows) + 2 * history_count,
+                    len(augmented_initial),
+                ), dtype=int)
                 augmented_pattern[:old_rows, :original_variable_count] = original_pattern
                 row = old_rows
                 target_relative_point_offsets = {
@@ -981,6 +1237,24 @@ def local_bundle_adjustment(
                     start = point_offset + 3 * int(point_index)
                     augmented_pattern[row:row + 3, start:start + 3] = 1
                     row += 3
+                for history_row in source_history_rows or []:
+                    frame_id = int(history_row["frame_id"])
+                    if frame_id in frame_to_keyframe:
+                        camera_offset = pose_offset.get(frame_to_keyframe[frame_id])
+                        if camera_offset is not None:
+                            augmented_pattern[row:row + 2, camera_offset:camera_offset + 6] = 1
+                    else:
+                        camera_offset = intermediate_offsets.get(frame_id)
+                        if camera_offset is None:
+                            raise ValueError("source_history_camera_not_in_owned_bundle_chart")
+                        augmented_pattern[row:row + 2, camera_offset:camera_offset + 6] = 1
+                        reference_keyframe = intermediate_reference_keyframes[frame_id]
+                        reference_offset = pose_offset.get(reference_keyframe)
+                        if reference_offset is not None:
+                            augmented_pattern[row:row + 2, reference_offset:reference_offset + 6] = 1
+                    point_start = point_offset + 3 * int(history_row["point_index"])
+                    augmented_pattern[row:row + 2, point_start:point_start + 3] = 1
+                    row += 2
                 for ident, point_index in extra_index.items():
                     target_relative_point_offsets[ident] = point_offset + 3 * point_index
                 initial = augmented_initial
@@ -1013,8 +1287,15 @@ def local_bundle_adjustment(
                     },
                     "point_limit": point_limit,
                 })
+                if source_history_summary is not None and source_history_rows:
+                    source_history_summary["source_reference_keyframe_id"] = (
+                        int(intermediate_reference_keyframes[source_history_source_frame])
+                        if source_history_source_frame in intermediate_reference_keyframes
+                        else int(frame_to_keyframe[source_history_source_frame])
+                    )
         except Exception as error:
             owned_training_rows = None
+            source_history_rows = None
             initial = original_initial
             variable_scale = original_scale
             pattern = original_pattern
@@ -1029,6 +1310,12 @@ def local_bundle_adjustment(
                 "status": "rejected", "reason": str(error) or type(error).__name__,
                 "selected_factors": 0, "unique_image_rows_added": 0,
             })
+            if source_history_summary is not None:
+                source_history_summary.update(
+                    status="skipped", reason="owned_factor_pool_rejected",
+                    installed_rows=0, installed_landmark_ids=[], components_added=0,
+                    cost_before=0.0, cost_after=0.0,
+                )
 
     if diagnostics_enabled and prepared_payload is not None:
         layout = prepared_payload["parameter_layout"]
@@ -1088,11 +1375,21 @@ def local_bundle_adjustment(
         objective(owned_training_residual(initial))
         if owned_training_rows is not None else 0.0
     )
+    source_history_before = (
+        objective(source_history_residual(initial)) if source_history_rows else 0.0
+    )
     if training_bundle_summary is not None and owned_training_rows is not None:
+        if source_history_summary is not None:
+            source_history_summary.update({
+                "cost_before": float(source_history_before),
+                "components_added": int(2 * len(source_history_rows or [])),
+            })
         training_bundle_summary.update({
             "initial_image_objective": float(training_before),
             "initial_affected_objective": float(before + held_before),
-            "initial_augmented_objective": float(before + held_before + training_before),
+            "initial_augmented_objective": float(
+                before + held_before + training_before + source_history_before
+            ),
         })
     solver_options = {
         "jac_sparsity": pattern.tocsr(),
@@ -1126,6 +1423,11 @@ def local_bundle_adjustment(
         if owned_training_rows is not None and np.isfinite(result.x).all()
         else (float("inf") if owned_training_rows is not None else 0.0)
     )
+    source_history_after = (
+        objective(source_history_residual(result.x))
+        if source_history_rows and np.isfinite(result.x).all()
+        else (float("inf") if source_history_rows else 0.0)
+    )
     report = {
         "applied": False,
         "initial_cost": before,
@@ -1145,6 +1447,8 @@ def local_bundle_adjustment(
     if result_is_finite:
         poses, points = unpack(result.x)
     if training_bundle_summary is not None:
+        if source_history_summary is not None:
+            source_history_summary["cost_after"] = float(source_history_after)
         training_bundle_summary.update({
             "final_image_objective": float(training_after),
             "solver_status": "finite_candidate" if result_is_finite else "nonfinite_candidate",
@@ -1239,8 +1543,8 @@ def local_bundle_adjustment(
             np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
     )
     if owned_training_rows is not None:
-        augmented_initial = before + held_before + training_before
-        augmented_final = after + held_after + training_after
+        augmented_initial = before + held_before + training_before + source_history_before
+        augmented_final = after + held_after + training_after + source_history_after
         report.update(
             augmented_initial_cost=float(augmented_initial),
             augmented_final_cost=float(augmented_final),
@@ -1274,6 +1578,17 @@ def local_bundle_adjustment(
                 or np.any(training_camera_points[:, 2] <= 0.)):
             training_bundle_summary.update(status="rejected", reason="nonpositive_factor_depth")
             return attach_diagnostic_errors({**report, "reason": "owned_stereo_nonpositive_depth"})
+    if source_history_rows:
+        history_poses, history_points = unpack(result.x)
+        for item in source_history_rows:
+            camera_pose = frame_pose_for(result.x, int(item["frame_id"]), history_poses)
+            camera_point = (history_points[int(item["point_index"])] - camera_pose[:3, 3]) @ camera_pose[:3, :3]
+            if not np.isfinite(camera_point).all() or camera_point[2] <= 0.:
+                if source_history_summary is not None:
+                    source_history_summary.update(status="rejected", reason="nonpositive_history_depth")
+                return attach_diagnostic_errors({
+                    **report, "reason": "owned_stereo_source_history_nonpositive_depth"
+                })
     motion_translation, motion_rotation = [], []
     guarded_motion = motion_checks
     if owned_training_rows is not None:
@@ -1353,6 +1668,32 @@ def local_bundle_adjustment(
                     ),
                 })
                 return attach_diagnostic_errors({**report, "reason": "owned_stereo_final_validation_failed"})
+            if source_history_rows:
+                try:
+                    if source_history_validation_payload is None:
+                        raise ValueError("source_history_validation_snapshot_missing")
+                    source_payload = copy.deepcopy(source_history_validation_payload)
+                    source_payload["source_history_phase"] = "validate"
+                    history_unused_rows, history_validation = source_history_provider(source_payload)
+                except Exception as error:
+                    history_unused_rows = None
+                    history_validation = {"status": "rejected", "reason": type(error).__name__}
+                if (not isinstance(history_validation, dict)
+                        or history_validation.get("status") != "validated"
+                        or not isinstance(history_unused_rows, (list, tuple))
+                        or len(history_unused_rows) != 0):
+                    if source_history_summary is not None:
+                        source_history_summary.update({
+                            "status": "rejected",
+                            "reason": (history_validation.get("reason", "source_history_final_validation_failed")
+                                       if isinstance(history_validation, dict)
+                                       else "malformed_source_history_final_validation"),
+                        })
+                    return attach_diagnostic_errors({
+                        **report, "reason": "owned_stereo_source_history_final_validation_failed"
+                    })
+                if source_history_summary is not None:
+                    source_history_summary["late_validation"] = _diagnostic_value(history_validation)
             training_bundle_summary.update({
                 "status": "candidate_validated", "final_validation": _diagnostic_value(validation_report),
             })
@@ -1386,4 +1727,10 @@ def local_bundle_adjustment(
             training_bundle_summary.update(status="accepted", reason=None)
             training_bundle_summary['committed_map_revision'] = int(state.revision)
             training_bundle_summary['committed_geometry_revision'] = int(state.geometry_revision)
+            if source_history_rows and source_history_summary is not None:
+                source_history_summary.update(
+                    status="accepted", reason=None,
+                    committed_map_revision=int(state.revision),
+                    committed_geometry_revision=int(state.geometry_revision),
+                )
     return attach_diagnostic_errors(report)

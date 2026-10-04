@@ -23,7 +23,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared_slam import SharedSlam, StereoCamera, MappingConfig
+from shared_slam import SharedSlam, StereoCamera, MappingConfig, validate_feature_budget
 from StereoVisualOdometry import StereoVisualOdometry
 from VisualOdometry import VisualOdometry
 from kitti import load_poses_txt, validate_sequence
@@ -80,6 +80,18 @@ def export_reserve_bytes(state, minimum_mb):
     )
 
 
+def _mapping_config_from_args(args):
+    return MappingConfig(features=args.features, bundle_enabled=not args.disable_bundle,
+        loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
+        stereo_pose_arbitration=args.stereo_pose_arbitration,
+        stereo_physical_match_pool=args.stereo_physical_match_pool,
+        stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+        stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+        stereo_source_history_bundle=args.stereo_source_history_bundle,
+        stereo_retained_source_observations=args.stereo_retained_source_observations,
+        bundle_solver_accuracy=args.bundle_solver_accuracy)
+
+
 def main():
     invocation_started = time.perf_counter()
     evaluator_source = Path(__file__).read_bytes()
@@ -95,6 +107,8 @@ def main():
     parser.add_argument("--sequence", default="04")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--features", type=int, default=1500,
+                        help="Requested SIFT feature budget (1–10000; default 1500)")
     parser.add_argument("--max-wall-seconds", type=float)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--disable-bundle", action="store_true")
@@ -141,6 +155,10 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    try:
+        args.features = validate_feature_budget(args.features)
+    except ValueError as error:
+        parser.error(str(error))
     if not args.stereo and args.stereo_depth_policy != 'supported':
         parser.error('--stereo-depth-policy verification requires --stereo')
     if args.stereo_pose_arbitration and not args.stereo:
@@ -326,15 +344,7 @@ def main():
         {"tracking_diagnostics_writer": tracking_diagnostics_writer}
         if tracking_diagnostics_writer is not None else {}
     )
-    slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
-                     loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
-                     stereo_pose_arbitration=args.stereo_pose_arbitration,
-                     stereo_physical_match_pool=args.stereo_physical_match_pool,
-                     stereo_raw_reference_retry=args.stereo_raw_reference_retry,
-                     stereo_owned_image_bundle=args.stereo_owned_image_bundle,
-                     stereo_source_history_bundle=args.stereo_source_history_bundle,
-                     stereo_retained_source_observations=args.stereo_retained_source_observations,
-                     bundle_solver_accuracy=args.bundle_solver_accuracy), performance=performance,
+    slam = SharedSlam(matrix, stereo=camera, config=_mapping_config_from_args(args), performance=performance,
                      bundle_diagnostic_writer=bundle_diagnostic_writer,
                      **tracking_writer_kwargs)
     source_snapshot = {
@@ -472,6 +482,7 @@ def main():
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
         "configuration": slam.config.__dict__,
+        "features": getattr(slam.config, "features", 1500),
         "bundle_solver_accuracy": getattr(slam.config, "bundle_solver_accuracy", "default"),
         "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "stereo_source_history_bundle": bool(getattr(slam.config, "stereo_source_history_bundle", False)),

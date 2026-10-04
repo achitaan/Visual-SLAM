@@ -32,7 +32,7 @@ from config import (
 )
 from slam_backend import SlamBackend
 from telemetry import TelemetryServer, TelemetryState, encode_image, make_frame_message, now
-from shared_slam import SharedSlam, StereoCamera, MappingConfig
+from shared_slam import SharedSlam, StereoCamera, MappingConfig, validate_feature_budget
 from performance import PerformanceConfig
 from reconstruction import export_run
 
@@ -90,12 +90,25 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     ax.grid(True)
     plt.show()
 
+
+def _mapping_config_from_args(args):
+    return MappingConfig(features=args.features,
+                         stereo_depth_policy=args.stereo_depth_policy,
+                         stereo_pose_arbitration=args.stereo_pose_arbitration,
+                         stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+                         stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+                         stereo_source_history_bundle=args.stereo_source_history_bundle,
+                         stereo_retained_source_observations=args.stereo_retained_source_observations,
+                         bundle_solver_accuracy=args.bundle_solver_accuracy)
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, help="KITTI root containing sequences/")
     parser.add_argument("--poses-root", type=Path, help="Ground-truth poses for display only")
     parser.add_argument("--sequence", default="00")
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--features", type=int, default=1500,
+                        help="Requested SharedSlam SIFT feature budget (1–10000; default 1500)")
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
@@ -127,6 +140,12 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/poses.txt"))
     parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
+    try:
+        args.features = validate_feature_budget(args.features)
+    except ValueError as error:
+        parser.error(str(error))
+    if not args.slam and args.features != 1500:
+        parser.error('--features other than the default requires --slam')
     if args.stereo_depth_policy != 'supported' and not (args.slam and args.stereo):
         parser.error('--stereo-depth-policy verification requires --slam --stereo')
     if args.stereo_pose_arbitration and not (args.slam and args.stereo):
@@ -235,13 +254,7 @@ def main() -> None:
             frames=tuple(args.bundle_diagnostics_frames),
         )
     shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera,
-                        config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
-                                             stereo_pose_arbitration=args.stereo_pose_arbitration,
-                                             stereo_raw_reference_retry=args.stereo_raw_reference_retry,
-                                             stereo_owned_image_bundle=args.stereo_owned_image_bundle,
-                                             stereo_source_history_bundle=args.stereo_source_history_bundle,
-                                             stereo_retained_source_observations=args.stereo_retained_source_observations,
-                                             bundle_solver_accuracy=args.bundle_solver_accuracy),
+                        config=_mapping_config_from_args(args),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
     if shared is not None:

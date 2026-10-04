@@ -27,6 +27,16 @@ from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
 from stereo_pose_arbitration import SupportedStereoFrame, SupportedStereoHoldout, arbitrate_stereo_pose
 from stereo_training_factors import EndpointPose, build_stereo_training_factors
 
+MAX_SIFT_FEATURES = 10_000
+
+
+def validate_feature_budget(value):
+    if (isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+            or not 1 <= int(value) <= MAX_SIFT_FEATURES):
+        raise ValueError(f"features must be an integer between 1 and {MAX_SIFT_FEATURES}")
+    return int(value)
+
 
 def _owned_diagnostic_value(value):
     """Copy estimator values into finite JSON primitives with no live array views."""
@@ -159,6 +169,7 @@ class MappingConfig:
     bundle_solver_accuracy: str = "default"
 
     def __post_init__(self):
+        object.__setattr__(self, "features", validate_feature_budget(self.features))
         if self.bundle_solver_accuracy not in ("default", "precise"):
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
         if self.stereo_source_history_bundle and not self.stereo_owned_image_bundle:
@@ -204,6 +215,7 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        validate_feature_budget(self.config.features)
         if self.config.bundle_solver_accuracy not in ("default", "precise"):
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
         if self.config.stereo_depth_policy not in ('supported', 'verified_fallback', 'verified_all'):

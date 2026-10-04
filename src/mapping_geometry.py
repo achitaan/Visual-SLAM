@@ -399,6 +399,13 @@ def estimate_stereo_reference(
             owned.setflags(write=False)
             return owned
 
+        reverse_measurement = (
+            np.array(reverse[0], dtype=np.float64, copy=True)
+            if reverse is not None else None
+        )
+        if reverse_measurement is not None:
+            reverse_measurement.setflags(write=False)
+
         result["training_rows"] = {
             "schema": "stereo_reference_training_rows_v1",
             "fit_pairs": owned_pairs(np.arange(len(pairs), dtype=np.int64)),
@@ -409,6 +416,11 @@ def estimate_stereo_reference(
             "reverse_fit_row_indices": np.array(reverse_rows, dtype=np.int64, copy=True),
             "reverse_inlier_pairs": owned_pairs(reverse_rows),
             "reverse_status": "verified" if reverse is not None else "unavailable",
+            # The independent reverse hypothesis is captured before the
+            # existing bidirectional pose-only refinement mutates the forward
+            # estimate.  Opt-in downstream diagnostics may compare against
+            # this proof pose without changing the default estimator path.
+            "reverse_measurement": reverse_measurement,
             "refinement_attempted": bool(reverse is not None),
             "refinement_applied": bool(refinement and refinement.get("applied")),
         }

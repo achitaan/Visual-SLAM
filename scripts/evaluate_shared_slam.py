@@ -91,6 +91,7 @@ def _mapping_config_from_args(args):
         stereo_retained_source_observations=args.stereo_retained_source_observations,
         stereo_mapping_observation_retention=getattr(
             args, 'stereo_mapping_observation_retention', False),
+        stereo_two_view_refinement=getattr(args, 'stereo_two_view_refinement', False),
         stereo_map_depth_policy=getattr(args, 'stereo_map_depth_policy', 'inherit'),
         bundle_solver_accuracy=args.bundle_solver_accuracy,
         stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
@@ -124,6 +125,8 @@ def main():
                         help='Map geometry source only; verified uses full-range right-image correspondences')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
+    parser.add_argument('--stereo-two-view-refinement', action='store_true',
+                        help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
     parser.add_argument('--stereo-physical-match-pool', action='store_true',
                         help='Use strict physical stereo match groups for reserved fit and holdout pools')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
@@ -175,6 +178,9 @@ def main():
         parser.error('--stereo-map-depth-policy verified requires --stereo')
     if args.stereo_pose_arbitration and not args.stereo:
         parser.error('--stereo-pose-arbitration requires --stereo')
+    if args.stereo_two_view_refinement and not (
+            args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-two-view-refinement requires --stereo --stereo-pose-arbitration')
     if args.stereo_physical_match_pool and not (args.stereo and args.stereo_pose_arbitration):
         parser.error('--stereo-physical-match-pool requires --stereo --stereo-pose-arbitration')
     if args.stereo_raw_reference_retry and not args.stereo:

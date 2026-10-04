@@ -26,6 +26,10 @@ from performance import PerformanceConfig
 from stereo_depth import StereoSearchConfig, verify_stereo_depth_candidates
 from stereo_pose_arbitration import SupportedStereoFrame, SupportedStereoHoldout, arbitrate_stereo_pose
 from stereo_training_factors import EndpointPose, build_stereo_training_factors
+from stereo_two_view_bundle import (
+    build_two_view_stereo_problem,
+    refine_two_view_stereo_training,
+)
 
 MAX_SIFT_FEATURES = 10_000
 
@@ -167,6 +171,7 @@ class MappingConfig:
     stereo_source_history_bundle: bool = False
     stereo_retained_source_observations: bool = False
     stereo_mapping_observation_retention: bool = False
+    stereo_two_view_refinement: bool = False
     stereo_physical_match_pool: bool = False
     bundle_solver_accuracy: str = "default"
     stereo_bundle_gauge_mode: str = "veto"
@@ -197,6 +202,8 @@ class MappingConfig:
             raise ValueError(
                 "stereo_mapping_observation_retention requires an independent stereo reference path"
             )
+        if self.stereo_two_view_refinement and not self.stereo_pose_arbitration:
+            raise ValueError("stereo_two_view_refinement requires stereo_pose_arbitration")
         if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
             raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
 
@@ -248,6 +255,11 @@ class SharedSlam:
             raise ValueError('Verified stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_pose_arbitration:
             raise ValueError('Stereo pose arbitration requires two calibrated cameras')
+        if getattr(self.config, "stereo_two_view_refinement", False) and (
+                stereo is None or not self.config.stereo_pose_arbitration):
+            raise ValueError(
+                'Two-view stereo refinement requires calibrated stereo and pose arbitration'
+            )
         if getattr(self.config, "stereo_physical_match_pool", False) and (
                 stereo is None or not self.config.stereo_pose_arbitration):
             raise ValueError(
@@ -1994,6 +2006,15 @@ class SharedSlam:
 
     def _prepare_stereo_arbitration(self, index, current, capture_rows=False):
         report = {'choice': 'map', 'reason': 'missing_previous_supported_frame'}
+        two_view_enabled = bool(getattr(self.config, "stereo_two_view_refinement", False))
+        capture_rows = bool(capture_rows or two_view_enabled)
+        if two_view_enabled:
+            report['two_view_stereo_refinement'] = {
+                'status': 'not_run', 'accepted': False,
+                'reason': 'independent_training_context_unavailable',
+                'optimized_xyz_written_to_map': False,
+                'heldout_used_in_fit': False,
+            }
         previous = self.previous_supported_stereo
         if (previous is None or self.previous_stereo_geometry is None
                 or previous.frame != self.previous_stereo_geometry[1]
@@ -2139,6 +2160,87 @@ class SharedSlam:
             context['fit_source_epoch'] = fit_epoch
             context['fit_source_state'] = fit_source_state
             context['fit_pairs_snapshot'] = np.array(fit, dtype=np.int64, copy=True)
+        if two_view_enabled:
+            training = verified.get('training_rows')
+            seed_pose = np.array(verified['measurement'], dtype=np.float64, copy=True)
+            context['two_view_seed_pose'] = seed_pose
+            try:
+                if not capture_rows or not isinstance(training, dict):
+                    raise ValueError('captured_training_rows_unavailable')
+                if tuple(previous.image_size) != tuple(current.image_size):
+                    raise ValueError('two_view_endpoint_image_size_mismatch')
+                reverse_pose = training.get('reverse_measurement')
+                if reverse_pose is None:
+                    raise ValueError('original_reverse_measurement_unavailable')
+                problem = build_two_view_stereo_problem(
+                    seed_pose=seed_pose,
+                    reverse_pose=reverse_pose,
+                    fit_pairs=training['fit_pairs'],
+                    forward_inlier_pairs=training['forward_inlier_pairs'],
+                    reverse_inlier_pairs=training['reverse_inlier_pairs'],
+                    source_points=previous.points,
+                    target_points=current.points,
+                    source_pixels=previous.pixels,
+                    source_right_u=previous.right_u,
+                    target_pixels=current.pixels,
+                    target_right_u=current.right_u,
+                    matrix=self.K,
+                    baseline=self.stereo.baseline,
+                    disparity_offset=self.stereo.disparity_offset,
+                    image_size=current.image_size,
+                    min_inliers=self.config.min_inliers,
+                    held_pairs=context.get('held_pairs'),
+                    source_landmark_ids=previous.landmark_ids,
+                    target_landmark_ids=current.landmark_ids,
+                    excluded_landmark_ids=context['excluded_landmarks'],
+                )
+                candidate, refinement_report = self.profile.call(
+                    'stereo_two_view_refinement', refine_two_view_stereo_training,
+                    problem, reverse_pose, max_nfev=15)
+                refinement_report['seed_pose_preserved_on_rejection'] = bool(candidate is None)
+                refinement_report['training_fit_pairs_count'] = int(len(context['fit']))
+                refinement_report['held_pairs_count'] = int(len(context.get('held_pairs', ())))
+                refinement_report['fit_partition_unchanged'] = bool(
+                    np.array_equal(context['fit'], context.get('fit_pairs_snapshot', context['fit'])))
+                if candidate is not None:
+                    # Only the candidate relative camera pose is passed to the
+                    # existing holdout arbiter; optimized XYZ never enters map
+                    # state, reference frames, or bundle-adjustment inputs.
+                    refinement_report['seed_forward_median_reprojection_px'] = float(
+                        verified['median_reprojection_px'])
+                    verified['two_view_seed_measurement'] = seed_pose.copy()
+                    verified['two_view_seed_median_reprojection_px'] = float(
+                        verified['median_reprojection_px'])
+                    verified['measurement'] = np.array(candidate, dtype=np.float64, copy=True)
+                    direction = refinement_report['guards']['directions']
+                    verified['median_reprojection_px'] = float(
+                        direction['forward_original_median_px'])
+                    verified['reverse_translation_error_m'] = float(
+                        refinement_report['guards']['reverse_pose_translation_m'])
+                    verified['reverse_rotation_error_deg'] = float(
+                        refinement_report['guards']['reverse_pose_rotation_deg'])
+                    refinement_report['candidate_forward_median_reprojection_px'] = float(
+                        direction['forward_original_median_px'])
+                    refinement_report['candidate_pose_applied_for_existing_holdout'] = True
+                else:
+                    verified['measurement'] = seed_pose
+                    refinement_report['candidate_pose_applied_for_existing_holdout'] = False
+                report['two_view_stereo_refinement'] = refinement_report
+                context['report']['two_view_stereo_refinement'] = refinement_report
+            except Exception as error:
+                verified['measurement'] = seed_pose
+                failure = {
+                    'status': 'rejected', 'accepted': False,
+                    'reason': str(error) or type(error).__name__,
+                    'seed_pose_preserved_on_rejection': True,
+                    'optimized_xyz_written_to_map': False,
+                    'heldout_used_in_fit': False,
+                    'training_fit_pairs_count': int(len(context['fit'])),
+                    'held_pairs_count': int(len(context.get('held_pairs', ()))),
+                    'fit_partition_unchanged': True,
+                }
+                report['two_view_stereo_refinement'] = failure
+                context['report']['two_view_stereo_refinement'] = failure
         report['reason'] = 'reserved_supported_evidence'
         return context, report
 
@@ -5029,6 +5131,7 @@ class SharedSlam:
         if self.config.stereo_pose_arbitration:
             capture_training_rows = bool(
                 diagnostic_capture or trace_capture or self.config.stereo_owned_image_bundle
+                or getattr(self.config, "stereo_two_view_refinement", False)
             )
             if capture_training_rows:
                 self._arbitration_context, arbitration_report = self._prepare_stereo_arbitration(

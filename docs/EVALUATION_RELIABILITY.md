@@ -14,6 +14,6 @@ Saved-edge accounting separates raw relative motion from the corrected exported 
 
 A strict nonworsening gate on fixed-depth reserved-image cost was rejected: it would reject all nine accepted bundle updates in a retained beneficial sequence 04 run. That conditional prediction cost is not the same objective as joint camera/landmark optimization.
 
-The next proposed accuracy experiment is opt-in two-view stereo refinement over the pose and full XYZ landmark variables using the original measured image endpoints. It requires retained forward/reverse geometric verification, unchanged arbitration holdouts, observability checks and a fresh frozen comparison against both controls. It has not been implemented or evaluated.
+Opt-in two-view stereo refinement over the pose and full XYZ landmark variables is now implemented using the original measured image endpoints. It retains forward/reverse geometric verification, unchanged arbitration holdouts and observability checks. Its [tests and short runtime smoke](benchmark/STEREO_TWO_VIEW_SMOKE.md) pass; a fresh frozen accuracy comparison against both controls remains required. It defaults off.
 
 Speed, accuracy and streaming remain separate acceptance gates. CUDA matching has an earlier short matched speed result with identical trajectories; the latest shared pipeline's diagnostic 1.58 FPS does not establish sustained 10 FPS operation, bounded latency or dropout handling. Main remains unchanged, and validation scheduling stays paused.

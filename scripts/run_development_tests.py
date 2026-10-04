@@ -156,12 +156,13 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
                                   stereo_raw_reference_retry=False,
                                   stereo_owned_image_bundle=False,
                                   bundle_solver_accuracy='default',
-                                  stereo_source_history_bundle=False):
+                                  stereo_source_history_bundle=False,
+                                  stereo_retained_source_observations=False):
     """Return the exact evaluator config represented by a development variant."""
     if bundle_solver_accuracy not in ('default', 'precise'):
         raise ValueError('bundle_solver_accuracy must be default or precise')
     if variant == 'baseline':
-        if stereo_source_history_bundle:
+        if stereo_source_history_bundle or stereo_retained_source_observations:
             raise ValueError('source history is not available for baseline')
         if bundle_solver_accuracy != 'default':
             raise ValueError('precise bundle solver accuracy is not available for baseline')
@@ -177,7 +178,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
                               stereo_raw_reference_retry=stereo_raw_reference_retry,
                               stereo_owned_image_bundle=stereo_owned_image_bundle,
                               bundle_solver_accuracy=bundle_solver_accuracy,
-                              stereo_source_history_bundle=stereo_source_history_bundle).__dict__)
+                              stereo_source_history_bundle=stereo_source_history_bundle,
+                              stereo_retained_source_observations=stereo_retained_source_observations).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -226,6 +228,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_source_history_bundle', False)
                     is not identity.get('stereo_source_history_bundle', False)):
                 raise ValueError('mismatched stereo-source-history-bundle mode')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_retained_source_observations', False)
+                    is not identity.get('stereo_retained_source_observations', False)):
+                raise ValueError('mismatched stereo-retained-source-observations mode')
             expected_accuracy = identity.get('bundle_solver_accuracy', 'default')
             historical_accuracy = source_identity.get('bundle_solver_accuracy')
             report_accuracy = report.get('bundle_solver_accuracy')
@@ -565,7 +571,8 @@ def reusable_export(report_path, identity):
                 identity.get('stereo_raw_reference_retry', False),
                 identity.get('stereo_owned_image_bundle', False),
                 identity.get('bundle_solver_accuracy', 'default'),
-                identity.get('stereo_source_history_bundle', False))
+                identity.get('stereo_source_history_bundle', False),
+                identity.get('stereo_retained_source_observations', False))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -762,6 +769,8 @@ def main():
                         help='Use selected reserved raw stereo image rows in the local bundle')
     parser.add_argument('--stereo-source-history-bundle', action='store_true',
                         help='Add accepted source-frame map image observations to the experimental bundle')
+    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+                        help='Retain source-image constraints using the existing anchored camera model')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
@@ -775,6 +784,8 @@ def main():
         parser.error('--stereo-owned-image-bundle requires --stereo-pose-arbitration and a SharedSlam variant')
     if args.stereo_source_history_bundle and (not args.stereo_owned_image_bundle or 'baseline' in args.variants):
         parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle and SharedSlam variants only')
+    if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
+        parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
     if args.bundle_solver_accuracy == 'precise' and 'baseline' in args.variants:
         parser.error('--bundle-solver-accuracy precise cannot be combined with the preserved baseline variant')
     bundle_diagnostics_frames = (sorted(args.bundle_diagnostics_frames)
@@ -809,6 +820,7 @@ def main():
                'stereo_raw_reference_retry': args.stereo_raw_reference_retry,
                'stereo_owned_image_bundle': args.stereo_owned_image_bundle,
                'stereo_source_history_bundle': args.stereo_source_history_bundle,
+               'stereo_retained_source_observations': args.stereo_retained_source_observations,
                'bundle_solver_accuracy': args.bundle_solver_accuracy,
                'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                'bundle_diagnostics_frames': bundle_diagnostics_frames,
@@ -859,6 +871,7 @@ def main():
                       'stereo_raw_reference_retry': args.stereo_raw_reference_retry if variant!='baseline' else False,
                       'stereo_owned_image_bundle': args.stereo_owned_image_bundle if variant!='baseline' else False,
                       'stereo_source_history_bundle': args.stereo_source_history_bundle if variant!='baseline' else False,
+                      'stereo_retained_source_observations': args.stereo_retained_source_observations if variant!='baseline' else False,
                       'bundle_solver_accuracy': args.bundle_solver_accuracy if variant!='baseline' else 'default',
                       'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                       'bundle_diagnostics_frames': bundle_diagnostics_frames,
@@ -891,7 +904,8 @@ def main():
                 args.stereo_raw_reference_retry and variant != 'baseline',
                 args.stereo_owned_image_bundle and variant != 'baseline',
                 args.bundle_solver_accuracy if variant != 'baseline' else 'default',
-                args.stereo_source_history_bundle and variant != 'baseline')
+                args.stereo_source_history_bundle and variant != 'baseline',
+                args.stereo_retained_source_observations and variant != 'baseline')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -921,6 +935,7 @@ def main():
                 if args.stereo_raw_reference_retry:command.append('--stereo-raw-reference-retry')
                 if args.stereo_owned_image_bundle:command.append('--stereo-owned-image-bundle')
                 if args.stereo_source_history_bundle:command.append('--stereo-source-history-bundle')
+                if args.stereo_retained_source_observations:command.append('--stereo-retained-source-observations')
                 command.extend(['--bundle-solver-accuracy', args.bundle_solver_accuracy])
                 if bundle_diagnostics_frames:
                     command.extend(['--bundle-diagnostics-dir',

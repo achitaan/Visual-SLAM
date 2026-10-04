@@ -1,0 +1,181 @@
+{
+  "schema": "source_retention_three_arm_summary_v1",
+  "status": "fail",
+  "scope": "fresh_partial_kitti04_80_accuracy_comparison",
+  "source_fingerprint": "164d1ce104edbb4b3ccc792e71d20dcd02019728aa6383277b65addb47b1ec94",
+  "frames": 80,
+  "input_identity_equal": true,
+  "reference_identity_equal": true,
+  "metrics_reused": false,
+  "ground_truth_policy": "evaluator_only",
+  "release_ready": false,
+  "cases": [
+    {
+      "case": "default_control",
+      "owned": false,
+      "source_history": false,
+      "retention": false,
+      "retained_rows": 0,
+      "retained_applied_solves": 0,
+      "retained_candidate_rows": 0,
+      "retained_candidate_solves": 0,
+      "retention_registered_only_solves": 0,
+      "owned_applied_solves": 0,
+      "history_applied_solves": 0,
+      "history_candidate_solves": 0,
+      "solver_skipped_before_fit": 0,
+      "solver_rejected_after_fit": 0,
+      "bundle_applied_solves": 9,
+      "solver_accuracy": "default",
+      "ate_rmse_m": 0.11188367637566381,
+      "translation_percent": 0.2807531045984703,
+      "rotation_deg_per_m": 0.005652783299876321,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 42.57090910000261,
+      "map_vertices": 10288,
+      "estimator_runtime_s": 42.57090910000261,
+      "evaluator_total_wall_s": 45.485227099998156,
+      "supervised_case_wall_s": 51.64100000000326,
+      "history_rows": 0,
+      "history_cost_before": 0,
+      "history_cost_after": 0
+    },
+    {
+      "case": "history_control",
+      "owned": true,
+      "source_history": true,
+      "retention": false,
+      "retained_rows": 0,
+      "retained_applied_solves": 0,
+      "retained_candidate_rows": 0,
+      "retained_candidate_solves": 0,
+      "retention_registered_only_solves": 0,
+      "owned_applied_solves": 9,
+      "history_applied_solves": 9,
+      "history_candidate_solves": 9,
+      "solver_skipped_before_fit": 0,
+      "solver_rejected_after_fit": 0,
+      "bundle_applied_solves": 9,
+      "solver_accuracy": "precise",
+      "ate_rmse_m": 0.11145013933750803,
+      "translation_percent": 0.29838505974983515,
+      "rotation_deg_per_m": 0.004622060548186882,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 87.48626269999659,
+      "map_vertices": 10434,
+      "estimator_runtime_s": 87.48626269999659,
+      "evaluator_total_wall_s": 90.46699159999844,
+      "supervised_case_wall_s": 97.07800000000861,
+      "history_rows": 562,
+      "history_cost_before": 273.87492934749923,
+      "history_cost_after": 17.202595730316887
+    },
+    {
+      "case": "retained_source",
+      "owned": true,
+      "source_history": true,
+      "retention": true,
+      "retained_rows": 1124,
+      "retained_applied_solves": 8,
+      "retained_candidate_rows": 1124,
+      "retained_candidate_solves": 8,
+      "retention_registered_only_solves": 1,
+      "owned_applied_solves": 9,
+      "history_applied_solves": 9,
+      "history_candidate_solves": 9,
+      "solver_skipped_before_fit": 0,
+      "solver_rejected_after_fit": 0,
+      "bundle_applied_solves": 9,
+      "solver_accuracy": "precise",
+      "ate_rmse_m": 0.12298373090689593,
+      "translation_percent": 0.42647559073296226,
+      "rotation_deg_per_m": 0.004040446660724396,
+      "lost_frames": 0,
+      "frames": 80,
+      "runtime_s": 84.37624209999922,
+      "map_vertices": 10428,
+      "estimator_runtime_s": 84.37624209999922,
+      "evaluator_total_wall_s": 87.40953029997763,
+      "supervised_case_wall_s": 93.54699999999139,
+      "history_rows": 562,
+      "history_cost_before": 276.994532873837,
+      "history_cost_after": 19.295359616196397
+    }
+  ],
+  "comparisons": [
+    {
+      "control": "default_control",
+      "candidate": "retained_source",
+      "metrics": {
+        "ate_rmse_m": {
+          "control": 0.11188367637566381,
+          "candidate": 0.12298373090689593,
+          "change_percent": 9.921067032122055
+        },
+        "translation_percent": {
+          "control": 0.2807531045984703,
+          "candidate": 0.42647559073296226,
+          "change_percent": 51.90414059459911
+        },
+        "rotation_deg_per_m": {
+          "control": 0.005652783299876321,
+          "candidate": 0.004040446660724396,
+          "change_percent": -28.522880740664547
+        }
+      },
+      "lost_frames_control": 0,
+      "lost_frames_candidate": 0
+    },
+    {
+      "control": "history_control",
+      "candidate": "retained_source",
+      "metrics": {
+        "ate_rmse_m": {
+          "control": 0.11145013933750803,
+          "candidate": 0.12298373090689593,
+          "change_percent": 10.348656033942106
+        },
+        "translation_percent": {
+          "control": 0.29838505974983515,
+          "candidate": 0.42647559073296226,
+          "change_percent": 42.92793047028485
+        },
+        "rotation_deg_per_m": {
+          "control": 0.004622060548186882,
+          "candidate": 0.004040446660724396,
+          "change_percent": -12.58343289532714
+        }
+      },
+      "lost_frames_control": 0,
+      "lost_frames_candidate": 0
+    }
+  ],
+  "failures": [
+    {
+      "control": "default_control",
+      "metric": "ate_rmse_m",
+      "reason": "accuracy_regression_exceeds_5_percent",
+      "change_percent": 9.921067032122055
+    },
+    {
+      "control": "default_control",
+      "metric": "translation_percent",
+      "reason": "accuracy_regression_exceeds_5_percent",
+      "change_percent": 51.90414059459911
+    },
+    {
+      "control": "history_control",
+      "metric": "ate_rmse_m",
+      "reason": "accuracy_regression_exceeds_5_percent",
+      "change_percent": 10.348656033942106
+    },
+    {
+      "control": "history_control",
+      "metric": "translation_percent",
+      "reason": "accuracy_regression_exceeds_5_percent",
+      "change_percent": 42.92793047028485
+    }
+  ]
+}

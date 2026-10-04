@@ -110,6 +110,8 @@ def main() -> None:
                         help='Opt in to bounded image factors from the selected reserved stereo training rows')
     parser.add_argument('--stereo-source-history-bundle', action='store_true',
                         help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
+    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+                        help='Retain source-image constraints using the existing anchored camera model')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
@@ -136,6 +138,8 @@ def main() -> None:
         parser.error('--stereo-owned-image-bundle requires --slam --stereo --stereo-pose-arbitration')
     if args.stereo_source_history_bundle and not args.stereo_owned_image_bundle:
         parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
+    if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
+        parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
     if args.bundle_solver_accuracy != 'default' and not args.slam:
         parser.error('--bundle-solver-accuracy precise requires --slam')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
@@ -236,6 +240,7 @@ def main() -> None:
                                              stereo_raw_reference_retry=args.stereo_raw_reference_retry,
                                              stereo_owned_image_bundle=args.stereo_owned_image_bundle,
                                              stereo_source_history_bundle=args.stereo_source_history_bundle,
+                                             stereo_retained_source_observations=args.stereo_retained_source_observations,
                                              bundle_solver_accuracy=args.bundle_solver_accuracy),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None

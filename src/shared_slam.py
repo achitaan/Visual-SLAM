@@ -154,6 +154,7 @@ class MappingConfig:
     stereo_raw_reference_retry: bool = False
     stereo_owned_image_bundle: bool = False
     stereo_source_history_bundle: bool = False
+    stereo_retained_source_observations: bool = False
     bundle_solver_accuracy: str = "default"
 
     def __post_init__(self):
@@ -162,6 +163,11 @@ class MappingConfig:
         if self.stereo_source_history_bundle and not self.stereo_owned_image_bundle:
             raise ValueError(
                 "stereo_source_history_bundle requires stereo_owned_image_bundle"
+            )
+        if self.stereo_retained_source_observations and not (
+                self.stereo_owned_image_bundle and self.stereo_source_history_bundle):
+            raise ValueError(
+                "stereo_retained_source_observations requires owned image and source-history bundles"
             )
 
 
@@ -212,6 +218,13 @@ class SharedSlam:
                 stereo is None or not self.config.stereo_owned_image_bundle):
             raise ValueError(
                 'Source-history bundle requires calibrated stereo and owned image bundle'
+            )
+        if getattr(self.config, "stereo_retained_source_observations", False) and (
+                stereo is None or not self.config.stereo_owned_image_bundle
+                or not self.config.stereo_source_history_bundle):
+            raise ValueError(
+                'Retained source observations require calibrated stereo, owned image bundle, '
+                'and source-history bundle'
             )
         if (self.config.stereo_owned_image_bundle
                 and self.config.stereo_depth_policy == 'verified_all'):
@@ -3809,6 +3822,93 @@ class SharedSlam:
 
         return provider
 
+    def _retained_source_exclusion_snapshot(self, index, image_size):
+        """Own reserved pixels without turning invalid ownership into an empty set."""
+        def invalid(reason):
+            return {"valid": False, "reason": reason}
+
+        context = self._arbitration_context
+        if context is None:
+            return invalid("reserved_context_unavailable")
+        if not isinstance(context, dict):
+            return invalid("reserved_context_invalid")
+        try:
+            previous = context["previous"]
+            current = context["current"]
+            evidence = context["evidence"]
+            frame = previous.frame
+            if (not isinstance(frame, (int, np.integer))
+                    or isinstance(frame, (bool, np.bool_)) or frame < 0
+                    or not isinstance(current.frame, (int, np.integer))
+                    or isinstance(current.frame, (bool, np.bool_))
+                    or current.frame != index or frame >= index
+                    or not isinstance(evidence.source_frame, (int, np.integer))
+                    or isinstance(evidence.source_frame, (bool, np.bool_))
+                    or evidence.source_frame != frame):
+                return invalid("reserved_frame_binding_invalid")
+            for name in ("baseline", "disparity_offset"):
+                value = np.asarray(getattr(self.stereo, name))
+                if (value.shape != () or np.iscomplexobj(value)
+                        or not np.issubdtype(value.dtype, np.number)
+                        or not np.isfinite(value).all()
+                        or (name == "baseline" and value <= 0)):
+                    return invalid("reserved_calibration_invalid")
+            calibration = self._live_source_calibration_identity()
+            if (not isinstance(calibration, str) or not calibration
+                    or calibration != self.stereo_calibration_identity
+                    or previous.calibration_identity != calibration
+                    or current.calibration_identity != calibration
+                    or evidence.calibration_identity != calibration):
+                return invalid("reserved_calibration_invalid")
+            size = np.asarray(image_size)
+            if (size.shape != (2,) or np.iscomplexobj(size)
+                    or not np.issubdtype(size.dtype, np.number)
+                    or not np.isfinite(size).all() or np.any(size <= 0)
+                    or tuple(previous.image_size) != tuple(image_size)
+                    or tuple(current.image_size) != tuple(image_size)):
+                return invalid("reserved_image_domain_invalid")
+            pixels = np.asarray(previous.pixels)
+            source_ids = np.asarray(evidence.source_ids)
+            if (np.iscomplexobj(pixels)
+                    or not np.issubdtype(pixels.dtype, np.number)
+                    or pixels.ndim != 2 or pixels.shape[1] != 2
+                    or source_ids.ndim != 1
+                    or not np.issubdtype(source_ids.dtype, np.integer)
+                    or np.issubdtype(source_ids.dtype, np.bool_)
+                    or np.any(source_ids < 0) or np.any(source_ids >= len(pixels))
+                    or len(np.unique(source_ids)) != len(source_ids)):
+                return invalid("reserved_source_ids_invalid")
+            selected_pixels = pixels[source_ids]
+            if (not np.isfinite(selected_pixels).all()
+                    or np.any(selected_pixels < 0) or np.any(selected_pixels >= size)):
+                return invalid("reserved_source_pixels_invalid")
+            raw_ids = context["excluded_landmarks"]
+            if (not isinstance(raw_ids, (list, tuple, set, frozenset, np.ndarray))
+                    or (isinstance(raw_ids, np.ndarray) and raw_ids.ndim != 1)
+                    or any(not isinstance(value, (int, np.integer))
+                           or isinstance(value, (bool, np.bool_)) or value < 0
+                           for value in raw_ids)):
+                return invalid("reserved_landmark_ids_invalid")
+            excluded_ids = {int(value) for value in raw_ids}
+            evidence_ids = np.asarray(evidence.landmark_ids)
+            if (evidence_ids.shape != source_ids.shape
+                    or not np.issubdtype(evidence_ids.dtype, np.integer)
+                    or np.issubdtype(evidence_ids.dtype, np.bool_)
+                    or np.any(evidence_ids < -1)
+                    or not {int(value) for value in evidence_ids if value >= 0}
+                           .issubset(excluded_ids)):
+                return invalid("reserved_landmark_binding_invalid")
+            owned_pixels = np.array(selected_pixels, dtype=np.float32, copy=True)
+            if not np.isfinite(owned_pixels).all():
+                return invalid("reserved_source_pixels_invalid")
+            return {
+                "valid": True, "reason": None,
+                "landmark_ids": sorted(excluded_ids),
+                "source_frame": int(frame), "source_pixels": owned_pixels,
+            }
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError):
+            return invalid("reserved_context_invalid")
+
     def _live_owned_bundle_calibration(self):
         try:
             digest = hashlib.sha256()
@@ -5170,6 +5270,20 @@ class SharedSlam:
                                 full_supported_fallback_attempted,
                             )
                         )
+                    if getattr(self.config, "stereo_retained_source_observations", False):
+                        retained_exclusions = self._retained_source_exclusion_snapshot(
+                            index, size
+                        )
+                        retained_calibration = self._live_owned_bundle_calibration()
+                        if not isinstance(retained_calibration, str) or not retained_calibration:
+                            retained_exclusions = {
+                                "valid": False, "reason": "retained_calibration_invalid"
+                            }
+                        bundle_kwargs.update({
+                            "retain_source_observations": True,
+                            "retained_source_calibration_identity": retained_calibration,
+                            "retained_source_exclusions": retained_exclusions,
+                        })
                     report = local_bundle_adjustment(
                         self.map,
                         self.K,

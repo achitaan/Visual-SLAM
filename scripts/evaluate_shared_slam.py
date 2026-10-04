@@ -110,6 +110,8 @@ def main():
                         help='Opt in to factors from selected reserved stereo training observations')
     parser.add_argument('--stereo-source-history-bundle', action='store_true',
                         help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
+    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+                        help='Retain source-image constraints using the existing anchored camera model')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
@@ -147,6 +149,8 @@ def main():
         parser.error('--stereo-owned-image-bundle requires --stereo --stereo-pose-arbitration')
     if args.stereo_source_history_bundle and not args.stereo_owned_image_bundle:
         parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
+    if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
+        parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
         parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
     if args.bundle_diagnostics_frames is not None:
@@ -324,6 +328,7 @@ def main():
                      stereo_raw_reference_retry=args.stereo_raw_reference_retry,
                      stereo_owned_image_bundle=args.stereo_owned_image_bundle,
                      stereo_source_history_bundle=args.stereo_source_history_bundle,
+                     stereo_retained_source_observations=args.stereo_retained_source_observations,
                      bundle_solver_accuracy=args.bundle_solver_accuracy), performance=performance,
                      bundle_diagnostic_writer=bundle_diagnostic_writer,
                      **tracking_writer_kwargs)
@@ -465,6 +470,7 @@ def main():
         "bundle_solver_accuracy": getattr(slam.config, "bundle_solver_accuracy", "default"),
         "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "stereo_source_history_bundle": bool(getattr(slam.config, "stereo_source_history_bundle", False)),
+        "stereo_retained_source_observations": bool(getattr(slam.config, "stereo_retained_source_observations", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,
     }

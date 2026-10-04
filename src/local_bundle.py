@@ -190,9 +190,16 @@ def local_bundle_adjustment(
     retain_source_observations=False,
     retained_source_calibration_identity=None,
     retained_source_exclusions=None,
+    gauge_mode="veto",
 ):
     if solver_accuracy not in ("default", "precise"):
         raise ValueError("solver_accuracy must be 'default' or 'precise'")
+    if gauge_mode not in ("veto", "canonical_two_bridge"):
+        raise ValueError("Invalid bundle gauge mode")
+    if gauge_mode != "veto" and (
+            not state.metric or training_factor_provider is not None
+            or source_history_provider is not None or retain_source_observations):
+        return {"applied": False, "reason": "gauge_mode_requires_original_stereo"}
 
     def solver_metadata(effective, inner_options=None):
         return {
@@ -2151,6 +2158,10 @@ def local_bundle_adjustment(
             "maxiter": max(500, len(initial)),
         }
         solver_options["tr_options"] = dict(inner_options)
+    gauge_certificate = None
+    gauge_correction = None
+    raw_solver_vector = None
+    raw_optimizer_report = None
     image_pose_observability = {
         "status": "skipped",
         "reason": "augmented_model_scope_not_supported",
@@ -2168,40 +2179,107 @@ def local_bundle_adjustment(
             reason="monocular_scope_not_validated"
         )
     elif not provider_enabled and not source_history_enabled and not retention_requested:
-        image_pose_observability = original_image_pose_observability(
-            camera_poses_for(initial),
-            free_camera_indices,
-            initial[free_offsets[:, :3]] if len(free_offsets) else np.empty((0, 3)),
-            initial[point_offset:point_limit].reshape(-1, 3),
-            record_cameras,
-            record_points,
-            measured_pixels,
-            measured_right,
-            dimension_mask,
-            held_points,
-            held_cameras,
-            held_pixels,
-            held_right,
-            held_dimension_mask,
-            matrix,
-            baseline,
-            disparity_offset,
-            variable_scale[free_offsets] if len(free_offsets) else np.empty((0, 6)),
-            variable_scale[point_offset:point_limit].reshape(-1, 3),
-        )
+        def observability_for(vector):
+            return original_image_pose_observability(
+                camera_poses_for(vector), free_camera_indices,
+                vector[free_offsets[:, :3]] if len(free_offsets) else np.empty((0, 3)),
+                vector[point_offset:point_limit].reshape(-1, 3),
+                record_cameras, record_points, measured_pixels, measured_right,
+                dimension_mask, held_points, held_cameras, held_pixels,
+                held_right, held_dimension_mask, matrix, baseline, disparity_offset,
+                variable_scale[free_offsets] if len(free_offsets) else np.empty((0, 6)),
+                variable_scale[point_offset:point_limit].reshape(-1, 3),
+            )
+        image_pose_observability = observability_for(initial)
         if image_pose_observability["status"] != "observable":
+            if (gauge_mode == "canonical_two_bridge"
+                    and image_pose_observability["status"] == "unobservable"):
+                from bundle_gauge import certify_two_bridge_rotation
+                gauge_certificate, gauge_correction = certify_two_bridge_rotation(
+                    camera_ids=camera_ids,
+                    free_camera_indices=free_camera_indices,
+                    selected_record_cameras=record_cameras,
+                    selected_record_points=record_points,
+                    initial_points=initial[point_offset:point_limit].reshape(-1, 3),
+                    excluded_points=held_points,
+                    excluded_cameras=held_cameras,
+                    initial_observability=image_pose_observability,
+                )
             guard_reason = (
                 "invalid_image_pose_geometry"
                 if image_pose_observability["status"] == "invalid_geometry"
                 else "unobservable_image_pose_graph"
             )
-            return attach_diagnostic_errors({
-                "applied": False,
-                "reason": guard_reason,
-                "image_pose_observability": image_pose_observability,
-                **solver_metadata("not_run"),
-            })
+            if gauge_certificate is None:
+                return attach_diagnostic_errors({
+                    "applied": False,
+                    "reason": guard_reason,
+                    "image_pose_observability": image_pose_observability,
+                    **({"gauge_correction": gauge_correction}
+                       if gauge_correction is not None else {}),
+                    **solver_metadata("not_run"),
+                })
     result = least_squares(residual, initial, **solver_options)
+    if gauge_certificate is not None:
+        from bundle_gauge import canonicalize_two_bridge_candidate
+        raw_solver_vector = np.asarray(result.x, dtype=float).copy()
+        raw_optimizer_report = {
+            "solver_success": bool(result.success),
+            "solver_status": int(getattr(result, "status", 0)),
+            "solver_message": str(getattr(result, "message", "")),
+            "solver_optimality": _diagnostic_value(getattr(result, "optimality", None)),
+            "optimizer_derivative_point": "raw_solver_vector_before_canonicalization",
+        }
+        if diagnostics_enabled:
+            raw_optimizer_report["raw_solver_x"] = _diagnostic_vector(raw_solver_vector)
+        candidate_observability = observability_for(raw_solver_vector)
+        rank_histogram = candidate_observability.get("per_point_rank_histogram", {})
+        if (candidate_observability.get("status") != "unobservable"
+                or candidate_observability.get("nullity") != 1
+                or rank_histogram != {"3": len(landmarks)}):
+            return attach_diagnostic_errors({
+                "applied": False, "reason": "gauge_candidate_rank_changed",
+                "image_pose_observability": image_pose_observability,
+                "gauge_correction": {
+                    "certificate": gauge_correction,
+                    "candidate_observability": candidate_observability,
+                },
+                "evaluations": int(result.nfev),
+                **raw_optimizer_report,
+                **solver_metadata("precise_lsmr" if precise_inner_solve else "legacy_defaults", inner_options),
+            })
+        canonical_vector, gauge_correction = canonicalize_two_bridge_candidate(
+            initial_vector=initial,
+            raw_candidate_vector=raw_solver_vector,
+            camera_ids=camera_ids,
+            free_camera_indices=free_camera_indices,
+            free_offsets=free_offsets,
+            point_offset=point_offset,
+            point_limit=point_limit,
+            initial_camera_poses=initial_cameras,
+            candidate_camera_poses=camera_poses_for(raw_solver_vector),
+            certificate=gauge_certificate,
+            excluded_points=held_points,
+            excluded_cameras=held_cameras,
+            complete_residual=residual,
+        )
+        gauge_correction["candidate_observability"] = candidate_observability
+        if canonical_vector is None:
+            return attach_diagnostic_errors({
+                "applied": False, "reason": "gauge_canonicalization_rejected",
+                "image_pose_observability": image_pose_observability,
+                "gauge_correction": gauge_correction,
+                "evaluations": int(result.nfev),
+                **raw_optimizer_report,
+                **solver_metadata("precise_lsmr" if precise_inner_solve else "legacy_defaults", inner_options),
+            })
+        gauge_correction["objective_partitions"] = {
+            "selected_raw_cost": objective(optimized_residual(raw_solver_vector)),
+            "selected_canonical_cost": objective(optimized_residual(canonical_vector)),
+            "excluded_raw_cost": objective(held_out_residual(camera_poses_for(raw_solver_vector))),
+            "excluded_canonical_cost": objective(held_out_residual(camera_poses_for(canonical_vector))),
+        }
+        result.x = canonical_vector
     result_cameras = camera_poses_for(result.x)
     result_points = result.x[point_offset:point_limit].reshape(-1, 3)
     after = objective(optimized_residual(result.x, result_cameras, result_points))
@@ -2237,6 +2315,9 @@ def local_bundle_adjustment(
             inner_options,
         ),
     }
+    if gauge_correction is not None:
+        report["gauge_correction"] = gauge_correction
+        report.update(raw_optimizer_report)
     result_is_finite = bool(np.isfinite(result.x).all())
     poses = points = None
     if result_is_finite:
@@ -2320,6 +2401,10 @@ def local_bundle_adjustment(
             "invalid_report_fields": invalid_report_fields,
             "acceptance": "pending",
         }
+        if raw_solver_vector is not None:
+            solved_payload["result"]["raw_solver_x"] = _diagnostic_vector(raw_solver_vector)
+            solved_payload["result"]["x_role"] = "canonical_candidate_vector"
+            solved_payload["result"]["optimizer_metadata_role"] = "raw_solver_vector"
         emit_diagnostic("solved", solved_payload)
     if not result_is_finite:
         return attach_diagnostic_errors(report)

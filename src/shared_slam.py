@@ -167,11 +167,18 @@ class MappingConfig:
     stereo_retained_source_observations: bool = False
     stereo_physical_match_pool: bool = False
     bundle_solver_accuracy: str = "default"
+    stereo_bundle_gauge_mode: str = "veto"
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
         if self.bundle_solver_accuracy not in ("default", "precise"):
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
+        if self.stereo_bundle_gauge_mode not in ("veto", "canonical_two_bridge"):
+            raise ValueError("Invalid stereo bundle gauge mode")
+        if self.stereo_bundle_gauge_mode != "veto" and (
+                self.stereo_owned_image_bundle or self.stereo_source_history_bundle
+                or self.stereo_retained_source_observations):
+            raise ValueError("Gauge canonicalization requires the original stereo image model")
         if self.stereo_source_history_bundle and not self.stereo_owned_image_bundle:
             raise ValueError(
                 "stereo_source_history_bundle requires stereo_owned_image_bundle"
@@ -218,6 +225,9 @@ class SharedSlam:
         validate_feature_budget(self.config.features)
         if self.config.bundle_solver_accuracy not in ("default", "precise"):
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
+        if (getattr(self.config, "stereo_bundle_gauge_mode", "veto") != "veto"
+                and stereo is None):
+            raise ValueError("Gauge canonicalization requires calibrated stereo")
         if self.config.stereo_depth_policy not in ('supported', 'verified_fallback', 'verified_all'):
             raise ValueError('Invalid stereo depth policy')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
@@ -5383,6 +5393,8 @@ class SharedSlam:
                         "optimized": self.performance.cpu_optimizations,
                         "solver_accuracy": self.config.bundle_solver_accuracy,
                     }
+                    if getattr(self.config, "stereo_bundle_gauge_mode", "veto") != "veto":
+                        bundle_kwargs["gauge_mode"] = self.config.stereo_bundle_gauge_mode
                     if diagnostic_capture:
                         diagnostic_inputs = {
                             "window_keyframe_ids": [],

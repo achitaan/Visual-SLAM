@@ -89,7 +89,8 @@ def _mapping_config_from_args(args):
         stereo_owned_image_bundle=args.stereo_owned_image_bundle,
         stereo_source_history_bundle=args.stereo_source_history_bundle,
         stereo_retained_source_observations=args.stereo_retained_source_observations,
-        bundle_solver_accuracy=args.bundle_solver_accuracy)
+        bundle_solver_accuracy=args.bundle_solver_accuracy,
+        stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
 
 
 def main():
@@ -130,6 +131,8 @@ def main():
                         help='Retain source-image constraints using the existing anchored camera model')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
+    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
+                        help='Experimental finite gauge convention for certified two-bridge stereo graphs')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
@@ -173,6 +176,8 @@ def main():
         parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
     if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
         parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
+    if args.stereo_bundle_gauge_mode != 'veto' and not args.stereo:
+        parser.error('--stereo-bundle-gauge-mode canonical_two_bridge requires --stereo')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
         parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
     if args.bundle_diagnostics_frames is not None:

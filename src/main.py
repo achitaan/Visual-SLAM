@@ -101,6 +101,8 @@ def _mapping_config_from_args(args):
                          stereo_retained_source_observations=args.stereo_retained_source_observations,
                          stereo_mapping_observation_retention=getattr(
                              args, 'stereo_mapping_observation_retention', False),
+                          stereo_map_depth_policy=getattr(
+                              args, 'stereo_map_depth_policy', 'inherit'),
                          bundle_solver_accuracy=args.bundle_solver_accuracy,
                          stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
 
@@ -118,6 +120,8 @@ def main() -> None:
     parser.add_argument("--slam", action="store_true")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
     parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+                        help='Map geometry source only; verified uses full-range right-image correspondences')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
@@ -155,6 +159,8 @@ def main() -> None:
         parser.error('--features other than the default requires --slam')
     if args.stereo_depth_policy != 'supported' and not (args.slam and args.stereo):
         parser.error('--stereo-depth-policy verification requires --slam --stereo')
+    if args.stereo_map_depth_policy != 'inherit' and not (args.slam and args.stereo):
+        parser.error('--stereo-map-depth-policy verified requires --slam --stereo')
     if args.stereo_pose_arbitration and not (args.slam and args.stereo):
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
     if args.stereo_raw_reference_retry and not (args.slam and args.stereo):

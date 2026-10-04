@@ -91,6 +91,7 @@ def _mapping_config_from_args(args):
         stereo_retained_source_observations=args.stereo_retained_source_observations,
         stereo_mapping_observation_retention=getattr(
             args, 'stereo_mapping_observation_retention', False),
+        stereo_map_depth_policy=getattr(args, 'stereo_map_depth_policy', 'inherit'),
         bundle_solver_accuracy=args.bundle_solver_accuracy,
         stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
 
@@ -119,6 +120,8 @@ def main():
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
     parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+                        help='Map geometry source only; verified uses full-range right-image correspondences')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-physical-match-pool', action='store_true',
@@ -168,6 +171,8 @@ def main():
         parser.error(str(error))
     if not args.stereo and args.stereo_depth_policy != 'supported':
         parser.error('--stereo-depth-policy verification requires --stereo')
+    if not args.stereo and args.stereo_map_depth_policy != 'inherit':
+        parser.error('--stereo-map-depth-policy verified requires --stereo')
     if args.stereo_pose_arbitration and not args.stereo:
         parser.error('--stereo-pose-arbitration requires --stereo')
     if args.stereo_physical_match_pool and not (args.stereo and args.stereo_pose_arbitration):

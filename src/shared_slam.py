@@ -160,6 +160,7 @@ class MappingConfig:
     retrieval_candidates: int = 8
     stereo_feature_contrast_threshold: float = 0.02
     stereo_depth_policy: str = "supported"
+    stereo_map_depth_policy: str = "inherit"
     stereo_pose_arbitration: bool = False
     stereo_raw_reference_retry: bool = False
     stereo_owned_image_bundle: bool = False
@@ -176,6 +177,8 @@ class MappingConfig:
             raise ValueError("bundle_solver_accuracy must be 'default' or 'precise'")
         if self.stereo_bundle_gauge_mode not in ("veto", "canonical_two_bridge"):
             raise ValueError("Invalid stereo bundle gauge mode")
+        if self.stereo_map_depth_policy not in ("inherit", "verified"):
+            raise ValueError("stereo_map_depth_policy must be 'inherit' or 'verified'")
         if self.stereo_bundle_gauge_mode != "veto" and (
                 self.stereo_owned_image_bundle or self.stereo_source_history_bundle
                 or self.stereo_retained_source_observations):
@@ -236,6 +239,11 @@ class SharedSlam:
             raise ValueError("Gauge canonicalization requires calibrated stereo")
         if self.config.stereo_depth_policy not in ('supported', 'verified_fallback', 'verified_all'):
             raise ValueError('Invalid stereo depth policy')
+        if getattr(self.config, 'stereo_map_depth_policy', 'inherit') not in ('inherit', 'verified'):
+            raise ValueError("stereo_map_depth_policy must be 'inherit' or 'verified'")
+        if (stereo is None
+                and getattr(self.config, 'stereo_map_depth_policy', 'inherit') != 'inherit'):
+            raise ValueError('Verified map stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_depth_policy != 'supported':
             raise ValueError('Verified stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_pose_arbitration:
@@ -285,6 +293,7 @@ class SharedSlam:
         self.stereo_search_config = StereoSearchConfig()
         self.current_left_gray = self.current_right_gray = None
         self.stereo_depth_verification = {}
+        self.stereo_map_depth_verification = {}
         self.map = MapState(metric=stereo is not None)
         # Low-contrast road and surface texture can supply spatial support that
         # high-contrast repeated edges lack. Pose acceptance remains unchanged.
@@ -491,6 +500,85 @@ class SharedSlam:
                         right_u[accepted] = measured[good]
         return points, right_u
 
+    def _measure_map_stereo_pixels(self, pixels):
+        """Measure map-only stereo geometry from the actual left/right images.
+
+        This deliberately bypasses the frontend depth policy without changing
+        it. It is used only when ``stereo_map_depth_policy='verified'`` and
+        applies the same calibrated disparity/depth domain and photometric
+        verifier as the existing verified frontend mode.
+        """
+        raw = np.asarray(pixels)
+        if raw.ndim != 2 or raw.shape[1] != 2:
+            raise ValueError('Map stereo pixels must have shape (N, 2)')
+        points = np.full((len(raw), 3), np.nan)
+        right_u = np.full(len(raw), np.nan)
+        counters = self.stereo_map_depth_verification
+        counters['queries'] = counters.get('queries', 0) + int(len(raw))
+        if not len(raw):
+            return points, right_u
+        if np.iscomplexobj(raw) or not np.issubdtype(raw.dtype, np.number):
+            counters['invalid_pixels'] = counters.get('invalid_pixels', 0) + int(len(raw))
+            return points, right_u
+        with np.errstate(over='ignore', invalid='ignore'):
+            pixels = raw.astype(float, copy=False)
+        finite = np.isfinite(pixels).all(axis=1)
+        if self.stereo is None:
+            counters['missing_stereo'] = counters.get('missing_stereo', 0) + int(len(raw))
+            return points, right_u
+        if self.current_left_gray is None or self.current_right_gray is None:
+            counters['missing_images'] = counters.get('missing_images', 0) + int(len(raw))
+            return points, right_u
+        if (np.ndim(self.current_left_gray) != 2
+                or np.ndim(self.current_right_gray) != 2
+                or np.shape(self.current_left_gray) != np.shape(self.current_right_gray)):
+            counters['invalid_images'] = counters.get('invalid_images', 0) + int(len(raw))
+            return points, right_u
+        height, width = self.current_left_gray.shape
+        inside = finite & (pixels[:, 0] >= 0) & (pixels[:, 0] <= width - 1)
+        inside &= (pixels[:, 1] >= 0) & (pixels[:, 1] <= height - 1)
+        counters['invalid_pixels'] = counters.get('invalid_pixels', 0) + int((~finite).sum())
+        counters['out_of_bounds'] = counters.get('out_of_bounds', 0) + int((finite & ~inside).sum())
+        ids = np.flatnonzero(inside)
+        if not len(ids):
+            return points, right_u
+        raw_q = np.asarray(self.stereo.Q)
+        if (np.iscomplexobj(raw_q) or raw_q.shape != (4, 4)
+                or not np.issubdtype(raw_q.dtype, np.number)
+                or not np.isfinite(raw_q).all()):
+            counters['invalid_calibration'] = counters.get('invalid_calibration', 0) + int(len(ids))
+            return points, right_u
+        q = raw_q.astype(float, copy=True)
+        if (q[3, 2] <= 0 or q[2, 3] <= 0 or not np.isfinite(q[3, 3])
+                or not np.isfinite(self.inverse_K).all()):
+            counters['invalid_calibration'] = counters.get('invalid_calibration', 0) + int(len(ids))
+            return points, right_u
+        q32, q23 = float(q[3, 2]), float(q[2, 3])
+        bf, offset = q23 / q32, -float(q[3, 3]) / q32
+        bounds = (max(0., offset + bf / 100.), min(96., offset + bf / .1))
+        if not np.isfinite(bounds).all() or not bounds[0] < bounds[1]:
+            counters['invalid_calibration'] = counters.get('invalid_calibration', 0) + int(len(ids))
+            return points, right_u
+        measured, result_counts = self.profile.call(
+            'stereo_map_depth_verification', verify_stereo_depth_candidates,
+            self.current_left_gray, self.current_right_gray, pixels[ids],
+            self.stereo_search_config, bounds)
+        for key, value in result_counts.items():
+            counters[key] = counters.get(key, 0) + int(value)
+        disparity = pixels[ids, 0] - measured
+        denominator = q[3, 2] * disparity + q[3, 3]
+        depth = np.divide(q[2, 3], denominator,
+                          out=np.full(len(ids), np.nan), where=denominator > 0)
+        valid = np.isfinite(measured) & (disparity > 0.) & (disparity < 96.)
+        valid &= np.isfinite(depth) & (depth > .1) & (depth < 100.)
+        accepted = ids[valid]
+        rays = np.c_[pixels[accepted], np.ones(len(accepted))] @ self.inverse_K.T
+        points[accepted] = rays * depth[valid, None]
+        right_u[accepted] = measured[valid]
+        counters['accepted_metric_points'] = counters.get('accepted_metric_points', 0) + int(len(accepted))
+        counters['rejected_metric_points'] = counters.get('rejected_metric_points', 0) + int(len(ids) - len(accepted))
+        return points, right_u
+
     def _extract(self, image, right):
         if image is None:
             raise ValueError("Missing image")
@@ -603,6 +691,18 @@ class SharedSlam:
             points = np.vstack([points, np.full((len(appended_pixels), 3), np.nan)])
             right_u = np.r_[right_u, np.full(len(appended_pixels), np.nan)]
 
+        # Keep frontend depth_points and all pose/reference inputs untouched.
+        # The opt-in provider is only for map landmark initialization and map
+        # Observation right coordinates.
+        map_depth_verified = (
+            self.stereo is not None
+            and getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified'
+        )
+        if map_depth_verified:
+            map_points, map_right_u = self._measure_map_stereo_pixels(pixels)
+        else:
+            map_points, map_right_u = points, right_u
+
         # Propagate a single existing identity across every SIFT orientation
         # row at that exact pixel. Conflicting IDs are ambiguous: leave that
         # pixel group unlinked and do not create a replacement landmark.
@@ -670,11 +770,14 @@ class SharedSlam:
         self.map.keyframes[ident] = frame
         tracked_pixels = {lid: pixel for lid, pixel in self.accepted_tracks}
         measured_rights = {}
-        if self.performance.cpu_optimizations and self.stereo is not None and self.current_disparity is not None:
+        if (self.performance.cpu_optimizations and self.stereo is not None
+                and self.current_disparity is not None):
             features = [f for f, lid in associations.items() if lid in self.map.landmarks]
             if features:
                 observations = np.asarray([tracked_pixels.get(associations[f], pixels[f]) for f in features])
-                _, measured = self._measure_stereo_pixels(observations)
+                measure = (self._measure_map_stereo_pixels if map_depth_verified
+                           else self._measure_stereo_pixels)
+                _, measured = measure(observations)
                 measured_rights = dict(zip(features, measured))
         for feature, lid in associations.items():
             if lid in self.map.landmarks:
@@ -688,7 +791,15 @@ class SharedSlam:
                                         np.asarray(pixels[feature], np.float32))
             measured_right = (float(right_u[feature])
                               if same_pixel and np.isfinite(right_u[feature]) else None)
-            if self.stereo is not None and self.current_disparity is not None:
+            if map_depth_verified:
+                # The map observation must use the actual accepted flow pixel,
+                # not a nearby detector row's right coordinate.
+                if feature in measured_rights:
+                    measured = [measured_rights[feature]]
+                else:
+                    _, measured = self._measure_map_stereo_pixels(observed_pixel[None])
+                measured_right = float(measured[0]) if np.isfinite(measured[0]) else None
+            elif self.stereo is not None and self.current_disparity is not None:
                 # The disparity at a nearby detector feature is a different
                 # observation. Re-measure at the accepted flow coordinate.
                 if feature in measured_rights:
@@ -704,8 +815,8 @@ class SharedSlam:
                 if group_id in blocked_groups or any(
                         frame.landmark_ids[feature] >= 0 for feature in members):
                     continue
-                values = points[members]
-                rights = right_u[members]
+                values = map_points[members]
+                rights = map_right_u[members]
                 finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
                 if not finite.all() or not np.allclose(values, values[0], rtol=1e-6, atol=1e-6) \
                         or not np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6):
@@ -1220,12 +1331,16 @@ class SharedSlam:
             raise ValueError('Missing image')
         self.current_gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
         self.stereo_depth_verification = {}
+        self.stereo_map_depth_verification = {}
         if (self.config.stereo_depth_policy in ('verified_fallback', 'verified_all')
-                and self.stereo is not None):
-            # Refresh before extraction, including diagnostic cache hits.
-            self.current_left_gray = np.asarray(self.current_gray, np.float32)
-            self.current_right_gray = (None if right is None else np.asarray(
-                cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right, np.float32))
+                or getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified'):
+            if self.stereo is not None:
+                # Map-only verification also needs the original grayscale pair;
+                # frontend extraction and reference measurements retain their
+                # configured policy.
+                self.current_left_gray = np.asarray(self.current_gray, np.float32)
+                self.current_right_gray = (None if right is None else np.asarray(
+                    cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right, np.float32))
 
     @staticmethod
     def _physical_pixel_key(pixel):
@@ -4961,13 +5076,16 @@ class SharedSlam:
                     )
                     status = "tracking"
                     info["tracking_ok"] = True
-                    self.accepted_tracks = self._unique_physical_tracks([
+                    initial_tracks = [
                         (
                             int(self.map.keyframes[anchor].landmark_ids[j]),
                             pixels[j].copy(),
                         )
                         for j in valid
-                    ])
+                    ]
+                    if getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified':
+                        initial_tracks = [(lid, pixel) for lid, pixel in initial_tracks if lid >= 0]
+                    self.accepted_tracks = self._unique_physical_tracks(initial_tracks)
                     inlier_features = set(valid.tolist())
             elif self.initial is None:
                 self.initial = (index, pixels.copy(), desc.copy())
@@ -6062,6 +6180,9 @@ class SharedSlam:
         )
         if self.config.stereo_depth_policy in ('verified_fallback', 'verified_all'):
             info['stereo_depth_verification'] = dict(self.stereo_depth_verification)
+        if getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified':
+            info['stereo_map_depth_source'] = 'verified_right_image_correspondence'
+            info['stereo_map_depth_verification'] = dict(self.stereo_map_depth_verification)
         if trace_capture:
             try:
                 ledger = self._tracking_trace_reference_context(index, arbitration_report, info)

@@ -1,0 +1,190 @@
+{
+  "rows": [
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Previous stereo VO",
+      "ate_m": 2.102676301495059,
+      "translation_percent": 3.617194209195025,
+      "rotation_deg_per_m": 0.01669563970127151,
+      "lost_frames": 0,
+      "processing_fps": 2.048438280577629,
+      "processing_seconds": 62.48662759998115,
+      "peak_memory_mb": 238.2890625
+    },
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Inherited map depth",
+      "ate_m": 2.5056527198503287,
+      "translation_percent": 4.162299921038861,
+      "rotation_deg_per_m": 0.01533315623033498,
+      "lost_frames": 0,
+      "processing_fps": 1.4970147998633023,
+      "processing_seconds": 85.5034967000247,
+      "peak_memory_mb": 1080.3125
+    },
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Verified map depth",
+      "ate_m": 2.435419378672446,
+      "translation_percent": 3.9873476739968883,
+      "rotation_deg_per_m": 0.011651286014103413,
+      "lost_frames": 0,
+      "processing_fps": 1.5838934743722621,
+      "processing_seconds": 80.81351560004987,
+      "peak_memory_mb": 1059.828125
+    }
+  ],
+  "accuracy_delta_percent": {
+    "previous_vo": {
+      "ate_rmse_m": 15.824740923783542,
+      "translation_percent": 10.233165359518747,
+      "rotation_deg_per_m": -30.213599343449705
+    },
+    "guard": {
+      "ate_rmse_m": -2.802995827054522,
+      "translation_percent": -4.203259024119211,
+      "rotation_deg_per_m": -24.01247441115475
+    }
+  },
+  "focused_accuracy_loss_gate": false,
+  "bundle_checks": {
+    "inherit": {
+      "applied_frames": [
+        11,
+        36,
+        43,
+        49,
+        55,
+        61,
+        67,
+        73,
+        78,
+        83,
+        89,
+        93,
+        96,
+        100,
+        105,
+        108,
+        112,
+        117,
+        123
+      ],
+      "rejected_reasons": {
+        "unobservable_image_pose_graph": 3
+      }
+    },
+    "verified": {
+      "applied_frames": [
+        8,
+        14,
+        33,
+        39,
+        45,
+        52,
+        57,
+        62,
+        66,
+        71,
+        76,
+        81,
+        86,
+        90,
+        94,
+        97,
+        102,
+        106,
+        108,
+        112,
+        117,
+        122,
+        127
+      ],
+      "rejected_reasons": {
+        "unobservable_image_pose_graph": 3
+      }
+    }
+  },
+  "default_inherit_geometry_matches_preserved_e011": {
+    "poses.txt": true,
+    "sparse.ply": true
+  },
+  "release_ready": false,
+  "source_fingerprint": "e3ec51c41e7f36c2735341ce0b7d97a0d71f98a6db26b7d4bd96f1128b84a386",
+  "created_utc": "2026-10-04T15:29:25.889063+00:00",
+  "control_export_recovery": {
+    "original_worker_exit_code": 1,
+    "reason": "Windows denied final atomic evaluation-report replacement after all 128 frames were exported. Existing JSON and pending JSON agreed except total wall time. Original failed attempt retained; control report/poses validated before reuse.",
+    "processing_timings": "Single-run cached control and new candidate diagnostics; no controlled performance claim."
+  },
+  "validation": {
+    "backend_tests": 669,
+    "targeted_map_depth_tests": 16,
+    "backend_source_unchanged": true,
+    "default_geometry_matches_retained_control": {
+      "poses.txt": true,
+      "sparse.ply": true
+    },
+    "04_expansion": "not admitted after 01 failed the previous-VO accuracy gate",
+    "release_ready": false
+  },
+  "synthetic_covariance_control": {
+    "actual_solves": 70,
+    "stationary_matched_groups": 16,
+    "total_groups": 24,
+    "outcome": "Exact linear GLS mechanism passed; nonlinear pose outcomes mixed. No measured sensor covariance, NCC independence, production weighting change or dataset accuracy claim."
+  },
+  "map_depth_measurements": {
+    "frames": [
+      0,
+      4,
+      8,
+      14,
+      21,
+      26,
+      29,
+      33,
+      39,
+      45,
+      52,
+      57,
+      62,
+      66,
+      71,
+      76,
+      81,
+      86,
+      90,
+      94,
+      97,
+      102,
+      106,
+      108,
+      112,
+      117,
+      122,
+      127
+    ],
+    "source": "verified_right_image_correspondence",
+    "counter_totals": {
+      "queries": 44493,
+      "candidates": 44493,
+      "verified": 22582,
+      "ambiguous": 2650,
+      "correlation": 15298,
+      "unrefinable_peak": 2824,
+      "patch_bounds": 584,
+      "round_trip": 243,
+      "low_texture": 216,
+      "refined_correlation": 44,
+      "accepted_metric_points": 22582,
+      "rejected_metric_points": 21911,
+      "insufficient_alternatives": 4,
+      "search_bounds": 46,
+      "low_target_texture": 2
+    }
+  }
+}

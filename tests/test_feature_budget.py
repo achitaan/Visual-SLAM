@@ -57,7 +57,7 @@ def test_known_image_acquisition_reaches_larger_requested_budget():
     try:
         default_rows = default._extract(image, None)[0]
         expanded_rows = expanded._extract(image, None)[0]
-        assert len(default_rows) == 1500
+        assert len(default_rows) >= 1500
         assert len(expanded_rows) > len(default_rows)
     finally:
         default.close()

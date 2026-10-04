@@ -17,6 +17,26 @@ The median fitting pool grew from 122 to 201 correspondences, while median track
 
 The curves remove each trajectory's initial translation without fitting rotation or scale. They differ from the SE(3)-aligned ATE table. The original VO curve comes from a separate preserved run on the same images; the current 1,500 control reproduces its earlier shared-SLAM trajectory and sparse map byte for byte.
 
+## Verified motion versus final trajectory
+
+Post-run evaluation also scores the immutable, independently verified stereo motion measurements chained from the origin. Both arms contain all 127 consecutive frame increments, with accepted endpoints and bidirectional geometric verification. These are **diagnostic chains**: 16 measurements in each arm accompany a map-selected pose, so they do not reproduce the tracker's selected trajectory. The saved edge schema does not independently establish every measurement's geometry revision.
+
+| Trajectory | SE(3) ATE m | Translation % | Rotation deg/m |
+|---|---:|---:|---:|
+| Original stereo VO | 2.102676 | 3.617194 | 0.016696 |
+| Verified motion chain, 1,500 | 2.067811 | 3.503520 | 0.020051 |
+| Final shared SLAM, 1,500 | 2.588752 | 4.402350 | 0.012833 |
+| Verified motion chain, 3,000 | 2.339661 | 3.796033 | 0.019010 |
+| Final shared SLAM, 3,000 | 2.766082 | 4.415463 | 0.014370 |
+
+The 1,500-feature final trajectory has 25.2% higher ATE than its diagnostic motion chain, while rotation drift is 36.0% lower. Map pose selection and local bundle adjustment have a combined translation/rotation tradeoff; this comparison does not isolate either operation. Loops were off, so global loop optimization cannot explain these differences. Disabling map correction would discard the observed orientation benefit and is not established as a general repair.
+
+All five candidates were frozen before reference evaluation. Evaluation uses the same calibration and input coverage, SE(3) alignment with scale fixed to one, and eight overlapping KITTI segments. The curves below use each trajectory's initial camera frame without fitting alignment; their values therefore differ from the aligned ATE table.
+
+The [five-trajectory metrics](FEATURE_BUDGET_MOTION_METRICS.csv) come from a separate post-run evaluator, rather than the two-run feature-budget comparison. Its retained report SHA-256 is `5098126599e2f6d10a3affada1a5207d082599bcf8eb07f950210a11dd626ab2`.
+
+![Fixed-origin position and rotation errors](plots/feature-budget-01-motion-errors.png)
+
 ![Matched metrics, runtime and memory](plots/feature-budget-01-metrics.png)
 
 ## Reproduction

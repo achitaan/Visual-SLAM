@@ -6,6 +6,7 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 from scipy.sparse import lil_matrix
 from mapping_geometry import project, right_pixel
+from pose_observability import original_image_pose_observability
 
 
 def _diagnostic_array(value):
@@ -2150,6 +2151,56 @@ def local_bundle_adjustment(
             "maxiter": max(500, len(initial)),
         }
         solver_options["tr_options"] = dict(inner_options)
+    image_pose_observability = {
+        "status": "skipped",
+        "reason": "augmented_model_scope_not_supported",
+        "scope": "original_image_world_chart_only",
+        "pose_columns": int(6 * len(free_camera_indices)),
+        "rank": None,
+        "nullity": None,
+        "singular_values": [],
+        "tolerance": None,
+        "per_point_rank_histogram": {},
+        "active_row_count": 0,
+    }
+    if not state.metric:
+        image_pose_observability.update(
+            reason="monocular_scope_not_validated"
+        )
+    elif not provider_enabled and not source_history_enabled and not retention_requested:
+        image_pose_observability = original_image_pose_observability(
+            camera_poses_for(initial),
+            free_camera_indices,
+            initial[free_offsets[:, :3]] if len(free_offsets) else np.empty((0, 3)),
+            initial[point_offset:point_limit].reshape(-1, 3),
+            record_cameras,
+            record_points,
+            measured_pixels,
+            measured_right,
+            dimension_mask,
+            held_points,
+            held_cameras,
+            held_pixels,
+            held_right,
+            held_dimension_mask,
+            matrix,
+            baseline,
+            disparity_offset,
+            variable_scale[free_offsets] if len(free_offsets) else np.empty((0, 6)),
+            variable_scale[point_offset:point_limit].reshape(-1, 3),
+        )
+        if image_pose_observability["status"] != "observable":
+            guard_reason = (
+                "invalid_image_pose_geometry"
+                if image_pose_observability["status"] == "invalid_geometry"
+                else "unobservable_image_pose_graph"
+            )
+            return attach_diagnostic_errors({
+                "applied": False,
+                "reason": guard_reason,
+                "image_pose_observability": image_pose_observability,
+                **solver_metadata("not_run"),
+            })
     result = least_squares(residual, initial, **solver_options)
     result_cameras = camera_poses_for(result.x)
     result_points = result.x[point_offset:point_limit].reshape(-1, 3)
@@ -2180,6 +2231,7 @@ def local_bundle_adjustment(
         "fixed_keyframes": sorted(set(base) - set(free)),
         "observation_components": len(components),
         "unsupported_local_cameras": sorted(unsupported),
+        "image_pose_observability": image_pose_observability,
         **solver_metadata(
             "precise_lsmr" if precise_inner_solve else "legacy_defaults",
             inner_options,

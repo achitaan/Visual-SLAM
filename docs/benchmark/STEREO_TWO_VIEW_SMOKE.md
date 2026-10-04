@@ -10,7 +10,7 @@ Validation: 225 focused checks and all 727 backend tests pass. The first focused
 
 A fresh KITTI 01 frame-zero smoke completed 12 frames with finite poses and sparse map, no lost frames, 11 accepted refinements, and 0.612 diagnostic FPS. Refinement consumed 12.31 seconds across 11 calls. This is CPU numerical refinement alongside CUDA matching, not real-time operation.
 
-There is no new matched accuracy verdict. This prefix has no valid drift segments, and earlier scores are not reused as validation of the new estimator. The next required run is a fresh frozen previous-VO/shared-control/candidate comparison on the retained 128-frame failure reproduction, followed by wider data only if the gates pass.
+The later [128-frame matched comparison](STEREO_TWO_VIEW_128.md) failed the accuracy gate. The smoke remains runtime/contract evidence only; it has no valid drift segments. The sparse refinement stays disabled.
 
 ![Actual input, trajectory, error and sparse map](figures/two-view-01-smoke.png)
 

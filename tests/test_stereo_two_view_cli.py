@@ -54,3 +54,34 @@ def test_valid_refinement_mode_reaches_normal_input_validation(monkeypatch, caps
     error = capsys.readouterr().err
     assert '--stereo-two-view-refinement requires' not in error
     assert '--stereo requires --data-root' in error
+
+
+@pytest.mark.parametrize('entrypoint', ['main', 'evaluator'])
+def test_dense_solver_requires_refinement_before_input_open(entrypoint, monkeypatch, capsys, tmp_path):
+    monkeypatch.syspath_prepend(str(ROOT / 'scripts'))
+    relative = 'src/main.py' if entrypoint == 'main' else 'scripts/evaluate_shared_slam.py'
+    entry = load_entrypoint('two_view_dense_' + entrypoint, relative)
+    args = ['entry', '--stereo', '--stereo-pose-arbitration',
+            '--stereo-two-view-solver', 'dense_exact']
+    if entrypoint == 'main':
+        args += ['--slam']
+    else:
+        args += ['--output', str(tmp_path / 'run')]
+    monkeypatch.setattr(sys, 'argv', args)
+    with pytest.raises(SystemExit) as caught:
+        entry.main()
+    assert caught.value.code == 2
+    error = capsys.readouterr().err
+    assert '--stereo-two-view-solver dense_exact requires --stereo-two-view-refinement' in error
+
+
+def test_solver_mapping_config_default_and_scope():
+    from shared_slam import MappingConfig
+    assert MappingConfig().stereo_two_view_solver == 'sparse_lsmr'
+    with pytest.raises(ValueError, match='requires'):
+        MappingConfig(stereo_two_view_solver='dense_exact')
+    with pytest.raises(ValueError):
+        MappingConfig(stereo_two_view_solver='automatic')
+    config = MappingConfig(stereo_pose_arbitration=True, stereo_two_view_refinement=True,
+                           stereo_two_view_solver='dense_exact')
+    assert config.stereo_two_view_solver == 'dense_exact'

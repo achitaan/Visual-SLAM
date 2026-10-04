@@ -8,12 +8,14 @@ Validation: 54 focused tests and all 674 backend tests pass on the same source f
 
 ## Current experimental limits
 
-The [map-depth comparison](benchmark/STEREO_MAP_DEPTH.md) remains the latest executed accuracy comparison. On the 128-frame sequence 01 prefix, verified map depth reduces position error by 2.8% against the shared control, but position error remains 15.8% worse than previous stereo VO. No full-sequence reliability conclusion follows from this prefix.
+The [map-depth comparison](benchmark/STEREO_MAP_DEPTH.md) is retained separately from the later [two-view comparison](benchmark/STEREO_TWO_VIEW_128.md). On the 128-frame sequence 01 prefix, verified map depth reduces position error by 2.8% against the shared control, but position error remains 15.8% worse than previous stereo VO. No full-sequence reliability conclusion follows from this prefix.
 
 Saved-edge accounting separates raw relative motion from the corrected exported trajectory. It points to a position/rotation tradeoff during mapping corrections, alongside an earlier raw-motion rotation difference. Reconstructing those saved edges is a diagnostic, not a newly executed tracker benchmark.
 
 A strict nonworsening gate on fixed-depth reserved-image cost was rejected: it would reject all nine accepted bundle updates in a retained beneficial sequence 04 run. That conditional prediction cost is not the same objective as joint camera/landmark optimization.
 
-Opt-in two-view stereo refinement over the pose and full XYZ landmark variables is now implemented using the original measured image endpoints. It retains forward/reverse geometric verification, unchanged arbitration holdouts and observability checks. Its [tests and short runtime smoke](benchmark/STEREO_TWO_VIEW_SMOKE.md) pass; a fresh frozen accuracy comparison against both controls remains required. It defaults off.
+Opt-in two-view stereo refinement over the pose and full XYZ landmark variables is now implemented using the original measured image endpoints. It retains forward/reverse geometric verification, unchanged arbitration holdouts and observability checks. Its [tests and short runtime smoke](benchmark/STEREO_TWO_VIEW_SMOKE.md) pass, but the fresh frozen 128-frame comparison fails the accuracy gate and is slower. It defaults off. Local-BA-off position improves against previous VO while rotation regresses; this is a diagnostic tradeoff, not a validated repair.
 
 Speed, accuracy and streaming remain separate acceptance gates. CUDA matching has an earlier short matched speed result with identical trajectories; the latest shared pipeline's diagnostic 1.58 FPS does not establish sustained 10 FPS operation, bounded latency or dropout handling. Main remains unchanged, and validation scheduling stays paused.
+
+The optional [dense-exact comparison](benchmark/STEREO_TWO_VIEW_EXACT_128.md) subsequently improves prefix ATE and rotation against previous VO, with a small translation regression and a larger rotation regression against the shared control. It remains slower and experimental. Seventy attempts fall back after a depth-domain rejection; solver convergence and broader robustness remain unresolved.

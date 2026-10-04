@@ -1,0 +1,210 @@
+{
+  "source_fingerprint": "9d9eb31269a6e84621d65d9d11faddcd75cef7d8775539b91db2c871b35ae152",
+  "source_base_head": "f43a8109cdad932b8129dad4a16648bbb27071d2",
+  "source_patch_sha256": "aea526134daf8dde7405f396a6fc67aa5caf19e282b7d153625baeace3731d7d",
+  "sensor": "stereo",
+  "sequence": "01",
+  "frames": 128,
+  "coverage": "diagnostic prefix",
+  "ground_truth_used_for_estimation": false,
+  "configuration": {
+    "baseline": {
+      "feature_extractor": "preserved_stereo_defaults",
+      "loop_mode": "off"
+    },
+    "off": {
+      "features": 1500,
+      "min_inliers": 15,
+      "keyframe_interval": 10,
+      "max_landmarks": 2000,
+      "bundle_window": 5,
+      "bundle_enabled": true,
+      "loop_mode": "off",
+      "retrieval_candidates": 8,
+      "stereo_feature_contrast_threshold": 0.02,
+      "stereo_depth_policy": "verified_fallback",
+      "stereo_map_depth_policy": "verified",
+      "stereo_pose_arbitration": true,
+      "stereo_raw_reference_retry": true,
+      "stereo_owned_image_bundle": false,
+      "stereo_source_history_bundle": false,
+      "stereo_retained_source_observations": false,
+      "stereo_mapping_observation_retention": false,
+      "stereo_two_view_refinement": false,
+      "stereo_two_view_solver": "sparse_lsmr",
+      "stereo_physical_match_pool": false,
+      "bundle_solver_accuracy": "default",
+      "stereo_bundle_gauge_mode": "veto"
+    },
+    "on": {
+      "features": 1500,
+      "min_inliers": 15,
+      "keyframe_interval": 10,
+      "max_landmarks": 2000,
+      "bundle_window": 5,
+      "bundle_enabled": true,
+      "loop_mode": "off",
+      "retrieval_candidates": 8,
+      "stereo_feature_contrast_threshold": 0.02,
+      "stereo_depth_policy": "verified_fallback",
+      "stereo_map_depth_policy": "verified",
+      "stereo_pose_arbitration": true,
+      "stereo_raw_reference_retry": true,
+      "stereo_owned_image_bundle": false,
+      "stereo_source_history_bundle": false,
+      "stereo_retained_source_observations": false,
+      "stereo_mapping_observation_retention": false,
+      "stereo_two_view_refinement": true,
+      "stereo_two_view_solver": "dense_exact",
+      "stereo_physical_match_pool": false,
+      "bundle_solver_accuracy": "default",
+      "stereo_bundle_gauge_mode": "veto"
+    }
+  },
+  "rows": [
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Previous stereo VO",
+      "ate_m": 2.102676301495059,
+      "translation_percent": 3.617194209195025,
+      "rotation_deg_per_m": 0.01669563970127151,
+      "lost_frames": 0,
+      "native_processing_fps": 1.2886956335856663,
+      "native_processing_seconds": 99.32523760001641,
+      "end_to_end_fps": 1.247077162899992,
+      "end_to_end_seconds": 102.63999999995576,
+      "peak_memory_mb": 237.4140625
+    },
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Shared control",
+      "ate_m": 2.435419378672446,
+      "translation_percent": 3.9873476739968883,
+      "rotation_deg_per_m": 0.011651286014103413,
+      "lost_frames": 0,
+      "native_processing_fps": 1.0130221552558591,
+      "native_processing_seconds": 126.3545909000095,
+      "end_to_end_fps": 0.9143902160247098,
+      "end_to_end_seconds": 139.98399999999674,
+      "peak_memory_mb": 1047.5625
+    },
+    {
+      "sequence": "01",
+      "frames": 128,
+      "variant": "Dense-exact XYZ candidate",
+      "ate_m": 2.077285413795223,
+      "translation_percent": 3.6300800650102305,
+      "rotation_deg_per_m": 0.014620200508763788,
+      "lost_frames": 0,
+      "native_processing_fps": 0.5437079398448634,
+      "native_processing_seconds": 235.42050910001853,
+      "end_to_end_fps": 0.5213849287169042,
+      "end_to_end_seconds": 245.5,
+      "peak_memory_mb": 1023.3984375
+    }
+  ],
+  "accuracy_delta_percent": {
+    "previous_vo": {
+      "ate_rmse_m": -1.207550952173786,
+      "translation_percent": 0.3562389816518463,
+      "rotation_deg_per_m": -12.431025283503583
+    },
+    "guard": {
+      "ate_rmse_m": -14.705227691521571,
+      "translation_percent": -8.960031534660118,
+      "rotation_deg_per_m": 25.481431758405225
+    }
+  },
+  "activity": {
+    "refinement_reports": 128,
+    "accepted": 57,
+    "reasons": {
+      "independent_training_context_unavailable": 1,
+      "finite_capped_iterate_passed_all_geometry_gates": 47,
+      "all_declared_two_view_training_gates_passed": 10,
+      "depth_outside_declared_0.1_100m_domain": 70
+    },
+    "solver_statuses": {
+      "None": 71,
+      "0": 47,
+      "2": 10
+    },
+    "arbiter_choices": {
+      "map": 15,
+      "independent": 113
+    },
+    "candidate_pose_sources": {
+      "unavailable": 1,
+      "reserved_stereo_arbitration": 113,
+      "flow_assisted_map": 14
+    },
+    "control_pose_sources": {
+      "unavailable": 1,
+      "reserved_stereo_arbitration": 110,
+      "flow_assisted_map": 17
+    },
+    "control_applied_bundles": 23,
+    "candidate_applied_bundles": 26,
+    "candidate_refinement_stage": {
+      "calls": 127,
+      "inclusive_seconds": 123.00561009987723
+    },
+    "segment_counts": {
+      "baseline": 8,
+      "off": 8,
+      "on": 8
+    }
+  },
+  "focused_regression_gate_passed": false,
+  "no_worse_than_previous_vo_on_all_three_accuracy_metrics": false,
+  "baseline_only_5percent_accuracy_loss_gate_passed": true,
+  "release_ready": false,
+  "streaming_validated": false,
+  "official_performance_measurement": false,
+  "backend_tests": 745,
+  "focused_tests": 243,
+  "timing_window": "common supervisor: startup,initialization,estimation,exports,evaluation",
+  "source_sha256": {
+    "bundle_diagnostics.py": "d83cda819356ad57b3e4db6d03425e8648a5b0f3b7afac66d692b44ce392329b",
+    "bundle_gauge.py": "1baee03cafaa68b3c41a8e773467e79a83d4586547d0092d286e31d1b8ed6885",
+    "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+    "config.py": "0c363b09e433fb361c575bd70dc7a71e53cf06b3ed34bdc85f431778ae01f2e3",
+    "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+    "eval_kitti.py": "c1a1f9cd191e23823b29a84f8986520d128d63aa1455093cf20f7da93edb1b24",
+    "eval_pose_graph.py": "dbc7fee233a34e4ac26b5444b6dc33b961e454350806a7b1998fc5cf8729e10d",
+    "feature_cache.py": "0a31107a4c6192c2a352637cd9631da2f51fcdd708d1b746e3859f4344ec10ae",
+    "image_sequence.py": "e22fc1df133a9582679f852f098180fb9db7817593ff891fc39765e413504527",
+    "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+    "keyframe_retrieval.py": "b307ac24d2a6a429726a5913eba94321f656008f4a5af55673f12867c80554e8",
+    "kitti.py": "7079d1d68d11820e2404008e4787e724149ee1e4b80c20f4ef781810296a6917",
+    "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+    "local_bundle.py": "49a48b23b8777227ad956c4262060652c076603bcd3ade9610acd02201f2be6e",
+    "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "loop_geometry.py": "a35d29df709dc401c54ddb236c0042bbb96efec55b77c909a0ea1972fdceceb6",
+    "main.py": "5bbdffd2914d0eff2a67f2e98ab7c697386b9d6a68bab5e1b45641315e31771c",
+    "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+    "mapping_geometry.py": "92d7dd7fe4d2c8a253e957d69749edb008c5292c164370b28cb126acd864847c",
+    "metrics.py": "bbe036ecaf6f7639156c4095e3e8a256374a3c9c555b3207c062bcb57b02f71b",
+    "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+    "pose_graph.py": "868e106c61dbcc3d46b891a49475871abc485204a172363b6df3eb2726871b8c",
+    "pose_observability.py": "ed3f1240c6a05b33d57d95e1ff71034796bea5945b9a64cc21d2f187b566e052",
+    "reconstruction.py": "93926241c60f2c78fcc638fe2f01dc836e1ac7c73bc3f1b092827ff841ea53f3",
+    "shared_slam.py": "53bb23a044cdd31343a9e3bf49fe86ad21138fc0825afa02ebbacf2cbb732bcf",
+    "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+    "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+    "slam_state.py": "3f46300f48b6a8e590192a799657fad3ac2d2ebe84e433b4397264fb8d1ac471",
+    "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+    "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+    "stereo_depth.py": "ea91b05a94a22d37a3f61fe269a6e274bf9d1774d2393cefee9d4fb2fcf64f92",
+    "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+    "stereo_training_factors.py": "a84c5cfaad2600b0e39d283f66742544a87475b4388e6795af8e0dd11bd3ca98",
+    "stereo_two_view_bundle.py": "21531929af453943491e3112bd54af95b09ba5b5a1a2fa9dd63a4a8f0ec74571",
+    "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+    "tracking_diagnostics.py": "ef7063efe1a2211d3c544e2fe012d5c4795439ef8d4df7465842dbc647cdfeea",
+    "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+    "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+  },
+  "finite_exports": true
+}

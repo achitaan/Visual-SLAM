@@ -24,6 +24,7 @@ _MAX_TRANSLATION_M = 0.5
 _MAX_ROTATION_DEG = 1.5
 _MAX_NFEV = 15
 _HUBER_F_SCALE = 1.5
+DENSE_EXACT_MAX_JAC_ENTRIES = 8_000_000
 
 
 def _finite_array(name, value, shape_tail):
@@ -543,8 +544,25 @@ def build_two_view_stereo_problem(
     return problem
 
 
-def refine_two_view_stereo_training(problem, reverse_pose, *, max_nfev=_MAX_NFEV):
-    """Run a capped analytic sparse solve and return only a guarded pose candidate."""
+def refine_two_view_stereo_training(
+    problem, reverse_pose, *, max_nfev=_MAX_NFEV, solver="sparse_lsmr"
+):
+    """Run a capped analytic solve and return only a guarded pose candidate."""
+    valid_solver = solver in ("sparse_lsmr", "dense_exact")
+    use_dense = solver == "dense_exact"
+    dense_entries = int(problem.residual_rows * problem.variable_count)
+    dense_raw_bytes = int(dense_entries * np.dtype(np.float64).itemsize)
+    dense_guard = {
+        "max_jacobian_entries": int(DENSE_EXACT_MAX_JAC_ENTRIES),
+        "jacobian_shape": [int(problem.residual_rows), int(problem.variable_count)],
+        "jacobian_entries": dense_entries,
+        "raw_jacobian_bytes": dense_raw_bytes,
+        "estimated_workspace_bytes": int(4 * dense_raw_bytes),
+        "passed": bool(not use_dense or dense_entries <= DENSE_EXACT_MAX_JAC_ENTRIES),
+    }
+    tr_options = ({"regularize": True, "atol": 1e-6, "btol": 1e-6,
+                   "conlim": 1e8, "maxiter": int(problem.variable_count)}
+                  if not use_dense else None)
     report = {
         "status": "rejected",
         "accepted": False,
@@ -572,7 +590,21 @@ def refine_two_view_stereo_training(problem, reverse_pose, *, max_nfev=_MAX_NFEV
                    "optimizer_reported_optimality_below_sqrt_epsilon": None},
         "guards": {},
         "selection": problem.selection_report,
+        "solver_kind": str(solver),
+        "dense_memory_guard": dense_guard if use_dense else None,
     }
+    if use_dense:
+        report["solver"]["tr_solver"] = "exact"
+        report["solver"]["jacobian"] = "analytic_dense_from_sparse"
+        report["solver"].pop("tr_options", None)
+        dense_guard["estimated_workspace_note"] = (
+            "four_times_raw_jacobian_bytes_engineering_estimate_not_a_hard_resident_memory_bound")
+    if not valid_solver:
+        report["reason"] = "unknown_two_view_solver"
+        return None, report
+    if use_dense and not dense_guard["passed"]:
+        report["reason"] = "dense_exact_memory_bound_exceeded"
+        return None, report
     if isinstance(max_nfev, (bool, np.bool_)) or not isinstance(max_nfev, (int, np.integer)) or int(max_nfev) != _MAX_NFEV:
         report["reason"] = "max_nfev_must_equal_declared_cap_15"
         return None, report
@@ -593,14 +625,20 @@ def refine_two_view_stereo_training(problem, reverse_pose, *, max_nfev=_MAX_NFEV
         if not init_rank_ok:
             raise ValueError("initial_image_graph_unobservable")
 
-        result = least_squares(
-            problem.residual, problem.x0, jac=problem.jacobian,
-            method="trf", tr_solver="lsmr", loss="huber",
-            f_scale=_HUBER_F_SCALE, x_scale=problem.scale,
-            max_nfev=_MAX_NFEV, ftol=1e-8, xtol=1e-8, gtol=1e-8,
-            tr_options={"regularize": True, "atol": 1e-6, "btol": 1e-6,
-                        "conlim": 1e8, "maxiter": int(problem.variable_count)},
+        jacobian = (
+            (lambda x: problem.jacobian(x).toarray())
+            if use_dense else problem.jacobian
         )
+        solver_kwargs = {
+            "method": "trf", "tr_solver": "exact" if use_dense else "lsmr",
+            "loss": "huber", "f_scale": _HUBER_F_SCALE,
+            "x_scale": problem.scale, "max_nfev": _MAX_NFEV,
+            "ftol": 1e-8, "xtol": 1e-8, "gtol": 1e-8,
+        }
+        if not use_dense:
+            solver_kwargs["tr_options"] = tr_options
+        result = least_squares(problem.residual, problem.x0, jac=jacobian,
+                               **solver_kwargs)
         solver_info = {
             "success": bool(result.success), "status": int(result.status),
             "message": str(result.message), "nfev": int(result.nfev),
@@ -608,16 +646,17 @@ def refine_two_view_stereo_training(problem, reverse_pose, *, max_nfev=_MAX_NFEV
             "optimality": float(result.optimality),
             "cost": float(result.cost), "initial_cost": initial_cost,
             "max_nfev": _MAX_NFEV, "loss": "huber", "f_scale": _HUBER_F_SCALE,
-            "tr_solver": "lsmr", "jacobian": "analytic_sparse",
+            "tr_solver": "exact" if use_dense else "lsmr",
+            "jacobian": "analytic_dense_from_sparse" if use_dense else "analytic_sparse",
             "x_scale": "rotation_1rad_translation_and_xyz_baseline",
             "ftol": 1e-8, "xtol": 1e-8, "gtol": 1e-8,
-            "tr_options": {"regularize": True, "atol": 1e-6,
-                           "btol": 1e-6, "conlim": 1e8,
-                           "maxiter": int(problem.variable_count)},
+            "solver_kind": str(solver),
             "status_interpretation": (
                 "converged" if result.success else
                 ("capped_not_converged" if int(result.status) == 0 else "solver_failure")),
         }
+        if not use_dense:
+            solver_info["tr_options"] = tr_options
         report["solver"] = solver_info
         x = np.asarray(result.x, dtype=np.float64)
         if (x.shape != problem.x0.shape or not np.isfinite(x).all()

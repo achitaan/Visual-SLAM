@@ -172,6 +172,7 @@ class MappingConfig:
     stereo_retained_source_observations: bool = False
     stereo_mapping_observation_retention: bool = False
     stereo_two_view_refinement: bool = False
+    stereo_two_view_solver: str = "sparse_lsmr"
     stereo_physical_match_pool: bool = False
     bundle_solver_accuracy: str = "default"
     stereo_bundle_gauge_mode: str = "veto"
@@ -204,6 +205,10 @@ class MappingConfig:
             )
         if self.stereo_two_view_refinement and not self.stereo_pose_arbitration:
             raise ValueError("stereo_two_view_refinement requires stereo_pose_arbitration")
+        if self.stereo_two_view_solver not in ("sparse_lsmr", "dense_exact"):
+            raise ValueError("stereo_two_view_solver must be 'sparse_lsmr' or 'dense_exact'")
+        if self.stereo_two_view_solver != "sparse_lsmr" and not self.stereo_two_view_refinement:
+            raise ValueError("nondefault stereo_two_view_solver requires stereo_two_view_refinement")
         if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
             raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
 
@@ -2012,6 +2017,7 @@ class SharedSlam:
             report['two_view_stereo_refinement'] = {
                 'status': 'not_run', 'accepted': False,
                 'reason': 'independent_training_context_unavailable',
+                'solver_kind': self.config.stereo_two_view_solver,
                 'optimized_xyz_written_to_map': False,
                 'heldout_used_in_fit': False,
             }
@@ -2196,7 +2202,8 @@ class SharedSlam:
                 )
                 candidate, refinement_report = self.profile.call(
                     'stereo_two_view_refinement', refine_two_view_stereo_training,
-                    problem, reverse_pose, max_nfev=15)
+                    problem, reverse_pose, max_nfev=15,
+                    solver=self.config.stereo_two_view_solver)
                 refinement_report['seed_pose_preserved_on_rejection'] = bool(candidate is None)
                 refinement_report['training_fit_pairs_count'] = int(len(context['fit']))
                 refinement_report['held_pairs_count'] = int(len(context.get('held_pairs', ())))
@@ -2232,6 +2239,7 @@ class SharedSlam:
                 failure = {
                     'status': 'rejected', 'accepted': False,
                     'reason': str(error) or type(error).__name__,
+                    'solver_kind': self.config.stereo_two_view_solver,
                     'seed_pose_preserved_on_rejection': True,
                     'optimized_xyz_written_to_map': False,
                     'heldout_used_in_fit': False,

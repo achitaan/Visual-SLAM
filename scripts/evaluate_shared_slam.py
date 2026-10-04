@@ -92,6 +92,7 @@ def _mapping_config_from_args(args):
         stereo_mapping_observation_retention=getattr(
             args, 'stereo_mapping_observation_retention', False),
         stereo_two_view_refinement=getattr(args, 'stereo_two_view_refinement', False),
+        stereo_two_view_solver=getattr(args, 'stereo_two_view_solver', 'sparse_lsmr'),
         stereo_map_depth_policy=getattr(args, 'stereo_map_depth_policy', 'inherit'),
         bundle_solver_accuracy=args.bundle_solver_accuracy,
         stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
@@ -127,6 +128,9 @@ def main():
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
     parser.add_argument('--stereo-two-view-refinement', action='store_true',
                         help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
+    parser.add_argument('--stereo-two-view-solver', choices=['sparse_lsmr', 'dense_exact'],
+                        default='sparse_lsmr',
+                        help='Linear solver for the opt-in two-view training refinement')
     parser.add_argument('--stereo-physical-match-pool', action='store_true',
                         help='Use strict physical stereo match groups for reserved fit and holdout pools')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
@@ -181,6 +185,8 @@ def main():
     if args.stereo_two_view_refinement and not (
             args.stereo and args.stereo_pose_arbitration):
         parser.error('--stereo-two-view-refinement requires --stereo --stereo-pose-arbitration')
+    if args.stereo_two_view_solver != 'sparse_lsmr' and not args.stereo_two_view_refinement:
+        parser.error('--stereo-two-view-solver dense_exact requires --stereo-two-view-refinement')
     if args.stereo_physical_match_pool and not (args.stereo and args.stereo_pose_arbitration):
         parser.error('--stereo-physical-match-pool requires --stereo --stereo-pose-arbitration')
     if args.stereo_raw_reference_retry and not args.stereo:

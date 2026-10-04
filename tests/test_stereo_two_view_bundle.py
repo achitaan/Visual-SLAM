@@ -350,8 +350,9 @@ def _inject_pose(monkeypatch, camera, points):
     return calls
 
 
+@pytest.mark.parametrize("solver_mode", ["sparse_lsmr", "dense_exact"])
 @pytest.mark.parametrize("kind", ["translation", "rotation"])
-def test_final_candidate_seed_movement_guard_even_with_perfect_training_fit(monkeypatch, kind):
+def test_final_candidate_seed_movement_guard_even_with_perfect_training_fit(monkeypatch, kind, solver_mode):
     data, _ = _scene()
     seed = data["seed_pose"].copy()
     candidate = seed.copy()
@@ -367,14 +368,15 @@ def test_final_candidate_seed_movement_guard_even_with_perfect_training_fit(monk
         middle[:3, :3] = Rotation.from_rotvec([0., np.deg2rad(.8), 0.]).as_matrix() @ seed[:3, :3]
     problem = _build(data, reverse_pose=np.linalg.inv(middle))
     calls = _inject_pose(monkeypatch, candidate, data["source_points"])
-    result, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(middle))
+    result, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(middle), solver=solver_mode)
     assert calls and result is None and not report["accepted"]
     assert report["solver"]["cost"] < report["solver"]["initial_cost"]
     assert report["guards"]["seed_motion_passed"] is False
     assert report["guards"]["reverse_pose_motion_passed"] is True
 
 
-def test_final_reverse_consistency_guard_even_when_seed_step_is_small(monkeypatch):
+@pytest.mark.parametrize("solver_mode", ["sparse_lsmr", "dense_exact"])
+def test_final_reverse_consistency_guard_even_when_seed_step_is_small(monkeypatch, solver_mode):
     data, _ = _scene()
     seed = data["seed_pose"].copy()
     candidate = seed.copy()
@@ -384,14 +386,15 @@ def test_final_reverse_consistency_guard_even_when_seed_step_is_small(monkeypatc
     reverse_equivalent[2, 3] -= .31
     problem = _build(data, reverse_pose=np.linalg.inv(reverse_equivalent))
     calls = _inject_pose(monkeypatch, candidate, data["source_points"])
-    result, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(reverse_equivalent))
+    result, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(reverse_equivalent), solver=solver_mode)
     assert calls and result is None and not report["accepted"]
     assert report["solver"]["cost"] < report["solver"]["initial_cost"]
     assert report["guards"]["reverse_pose_motion_passed"] is False
     assert report["guards"]["seed_motion_passed"] is True
 
 
-def test_original_reverse_xyz_guard_cannot_be_replaced_by_optimized_training_xyz(monkeypatch):
+@pytest.mark.parametrize("solver_mode", ["sparse_lsmr", "dense_exact"])
+def test_original_reverse_xyz_guard_cannot_be_replaced_by_optimized_training_xyz(monkeypatch, solver_mode):
     data, truth = _scene()
     # A depth bias preserves the target LEFT bearing. It changes the original
     # reverse temporal geometry, which must still be checked after refinement.
@@ -401,7 +404,7 @@ def test_original_reverse_xyz_guard_cannot_be_replaced_by_optimized_training_xyz
     data["seed_pose"][:3, 3] += [.015, 0., 0.]
     problem = _build(data)
     calls = _inject_pose(monkeypatch, truth, data["source_points"])
-    candidate, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(truth))
+    candidate, report = bundle.refine_two_view_stereo_training(problem, np.linalg.inv(truth), solver=solver_mode)
     assert calls and candidate is None and not report["accepted"]
     assert report["guards"]["directions"]["passed"] is False
     assert report["guards"]["directions"]["reverse_original_median_px"] > 1.5
@@ -503,8 +506,9 @@ def test_fixed_iteration_cap_cannot_be_overridden(monkeypatch, cap):
     assert candidate is None and not report["accepted"]
 
 
+@pytest.mark.parametrize("solver_mode", ["sparse_lsmr", "dense_exact"])
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "builder_failed"])
-def test_actual_prepare_keeps_held_and_raw_geometry_and_rejection_seed(monkeypatch, outcome):
+def test_actual_prepare_keeps_held_and_raw_geometry_and_rejection_seed(monkeypatch, outcome, solver_mode):
     """Actual caller/partition, controlled solver seam; no accuracy claim."""
     import shared_slam as shared
     from test_stereo_arbitration_tracking import camera, record, install_previous
@@ -529,7 +533,7 @@ def test_actual_prepare_keeps_held_and_raw_geometry_and_rejection_seed(monkeypat
     monkeypatch.setattr(shared, "estimate_stereo_reference", original_reference)
 
     default = camera()
-    active = camera(stereo_two_view_refinement=True)
+    active = camera(stereo_two_view_refinement=True, stereo_two_view_solver=solver_mode)
     try:
         previous_off, current_off = record(default), record(default, 1)
         previous_on, current_on = record(active), record(active, 1)
@@ -547,7 +551,7 @@ def test_actual_prepare_keeps_held_and_raw_geometry_and_rejection_seed(monkeypat
                 raise ValueError("controlled builder rejection")
             return real_builder(**arguments)
         def inspect_refine(problem, reverse_pose, **options):
-            assert options == {"max_nfev": 15}
+            assert options == {"max_nfev": 15, "solver": solver_mode}
             np.testing.assert_array_equal(reverse_pose, np.eye(4))
             return (candidate.copy() if outcome == "accepted" else None,
                     dict(status=outcome, accepted=outcome == "accepted", reason="controlled seam",
@@ -595,3 +599,103 @@ def test_actual_prepare_keeps_held_and_raw_geometry_and_rejection_seed(monkeypat
     finally:
         default.close()
         active.close()
+
+
+@pytest.mark.parametrize("mode", [None, "sparse_lsmr", "dense_exact"])
+def test_solver_choice_only_changes_inner_solver_and_jacobian_representation(monkeypatch, mode):
+    data, truth = _scene()
+    problem = _build(data)
+    original = problem.x0.copy()
+    calls = []
+    def solver(fun, x0, **options):
+        calls.append(options)
+        np.testing.assert_array_equal(x0, original)
+        np.testing.assert_array_equal(options["x_scale"], problem.scale)
+        assert options["max_nfev"] == 15
+        assert options["method"] == "trf"
+        assert options["loss"] == "huber" and options["f_scale"] == 1.5
+        assert options["ftol"] == options["xtol"] == options["gtol"] == 1e-8
+        actual = options["jac"](x0)
+        expected = problem.jacobian(x0).toarray()
+        if mode == "dense_exact":
+            assert isinstance(actual, np.ndarray)
+            assert options["tr_solver"] == "exact"
+            assert "tr_options" not in options
+        else:
+            assert hasattr(actual, "tocsr")
+            assert options["tr_solver"] == "lsmr"
+            assert options["tr_options"] == dict(regularize=True, atol=1e-6,
+                                                 btol=1e-6, conlim=1e8,
+                                                 maxiter=problem.variable_count)
+            actual = actual.toarray()
+        np.testing.assert_array_equal(actual, expected)
+        value = np.r_[Rotation.from_matrix(truth[:3, :3]).as_rotvec(),
+                      truth[:3, 3], data["source_points"].ravel()]
+        return _solver_result(fun, value)
+    monkeypatch.setattr(bundle, "least_squares", solver)
+    options = {} if mode is None else {"solver": mode}
+    candidate, report = bundle.refine_two_view_stereo_training(problem, data["reverse_pose"], **options)
+    assert len(calls) == 1 and candidate is not None and report["accepted"]
+    assert report["solver"]["status"] == 0
+    assert report["solver"]["success"] is False
+    assert report["solver"]["capped_not_converged"] is True
+    assert report["solver"]["tr_solver"] == ("exact" if mode == "dense_exact" else "lsmr")
+    assert report["guards"]["final_image_graph_rank"]
+    assert not report["guards"]["heldout_used_in_fit"]
+    assert not report["guards"]["optimized_xyz_written_to_map"]
+    np.testing.assert_array_equal(problem.x0, original)
+
+
+@pytest.mark.parametrize("over_bound", [False, True])
+def test_dense_memory_bound_checked_before_solver_without_input_mutation(monkeypatch, over_bound):
+    data, truth = _scene()
+    problem = _build(data)
+    arrays = {name: value.copy() for name, value in vars(problem).items()
+              if isinstance(value, np.ndarray)}
+    entries = problem.residual_rows * problem.variable_count
+    monkeypatch.setattr(bundle, "DENSE_EXACT_MAX_JAC_ENTRIES", entries - int(over_bound))
+    calls = []
+    def solver(fun, x0, **options):
+        calls.append(True)
+        return _solver_result(fun, x0)
+    monkeypatch.setattr(bundle, "least_squares", solver)
+    candidate, report = bundle.refine_two_view_stereo_training(problem, data["reverse_pose"], solver="dense_exact")
+    assert candidate is None
+    assert bool(calls) is (not over_bound)
+    memory = report["dense_memory_guard"]
+    assert memory["jacobian_entries"] == entries
+    assert memory["jacobian_shape"] == [problem.residual_rows, problem.variable_count]
+    assert memory["raw_jacobian_bytes"] == 8 * entries
+    assert memory["estimated_workspace_bytes"] == 32 * entries
+    assert memory["passed"] is (not over_bound)
+    if over_bound:
+        assert report["reason"] == "dense_exact_memory_bound_exceeded"
+        assert report["solver"]["nfev"] == 0
+        assert report["solver"]["status"] is None
+    for name, saved in arrays.items():
+        np.testing.assert_array_equal(getattr(problem, name), saved)
+
+
+def test_unsupported_solver_abstains_before_optimizer(monkeypatch):
+    data, _ = _scene()
+    problem = _build(data)
+    monkeypatch.setattr(bundle, "least_squares", lambda *a, **k: pytest.fail("invalid solver entered optimizer"))
+    candidate, report = bundle.refine_two_view_stereo_training(problem, data["reverse_pose"], solver="automatic")
+    assert candidate is None and not report["accepted"]
+
+
+@pytest.mark.parametrize("solver_mode", ["sparse_lsmr", "dense_exact"])
+def test_final_rank_veto_shared_by_both_inner_solvers(monkeypatch, solver_mode):
+    data, truth = _scene()
+    problem = _build(data)
+    real_observability = problem.observability
+    def observability(x):
+        report = real_observability(x)
+        if not np.array_equal(x, problem.x0):
+            report.update(status="unobservable", rank=5, nullity=1)
+        return report
+    monkeypatch.setattr(problem, "observability", observability)
+    calls = _inject_pose(monkeypatch, truth, data["source_points"])
+    candidate, report = bundle.refine_two_view_stereo_training(problem, data["reverse_pose"], solver=solver_mode)
+    assert calls and candidate is None and not report["accepted"]
+    assert report["guards"]["final_image_graph_rank"] is False

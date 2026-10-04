@@ -89,6 +89,8 @@ def _mapping_config_from_args(args):
         stereo_owned_image_bundle=args.stereo_owned_image_bundle,
         stereo_source_history_bundle=args.stereo_source_history_bundle,
         stereo_retained_source_observations=args.stereo_retained_source_observations,
+        stereo_mapping_observation_retention=getattr(
+            args, 'stereo_mapping_observation_retention', False),
         bundle_solver_accuracy=args.bundle_solver_accuracy,
         stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
 
@@ -129,6 +131,8 @@ def main():
                         help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
     parser.add_argument('--stereo-retained-source-observations', action='store_true',
                         help='Retain source-image constraints using the existing anchored camera model')
+    parser.add_argument('--stereo-mapping-observation-retention', action='store_true',
+                        help='Retain individually validated map observations after an independent stereo pose fails only spatial coverage')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
@@ -176,6 +180,9 @@ def main():
         parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
     if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
         parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
+    if args.stereo_mapping_observation_retention and not (
+            args.stereo and (args.stereo_pose_arbitration or args.stereo_raw_reference_retry)):
+        parser.error('--stereo-mapping-observation-retention requires --stereo and an independent stereo reference path')
     if args.stereo_bundle_gauge_mode != 'veto' and not args.stereo:
         parser.error('--stereo-bundle-gauge-mode canonical_two_bridge requires --stereo')
     if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
@@ -492,6 +499,7 @@ def main():
         "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "stereo_source_history_bundle": bool(getattr(slam.config, "stereo_source_history_bundle", False)),
         "stereo_retained_source_observations": bool(getattr(slam.config, "stereo_retained_source_observations", False)),
+        "stereo_mapping_observation_retention": bool(getattr(slam.config, "stereo_mapping_observation_retention", False)),
         "stereo_physical_match_pool": bool(getattr(slam.config, "stereo_physical_match_pool", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,

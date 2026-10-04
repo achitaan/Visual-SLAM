@@ -165,6 +165,7 @@ class MappingConfig:
     stereo_owned_image_bundle: bool = False
     stereo_source_history_bundle: bool = False
     stereo_retained_source_observations: bool = False
+    stereo_mapping_observation_retention: bool = False
     stereo_physical_match_pool: bool = False
     bundle_solver_accuracy: str = "default"
     stereo_bundle_gauge_mode: str = "veto"
@@ -187,6 +188,11 @@ class MappingConfig:
                 self.stereo_owned_image_bundle and self.stereo_source_history_bundle):
             raise ValueError(
                 "stereo_retained_source_observations requires owned image and source-history bundles"
+            )
+        if self.stereo_mapping_observation_retention and not (
+                self.stereo_pose_arbitration or self.stereo_raw_reference_retry):
+            raise ValueError(
+                "stereo_mapping_observation_retention requires an independent stereo reference path"
             )
         if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
             raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
@@ -255,6 +261,13 @@ class SharedSlam:
             raise ValueError(
                 'Retained source observations require calibrated stereo, owned image bundle, '
                 'and source-history bundle'
+            )
+        if getattr(self.config, "stereo_mapping_observation_retention", False) and (
+                stereo is None or not (self.config.stereo_pose_arbitration
+                                       or self.config.stereo_raw_reference_retry)):
+            raise ValueError(
+                'Mapping observation retention requires calibrated stereo and an '
+                'independent stereo reference path'
             )
         if (self.config.stereo_owned_image_bundle
                 and self.config.stereo_depth_policy == 'verified_all'):
@@ -2040,9 +2053,105 @@ class SharedSlam:
                 'map_fit_target_features': len(context['map_fit_targets']),
                 'physical_identity': physical_identity}
 
+    def _stereo_mapping_retention_context_is_current(self, pose, context):
+        """Revalidate the exact independent-pose transaction before map retention."""
+        if not isinstance(context, dict):
+            return False, 'missing_independent_pose_context'
+        guard = context.get('guard')
+        verified = context.get('verified')
+        try:
+            raw_integers = [context['source_frame'], context['target_frame'],
+                            context['source_map_revision'], context['source_geometry_revision']]
+            if any(not isinstance(value, (int, np.integer))
+                   or isinstance(value, (bool, np.bool_)) for value in raw_integers):
+                return False, 'malformed_independent_pose_integer_fields'
+            source_frame, target_frame, source_revision, geometry_revision = map(int, raw_integers)
+            raw_poses = [context['source_pose'], context['reference_pose'], pose,
+                         verified.get('measurement') if isinstance(verified, dict) else None]
+            if any(value is None or np.iscomplexobj(np.asarray(value)) for value in raw_poses):
+                return False, 'malformed_independent_pose_values'
+            source_pose = np.asarray(raw_poses[0], float)
+            reference_pose = np.asarray(raw_poses[1], float)
+            selected_pose = np.asarray(raw_poses[2], float)
+            previous_frame = context['previous_frame']
+            measured_frame = context['measured_frame']
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, 'malformed_independent_pose_context'
+        if (not isinstance(guard, dict) or guard.get('eligible') is not True
+                or guard.get('reference_reverse_checked') is not True
+                or not isinstance(verified, dict) or verified.get('reverse_checked') is not True):
+            return False, 'independent_pose_certificate_missing'
+        if (source_frame < 0 or target_frame != len(self.map.poses)
+                or target_frame - source_frame < 1
+                or source_frame >= len(self.map.poses)
+                or source_revision != self.map.revision
+                or geometry_revision != self.map.geometry_revision
+                or guard.get('source_map_revision') != source_revision
+                or guard.get('source_frame') != source_frame
+                or guard.get('target_frame') != target_frame):
+            return False, 'map_or_geometry_epoch_changed'
+        try:
+            raw_excluded_ids = context.get('excluded_landmark_ids', ())
+            if not isinstance(raw_excluded_ids, (set, frozenset, list, tuple)):
+                return False, 'malformed_held_out_exclusion'
+            if any(not isinstance(value, (int, np.integer))
+                   or isinstance(value, (bool, np.bool_)) or int(value) < 0
+                   for value in raw_excluded_ids):
+                return False, 'malformed_held_out_exclusion'
+            raw_excluded_pixels = context.get('excluded_target_pixels', ())
+            if isinstance(raw_excluded_pixels, (set, frozenset)):
+                raw_excluded_pixels = list(raw_excluded_pixels)
+            excluded_array = np.asarray(raw_excluded_pixels)
+            if excluded_array.size == 0:
+                excluded_array = np.empty((0, 2), float)
+            if (np.iscomplexobj(excluded_array)
+                    or excluded_array.ndim != 2 or excluded_array.shape[1] != 2
+                    or not np.isfinite(np.asarray(excluded_array, float)).all()):
+                return False, 'malformed_held_out_exclusion'
+        except (TypeError, ValueError, OverflowError):
+            return False, 'malformed_held_out_exclusion'
+        if (not self._is_proper_se3(source_pose)
+                or not self._is_proper_se3(reference_pose)
+                or not self._is_proper_se3(selected_pose)
+                or not self._is_proper_se3(verified.get('measurement'))):
+            return False, 'invalid_reference_pose'
+        if (not np.array_equal(np.asarray(self.map.poses[source_frame], float), source_pose)
+                or not np.allclose(selected_pose, reference_pose, atol=1e-12, rtol=0.)
+                or not np.allclose(source_pose @ np.asarray(verified['measurement'], float),
+                                   reference_pose, atol=1e-10, rtol=1e-10)):
+            return False, 'source_or_reference_pose_changed'
+        try:
+            live_identity = self._live_stereo_calibration_identity()
+            source_record = self.previous_supported_stereo
+            target_record = self.current_supported_stereo
+        except (AttributeError, TypeError, ValueError):
+            return False, 'live_calibration_or_record_missing'
+        identity = guard.get('calibration_identity')
+        if (not isinstance(identity, str) or not identity
+                or live_identity != identity
+                or self.stereo_calibration_identity != identity
+                or getattr(source_record, 'calibration_identity', None) != identity
+                or getattr(target_record, 'calibration_identity', None) != identity
+                or getattr(source_record, 'frame', None) != source_frame
+                or getattr(target_record, 'frame', None) != target_frame):
+            return False, 'calibration_or_endpoint_epoch_changed'
+        # Re-run the production guard after stereo sampling. This catches a
+        # sampler or concurrent update that mutates source geometry, endpoint
+        # ownership, status, pose, or calibration during row validation.
+        fresh = self._hard_reference_retention_guard(
+            target_frame, source_frame, previous_frame, measured_frame, verified,
+            source_pose, reference_pose, source_revision,
+            tuple(self.current_supported_stereo.image_size))
+        if fresh.get('eligible') is not True:
+            return False, 'fresh_reference_guard_rejected:' + str(fresh.get('reason'))
+        if (int(self.map.geometry_revision) != geometry_revision
+                or int(self.map.revision) != source_revision):
+            return False, 'map_or_geometry_epoch_changed'
+        return True, 'independent_pose_transaction_current'
+
     def _validate_stereo_associations_at_pose(
         self, pose, associations, accepted_tracks, pixels, size, final_solve_positions,
-        previous_inlier_misses=None,
+        previous_inlier_misses=None, retention_context=None,
     ):
         """Keep only existing map links that fit a selected fixed stereo pose.
 
@@ -2051,11 +2160,16 @@ class SharedSlam:
         accepted observation, including subpixel flow coordinates.
         """
         track_pixels = {}
+        all_track_pixels = {}
         for landmark_id, pixel in accepted_tracks:
             track_pixels.setdefault(int(landmark_id), np.asarray(pixel, float).copy())
+            all_track_pixels.setdefault(int(landmark_id), []).append(
+                np.asarray(pixel, float).copy())
         feature_for_landmark = {}
+        features_for_landmark = {}
         for feature, landmark_id in associations.items():
             feature_for_landmark.setdefault(int(landmark_id), int(feature))
+            features_for_landmark.setdefault(int(landmark_id), []).append(int(feature))
         candidate_ids = list(dict.fromkeys(
             [int(lid) for lid, _ in accepted_tracks]
             + [int(lid) for lid in associations.values()]
@@ -2067,6 +2181,7 @@ class SharedSlam:
         }
         left_errors = []
         right_errors = []
+        errors_by_id = {}
         retained_pixels = []
         retained_ids = []
         valid_ids = []
@@ -2134,6 +2249,8 @@ class SharedSlam:
                 retained_pixels.append(observed_array[i])
                 left_errors.append(left_error)
                 right_errors.append(right_error)
+                errors_by_id[int(landmark_id)] = (
+                    observed_array[i].copy(), left_error, right_error)
 
         retained_ids = set(retained_ids)
         retained_pixels = np.asarray(retained_pixels, float).reshape(-1, 2)
@@ -2160,7 +2277,113 @@ class SharedSlam:
             failed_gates.append('median_right_residual')
         eligible = not failed_gates
         reason = 'retained' if eligible else failed_gates[0]
+
+        # This path can preserve mapping observations only. It never promotes
+        # the independent pose into pose-support eligibility, and is reachable
+        # only when the original aggregate failure was spatial coverage alone.
+        mapping_retained_ids = set()
+        mapping_retention_allowed = False
+        mapping_reason = 'disabled_or_not_coverage_only'
+        if (not eligible and failed_gates == ['insufficient_spatial_coverage']
+                and getattr(self.config, 'stereo_mapping_observation_retention', False)):
+            context_ok, mapping_reason = self._stereo_mapping_retention_context_is_current(
+                pose, retention_context)
+            if context_ok:
+                # Physical identities are exact float32 coordinates. Repeated
+                # identical LK rows collapse to one observation; ambiguous
+                # landmark or pixel ownership is rejected for every claimant.
+                detector_keys = {}
+                flow_keys = {}
+                ids_by_key = {}
+                ambiguous = set()
+                for landmark_id in candidate_ids:
+                    keys = set()
+                    for feature in features_for_landmark.get(landmark_id, []):
+                        if 0 <= feature < len(pixels):
+                            point = np.asarray(pixels[feature], np.float32)
+                            if point.shape == (2,) and np.isfinite(point).all():
+                                keys.add(self._physical_pixel_key(point))
+                    detector_keys[landmark_id] = keys
+                    flow_rows = all_track_pixels.get(landmark_id, [])
+                    flow_key_set = set()
+                    for point in flow_rows:
+                        if point.shape == (2,) and np.isfinite(point).all():
+                            flow_key_set.add(self._physical_pixel_key(point))
+                    flow_keys[landmark_id] = flow_key_set
+                    if len(flow_key_set) > 1 or len(keys) > 1:
+                        ambiguous.add(landmark_id)
+                    for key in keys | flow_key_set:
+                        ids_by_key.setdefault(key, set()).add(landmark_id)
+                for owners in ids_by_key.values():
+                    if len(owners) > 1:
+                        ambiguous.update(owners)
+
+                try:
+                    excluded_ids = {int(value) for value in
+                                    retention_context.get('excluded_landmark_ids', ())}
+                    excluded_pixels = {
+                        self._physical_pixel_key(np.asarray(value, np.float32))
+                        for value in retention_context.get('excluded_target_pixels', ())
+                        if np.asarray(value).shape == (2,)
+                        and np.isfinite(np.asarray(value, float)).all()
+                    }
+                except (TypeError, ValueError, OverflowError):
+                    excluded_ids, excluded_pixels = set(candidate_ids), set()
+                    mapping_reason = 'malformed_held_out_exclusion'
+
+                for landmark_id in candidate_ids:
+                    if (landmark_id in ambiguous or landmark_id in excluded_ids
+                            or landmark_id not in errors_by_id):
+                        continue
+                    flow_key_set = flow_keys.get(landmark_id, set())
+                    detector_key_set = detector_keys.get(landmark_id, set())
+                    if flow_key_set:
+                        canonical_key = next(iter(flow_key_set))
+                    elif len(detector_key_set) == 1:
+                        canonical_key = next(iter(detector_key_set))
+                    else:
+                        continue
+                    tested_key = self._physical_pixel_key(errors_by_id[landmark_id][0])
+                    if (canonical_key != tested_key or canonical_key in excluded_pixels
+                            or bool(detector_key_set & excluded_pixels)):
+                        continue
+                    mapping_retained_ids.add(landmark_id)
+
+                # Re-check every non-spatial gate on the exact rows that will
+                # actually be written to the map.
+                selected_rows = [errors_by_id[lid] for lid in candidate_ids
+                                 if lid in mapping_retained_ids]
+                map_count = len(mapping_retained_ids)
+                map_ratio = map_count / denominator if denominator > 0 else 0.0
+                map_pixels = np.asarray([row[0] for row in selected_rows], float).reshape(-1, 2)
+                map_coverage = coverage(map_pixels, size)
+                map_left = np.asarray([row[1] for row in selected_rows], float)
+                map_right = np.asarray([row[2] for row in selected_rows], float)
+                map_med_left = float(np.median(map_left)) if len(map_left) else None
+                map_med_right = float(np.median(map_right)) if len(map_right) else None
+                if (map_count >= self.config.min_inliers and denominator > 0
+                        and map_ratio >= 0.25 and map_med_left is not None
+                        and map_med_left <= 1.5 and map_med_right is not None
+                        and map_med_right <= 1.5 and map_coverage < 3):
+                    # Recheck the certificate after constructing the exact row
+                    # set, immediately before applying the retention outcome.
+                    context_ok, mapping_reason = self._stereo_mapping_retention_context_is_current(
+                        pose, retention_context)
+                    mapping_retention_allowed = bool(context_ok)
+                else:
+                    mapping_reason = 'canonical_rows_fail_nonspatial_aggregate_gates'
+                    mapping_retained_ids.clear()
+            elif self.config.stereo_mapping_observation_retention:
+                mapping_reason = 'independent_pose_context_rejected:' + mapping_reason
         with self.map.lock:
+            if mapping_retention_allowed:
+                # Keep the final certificate check inside the same critical
+                # section as the once-per-frame miss outcome.
+                context_ok, mapping_reason = self._stereo_mapping_retention_context_is_current(
+                    pose, retention_context)
+                mapping_retention_allowed = bool(context_ok)
+                if not mapping_retention_allowed:
+                    mapping_retained_ids.clear()
             if previous_inlier_misses is not None:
                 # _track provisionally reset these inliers before arbitration.
                 # Restore one outcome from their pre-frame count so repeated
@@ -2169,7 +2392,8 @@ class SharedSlam:
                     landmark = self.map.landmarks.get(landmark_id)
                     if landmark is not None:
                         landmark.misses = (
-                            0 if eligible and landmark_id in retained_ids
+                            0 if (eligible and landmark_id in retained_ids)
+                            or (mapping_retention_allowed and landmark_id in mapping_retained_ids)
                             else int(previous_misses) + 1
                         )
             else:
@@ -2178,7 +2402,10 @@ class SharedSlam:
                 for landmark_id in candidate_ids:
                     landmark = self.map.landmarks.get(landmark_id)
                     if landmark is not None:
-                        landmark.misses = 0 if eligible and landmark_id in retained_ids else max(landmark.misses, 1)
+                        landmark.misses = (
+                            0 if (eligible and landmark_id in retained_ids)
+                            or (mapping_retention_allowed and landmark_id in mapping_retained_ids)
+                            else max(landmark.misses, 1))
         if eligible:
             kept_associations = {
                 feature: landmark_id for feature, landmark_id in associations.items()
@@ -2189,10 +2416,35 @@ class SharedSlam:
                 for landmark_id, pixel in accepted_tracks
                 if int(landmark_id) in retained_ids
             ]
+        elif mapping_retention_allowed:
+            kept_tracks = []
+            for landmark_id in candidate_ids:
+                if landmark_id not in mapping_retained_ids:
+                    continue
+                flow_rows = all_track_pixels.get(landmark_id, [])
+                if flow_rows:
+                    # Exact duplicate LK rows represent one physical sample.
+                    kept_tracks.append((int(landmark_id), np.asarray(flow_rows[0]).copy()))
+            kept_associations = {
+                int(feature): int(landmark_id)
+                for feature, landmark_id in associations.items()
+                if int(landmark_id) in mapping_retained_ids
+                and 0 <= int(feature) < len(pixels)
+                and self._physical_pixel_key(pixels[int(feature)])
+                    in detector_keys.get(int(landmark_id), set())
+            }
         else:
             kept_associations, kept_tracks = {}, []
         diagnostics = {
             'eligible': bool(eligible), 'reason': reason,
+            'pose_support_eligible': bool(eligible),
+            'aggregate_failure': failed_gates[0] if failed_gates else None,
+            'mapping_observation_retention_allowed': bool(mapping_retention_allowed),
+            'mapping_observation_retention_reason': mapping_reason,
+            'mapping_retained_landmarks': (len(mapping_retained_ids)
+                                           if mapping_retention_allowed else 0),
+            'mapping_observation_role': 'tracking_fit_consumed',
+            'held_out_rows_reused': False,
             'candidate_landmarks': len(candidate_ids), 'retained_landmarks': count,
             'retained_ratio': float(ratio), 'final_solve_positions': denominator,
             'spatial_coverage': int(spatial_coverage),
@@ -5103,11 +5355,50 @@ class SharedSlam:
                                 # solve output before replacing its pose.
                                 map_associations = dict(result[1])
                                 map_tracks = list(self.accepted_tracks)
-                                associations, retained_tracks, association_validation = (
-                                    self._validate_stereo_associations_at_pose(
-                                        reference_pose, map_associations, map_tracks,
-                                        pixels, size, info.get('valid_3d', 0),
-                                        map_inlier_miss_snapshot))
+                                retention_guard = None
+                                retention_context = None
+                                if self.config.stereo_mapping_observation_retention:
+                                    with self.map.lock:
+                                        retention_guard = self._hard_reference_retention_guard(
+                                            index, previous_index, previous_frame, measured,
+                                            verified, source_pose, reference_pose,
+                                            source_map_revision, size)
+                                        if retention_guard.get('eligible') is True:
+                                            retention_context = {
+                                                'guard': retention_guard,
+                                                'verified': verified,
+                                                'source_pose': np.asarray(source_pose, float).copy(),
+                                                'reference_pose': np.asarray(reference_pose, float).copy(),
+                                                'source_map_revision': int(source_map_revision),
+                                                'source_geometry_revision': int(self.map.geometry_revision),
+                                                'source_frame': int(previous_index),
+                                                'target_frame': int(index),
+                                                'previous_frame': previous_frame,
+                                                'measured_frame': measured,
+                                                'excluded_landmark_ids': (
+                                                    arbitration.get('excluded_landmarks', set())
+                                                    if arbitration is not None else set()),
+                                                'excluded_target_pixels': (
+                                                    arbitration.get('excluded_target_pixels', [])
+                                                    if arbitration is not None else []),
+                                            }
+                                        associations, retained_tracks, association_validation = (
+                                            self._validate_stereo_associations_at_pose(
+                                                reference_pose, map_associations, map_tracks,
+                                                pixels, size, info.get('valid_3d', 0),
+                                                map_inlier_miss_snapshot,
+                                                retention_context=retention_context))
+                                else:
+                                    associations, retained_tracks, association_validation = (
+                                        self._validate_stereo_associations_at_pose(
+                                            reference_pose, map_associations, map_tracks,
+                                            pixels, size, info.get('valid_3d', 0),
+                                            map_inlier_miss_snapshot))
+                                if retention_guard is not None:
+                                    association_validation = {
+                                        **association_validation,
+                                        'mapping_retention_guard': retention_guard,
+                                    }
                                 self.accepted_tracks = retained_tracks
                                 arbitration_report = {
                                     **arbitration_report,
@@ -5137,15 +5428,39 @@ class SharedSlam:
                                         if reference_guard['eligible']:
                                             map_associations = dict(result[1])
                                             map_tracks = list(self.accepted_tracks)
+                                            retention_context = None
+                                            if self.config.stereo_mapping_observation_retention:
+                                                retention_context = {
+                                                    'guard': reference_guard,
+                                                    'verified': verified,
+                                                    'source_pose': np.asarray(source_pose, float).copy(),
+                                                    'reference_pose': np.asarray(reference_pose, float).copy(),
+                                                    'source_map_revision': int(source_map_revision),
+                                                    'source_geometry_revision': int(self.map.geometry_revision),
+                                                    'source_frame': int(previous_index),
+                                                    'target_frame': int(index),
+                                                    'previous_frame': previous_frame,
+                                                    'measured_frame': measured,
+                                                    'excluded_landmark_ids': (
+                                                        arbitration.get('excluded_landmarks', set())
+                                                        if arbitration is not None else set()),
+                                                    'excluded_target_pixels': (
+                                                        arbitration.get('excluded_target_pixels', [])
+                                                        if arbitration is not None else []),
+                                                }
                                             associations, retained_tracks, connection = (
                                                 self._validate_stereo_associations_at_pose(
                                                     reference_pose, map_associations, map_tracks,
                                                     pixels, size, info.get('valid_3d', 0),
-                                                    map_inlier_miss_snapshot))
+                                                    map_inlier_miss_snapshot,
+                                                    retention_context=retention_context))
                                             self.accepted_tracks = retained_tracks
                                             retained = bool(connection['eligible'])
+                                            mapping_retained = bool(
+                                                connection.get('mapping_observation_retention_allowed'))
                                         else:
                                             connection = None
+                                            mapping_retained = False
                                             if raw_reference_retry_succeeded:
                                                 raw_reference_retry_final_rejected = True
                                     reservation_context = arbitration is not None
@@ -5156,6 +5471,9 @@ class SharedSlam:
                                     reference_validation = {
                                         **reference_guard,
                                         'eligible': bool(reference_guard['eligible'] and retained),
+                                        'pose_support_eligible': bool(reference_guard['eligible'] and retained),
+                                        'mapping_observation_retention_allowed': bool(
+                                            reference_guard['eligible'] and mapping_retained),
                                         'reason': ('retained' if retained else
                                                    connection['reason'] if connection is not None
                                                    else reference_guard['reason']),
@@ -5209,9 +5527,12 @@ class SharedSlam:
                                             # the provisional _track reset exactly once.
                                             self._age_provisional_map_inliers(
                                                 map_inlier_miss_snapshot)
-                                        if not raw_reference_retry_final_rejected:
+                                        if (not raw_reference_retry_final_rejected
+                                                and not reference_validation[
+                                                    'mapping_observation_retention_allowed']):
                                             associations = {}
                                             self.accepted_tracks = []
+                                        if not raw_reference_retry_final_rejected:
                                             stereo_reference = True
                                     if raw_reference_retry_succeeded:
                                         raw_reference_retry_report = {

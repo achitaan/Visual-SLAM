@@ -157,11 +157,16 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
                                   stereo_owned_image_bundle=False,
                                   bundle_solver_accuracy='default',
                                   stereo_source_history_bundle=False,
-                                  stereo_retained_source_observations=False):
+                                  stereo_retained_source_observations=False,
+                                  stereo_physical_match_pool=False):
     """Return the exact evaluator config represented by a development variant."""
+    if not isinstance(stereo_physical_match_pool, bool):
+        raise ValueError('physical stereo match pool mode must be boolean')
     if bundle_solver_accuracy not in ('default', 'precise'):
         raise ValueError('bundle_solver_accuracy must be default or precise')
     if variant == 'baseline':
+        if stereo_physical_match_pool:
+            raise ValueError('physical stereo match pool is not available for baseline')
         if stereo_source_history_bundle or stereo_retained_source_observations:
             raise ValueError('source history is not available for baseline')
         if bundle_solver_accuracy != 'default':
@@ -179,7 +184,8 @@ def current_mapping_configuration(variant, stereo_depth_policy, stereo_pose_arbi
                               stereo_owned_image_bundle=stereo_owned_image_bundle,
                               bundle_solver_accuracy=bundle_solver_accuracy,
                               stereo_source_history_bundle=stereo_source_history_bundle,
-                              stereo_retained_source_observations=stereo_retained_source_observations).__dict__)
+                              stereo_retained_source_observations=stereo_retained_source_observations,
+                              stereo_physical_match_pool=stereo_physical_match_pool).__dict__)
 
 
 def inspect_timing_history(paths, identity, coverage, configuration, current_revision):
@@ -232,6 +238,10 @@ def inspect_timing_history(paths, identity, coverage, configuration, current_rev
                     and source_identity.get('stereo_retained_source_observations', False)
                     is not identity.get('stereo_retained_source_observations', False)):
                 raise ValueError('mismatched stereo-retained-source-observations mode')
+            if (identity.get('variant') != 'baseline'
+                    and source_identity.get('stereo_physical_match_pool', False)
+                    is not identity.get('stereo_physical_match_pool', False)):
+                raise ValueError('mismatched stereo-physical-match-pool mode')
             expected_accuracy = identity.get('bundle_solver_accuracy', 'default')
             historical_accuracy = source_identity.get('bundle_solver_accuracy')
             report_accuracy = report.get('bundle_solver_accuracy')
@@ -556,6 +566,10 @@ def reusable_export(report_path, identity):
         if not isinstance(report, dict) or not reusable(report, identity):
             return False
         frames = identity['frames']
+        physical_pool = identity.get('stereo_physical_match_pool', False)
+        if (not isinstance(physical_pool, bool)
+                or physical_pool and identity.get('variant') == 'baseline'):
+            return False
         if (report.get('coverage') != identity.get('coverage')
                 or report.get('sequence') != identity.get('sequence')
                 or report.get('stereo') is not True
@@ -572,7 +586,8 @@ def reusable_export(report_path, identity):
                 identity.get('stereo_owned_image_bundle', False),
                 identity.get('bundle_solver_accuracy', 'default'),
                 identity.get('stereo_source_history_bundle', False),
-                identity.get('stereo_retained_source_observations', False))
+                identity.get('stereo_retained_source_observations', False),
+                identity.get('stereo_physical_match_pool', False))
             run = _load_finite_json(output / 'run.json')
             preview = _load_finite_json(output / 'preview.json')
             if not isinstance(run, dict) or not isinstance(preview, dict):
@@ -771,6 +786,8 @@ def main():
                         help='Add accepted source-frame map image observations to the experimental bundle')
     parser.add_argument('--stereo-retained-source-observations', action='store_true',
                         help='Retain source-image constraints using the existing anchored camera model')
+    parser.add_argument('--stereo-physical-match-pool', action='store_true',
+                        help='Reserve consistent physical stereo edges across feature orientation aliases')
     parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
@@ -779,6 +796,8 @@ def main():
     parser.add_argument('--no-cpu-optimizations',action='store_true')
     parser.add_argument('--opencv-threads',type=int,default=1)
     args=parser.parse_args()
+    if args.stereo_physical_match_pool and not args.stereo_pose_arbitration:
+        parser.error('--stereo-physical-match-pool requires --stereo-pose-arbitration')
     if args.stereo_owned_image_bundle and (
             not args.stereo_pose_arbitration or not any(v != 'baseline' for v in args.variants)):
         parser.error('--stereo-owned-image-bundle requires --stereo-pose-arbitration and a SharedSlam variant')
@@ -821,6 +840,7 @@ def main():
                'stereo_owned_image_bundle': args.stereo_owned_image_bundle,
                'stereo_source_history_bundle': args.stereo_source_history_bundle,
                'stereo_retained_source_observations': args.stereo_retained_source_observations,
+               'stereo_physical_match_pool': args.stereo_physical_match_pool,
                'bundle_solver_accuracy': args.bundle_solver_accuracy,
                'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                'bundle_diagnostics_frames': bundle_diagnostics_frames,
@@ -872,6 +892,7 @@ def main():
                       'stereo_owned_image_bundle': args.stereo_owned_image_bundle if variant!='baseline' else False,
                       'stereo_source_history_bundle': args.stereo_source_history_bundle if variant!='baseline' else False,
                       'stereo_retained_source_observations': args.stereo_retained_source_observations if variant!='baseline' else False,
+                      'stereo_physical_match_pool': args.stereo_physical_match_pool if variant!='baseline' else False,
                       'bundle_solver_accuracy': args.bundle_solver_accuracy if variant!='baseline' else 'default',
                       'bundle_diagnostics_enabled': bool(bundle_diagnostics_frames),
                       'bundle_diagnostics_frames': bundle_diagnostics_frames,
@@ -905,7 +926,8 @@ def main():
                 args.stereo_owned_image_bundle and variant != 'baseline',
                 args.bundle_solver_accuracy if variant != 'baseline' else 'default',
                 args.stereo_source_history_bundle and variant != 'baseline',
-                args.stereo_retained_source_observations and variant != 'baseline')
+                args.stereo_retained_source_observations and variant != 'baseline',
+                args.stereo_physical_match_pool and variant != 'baseline')
             estimate_details = estimate_case_runtime(
                 frames, samples, timing_history_paths, identity, expected_coverage,
                 expected_configuration, fingerprint, fallback_rate=2.0 if seq == '04' else 4.0)
@@ -936,6 +958,7 @@ def main():
                 if args.stereo_owned_image_bundle:command.append('--stereo-owned-image-bundle')
                 if args.stereo_source_history_bundle:command.append('--stereo-source-history-bundle')
                 if args.stereo_retained_source_observations:command.append('--stereo-retained-source-observations')
+                if args.stereo_physical_match_pool:command.append('--stereo-physical-match-pool')
                 command.extend(['--bundle-solver-accuracy', args.bundle_solver_accuracy])
                 if bundle_diagnostics_frames:
                     command.extend(['--bundle-diagnostics-dir',

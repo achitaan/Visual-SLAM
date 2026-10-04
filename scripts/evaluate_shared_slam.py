@@ -104,6 +104,8 @@ def main():
     parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
+    parser.add_argument('--stereo-physical-match-pool', action='store_true',
+                        help='Use strict physical stereo match groups for reserved fit and holdout pools')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
     parser.add_argument('--stereo-owned-image-bundle', action='store_true',
@@ -143,6 +145,8 @@ def main():
         parser.error('--stereo-depth-policy verification requires --stereo')
     if args.stereo_pose_arbitration and not args.stereo:
         parser.error('--stereo-pose-arbitration requires --stereo')
+    if args.stereo_physical_match_pool and not (args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-physical-match-pool requires --stereo --stereo-pose-arbitration')
     if args.stereo_raw_reference_retry and not args.stereo:
         parser.error('--stereo-raw-reference-retry requires --stereo')
     if args.stereo_owned_image_bundle and not (args.stereo and args.stereo_pose_arbitration):
@@ -325,6 +329,7 @@ def main():
     slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
                      loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
                      stereo_pose_arbitration=args.stereo_pose_arbitration,
+                     stereo_physical_match_pool=args.stereo_physical_match_pool,
                      stereo_raw_reference_retry=args.stereo_raw_reference_retry,
                      stereo_owned_image_bundle=args.stereo_owned_image_bundle,
                      stereo_source_history_bundle=args.stereo_source_history_bundle,
@@ -471,6 +476,7 @@ def main():
         "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
         "stereo_source_history_bundle": bool(getattr(slam.config, "stereo_source_history_bundle", False)),
         "stereo_retained_source_observations": bool(getattr(slam.config, "stereo_retained_source_observations", False)),
+        "stereo_physical_match_pool": bool(getattr(slam.config, "stereo_physical_match_pool", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,
     }

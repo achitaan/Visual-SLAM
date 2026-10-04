@@ -155,6 +155,7 @@ class MappingConfig:
     stereo_owned_image_bundle: bool = False
     stereo_source_history_bundle: bool = False
     stereo_retained_source_observations: bool = False
+    stereo_physical_match_pool: bool = False
     bundle_solver_accuracy: str = "default"
 
     def __post_init__(self):
@@ -169,6 +170,8 @@ class MappingConfig:
             raise ValueError(
                 "stereo_retained_source_observations requires owned image and source-history bundles"
             )
+        if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
+            raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
 
 
 class SharedSlam:
@@ -209,6 +212,11 @@ class SharedSlam:
             raise ValueError('Verified stereo depth requires two calibrated cameras')
         if stereo is None and self.config.stereo_pose_arbitration:
             raise ValueError('Stereo pose arbitration requires two calibrated cameras')
+        if getattr(self.config, "stereo_physical_match_pool", False) and (
+                stereo is None or not self.config.stereo_pose_arbitration):
+            raise ValueError(
+                'Physical stereo match pool requires calibrated stereo and pose arbitration'
+            )
         if stereo is None and self.config.stereo_raw_reference_retry:
             raise ValueError('Raw stereo reference retry requires two calibrated cameras')
         if self.config.stereo_owned_image_bundle and (
@@ -1595,6 +1603,245 @@ class SharedSlam:
                                     np.full(len(pixels), -1, int), index, size,
                                     self.stereo_calibration_identity)
 
+    @classmethod
+    def _partition_physical_stereo_matches(cls, source, target, raw_pairs):
+        """Partition raw mutual descriptor matches by validated physical edges.
+
+        Endpoint topology is built before consulting metric readings or landmark
+        labels. A physical pixel alias group is admitted only when every row in
+        that full extraction group agrees and is independently valid.
+        """
+        report = {
+            "physical_match_pool_mode": "strict_full_alias_edges_v1",
+            "raw_descriptor_pair_count": 0,
+            "physical_edges_before_validation": 0,
+            "physical_edges_accepted": 0,
+            "dropped_competing_relations": 0,
+            "dropped_invalid_source_groups": 0,
+            "dropped_invalid_target_groups": 0,
+            "dropped_conflicting_landmark_edges": 0,
+            "fit_group_count": 0,
+            "holdout_group_count": 0,
+            "partition_rule": "source_physical_group_ordinal_modulo_2",
+        }
+
+        def frame_arrays(frame):
+            pixels_raw = np.asarray(frame.pixels)
+            points_raw = np.asarray(frame.points)
+            right_raw = np.asarray(frame.right_u)
+            ids_raw = np.asarray(frame.landmark_ids)
+            if (pixels_raw.ndim != 2 or pixels_raw.shape[1:] != (2,)
+                    or pixels_raw.dtype.kind not in "fiu"
+                    or points_raw.shape != (len(pixels_raw), 3)
+                    or points_raw.dtype.kind not in "fiu"
+                    or right_raw.shape != (len(pixels_raw),)
+                    or right_raw.dtype.kind not in "fiu"
+                    or ids_raw.shape != (len(pixels_raw),)
+                    or ids_raw.dtype.kind not in "iu"):
+                raise ValueError("invalid_real_endpoint_arrays")
+            if (ids_raw.dtype.kind == "u"
+                    and np.any(ids_raw > np.iinfo(np.int64).max)):
+                raise ValueError("landmark_id_out_of_range")
+            if ids_raw.dtype.kind == "i" and np.any(ids_raw < -1):
+                raise ValueError("invalid_negative_landmark_id")
+            pixels = np.asarray(pixels_raw, dtype=np.float32)
+            points = np.asarray(points_raw, dtype=np.float64)
+            right = np.asarray(right_raw, dtype=np.float64)
+            ids = np.asarray(ids_raw, dtype=np.int64)
+            try:
+                size_raw = np.asarray(frame.image_size)
+                if (size_raw.shape != (2,) or size_raw.dtype.kind not in "fiu"
+                        or not np.isfinite(size_raw).all()):
+                    raise ValueError
+                size = np.asarray(size_raw, dtype=np.float64)
+            except Exception as error:
+                raise ValueError("invalid_endpoint_image_size") from error
+            if not np.isfinite(size).all() or np.any(size <= 0):
+                raise ValueError("invalid_endpoint_image_size")
+            return pixels, points, right, ids, size
+
+        try:
+            source_pixels, source_points, source_right, source_ids, source_size = frame_arrays(source)
+            target_pixels, target_points, target_right, target_ids, target_size = frame_arrays(target)
+        except Exception as error:
+            report.update(reason=str(error), invalid_inputs=True)
+            return {
+                "fit_pairs": np.empty((0, 2), np.int64),
+                "held_pairs": np.empty((0, 2), np.int64),
+                "fit_edges": [], "held_edges": [], "report": report,
+            }
+
+        pairs = np.asarray(raw_pairs)
+        if (pairs.ndim != 2 or pairs.shape[1:] != (2,)
+                or not np.issubdtype(pairs.dtype, np.integer)
+                or np.issubdtype(pairs.dtype, np.bool_)):
+            report.update(reason="invalid_raw_match_pairs", invalid_inputs=True)
+            return {
+                "fit_pairs": np.empty((0, 2), np.int64),
+                "held_pairs": np.empty((0, 2), np.int64),
+                "fit_edges": [], "held_edges": [], "report": report,
+            }
+        if (pairs.dtype.kind == "u"
+                and np.any(pairs > np.iinfo(np.int64).max)):
+            report.update(reason="raw_match_index_out_of_range", invalid_inputs=True)
+            return {
+                "fit_pairs": np.empty((0, 2), np.int64),
+                "held_pairs": np.empty((0, 2), np.int64),
+                "fit_edges": [], "held_edges": [], "report": report,
+            }
+        pairs = np.asarray(pairs, dtype=np.int64)
+        report["raw_descriptor_pair_count"] = int(len(pairs))
+        if (len(pairs) and (np.any(pairs < 0)
+                            or np.any(pairs[:, 0] >= len(source_pixels))
+                            or np.any(pairs[:, 1] >= len(target_pixels)))):
+            report.update(reason="raw_match_index_out_of_bounds", invalid_inputs=True)
+            return {
+                "fit_pairs": np.empty((0, 2), np.int64),
+                "held_pairs": np.empty((0, 2), np.int64),
+                "fit_edges": [], "held_edges": [], "report": report,
+            }
+        if not len(pairs):
+            report["reason"] = "empty_raw_match_pool"
+            return {
+                "fit_pairs": np.empty((0, 2), np.int64),
+                "held_pairs": np.empty((0, 2), np.int64),
+                "fit_edges": [], "held_edges": [], "report": report,
+            }
+
+        source_groups, source_row_group = cls._physical_pixel_groups(source_pixels)
+        target_groups, target_row_group = cls._physical_pixel_groups(target_pixels)
+
+        def claims_by_group(groups, ids):
+            result = []
+            id_groups = {}
+            for group_id, members in enumerate(groups):
+                claims = {int(ids[row]) for row in members if int(ids[row]) >= 0}
+                result.append(claims)
+                for landmark_id in claims:
+                    id_groups.setdefault(landmark_id, set()).add(group_id)
+            conflicts = {group_id for group_ids in id_groups.values() if len(group_ids) > 1
+                         for group_id in group_ids}
+            conflicts.update(group_id for group_id, claims in enumerate(result)
+                             if len(claims) > 1)
+            return result, conflicts
+
+        source_claims, source_identity_conflicts = claims_by_group(source_groups, source_ids)
+        target_claims, target_identity_conflicts = claims_by_group(target_groups, target_ids)
+
+        # Construct the complete relation graph from raw descriptor matches.
+        # No endpoint measurement/identity filtering is allowed at this stage.
+        edge_matches = {}
+        source_relations, target_relations = {}, {}
+        for source_row, target_row in sorted({tuple(map(int, pair)) for pair in pairs}):
+            source_group = int(source_row_group[source_row])
+            target_group = int(target_row_group[target_row])
+            edge_matches.setdefault((source_group, target_group), []).append(
+                (source_row, target_row))
+            source_relations.setdefault(source_group, set()).add(target_group)
+            target_relations.setdefault(target_group, set()).add(source_group)
+        report["physical_edges_before_validation"] = int(len(edge_matches))
+        competing_source = {group for group, neighbors in source_relations.items()
+                            if len(neighbors) > 1}
+        competing_target = {group for group, neighbors in target_relations.items()
+                            if len(neighbors) > 1}
+        report["dropped_competing_relations"] = int(sum(
+            source_group in competing_source or target_group in competing_target
+            for source_group, target_group in edge_matches))
+
+        def valid_group(frame_pixels, frame_points, frame_right, image_size, groups, group_id):
+            members = groups[group_id]
+            pixels = frame_pixels[members]
+            points = frame_points[members]
+            right = frame_right[members]
+            inside = (
+                np.isfinite(pixels).all(axis=1)
+                & (pixels[:, 0] >= 0) & (pixels[:, 0] < image_size[0])
+                & (pixels[:, 1] >= 0) & (pixels[:, 1] < image_size[1])
+            )
+            return bool(
+                np.all(inside)
+                and np.isfinite(points).all()
+                and np.all(points[:, 2] > 0)
+                and np.isfinite(right).all()
+                and np.all((right >= 0) & (right < image_size[0]))
+                and np.allclose(points, points[0], rtol=1e-6, atol=1e-6)
+                and np.allclose(right, right[0], rtol=1e-6, atol=1e-6)
+            )
+
+        valid_source = {}
+        valid_target = {}
+        fit_edges, held_edges = [], []
+        for (source_group, target_group), matches in sorted(edge_matches.items()):
+            if source_group in competing_source or target_group in competing_target:
+                continue
+            if source_group not in valid_source:
+                valid_source[source_group] = valid_group(
+                    source_pixels, source_points, source_right, source_size,
+                    source_groups, source_group)
+            if target_group not in valid_target:
+                valid_target[target_group] = valid_group(
+                    target_pixels, target_points, target_right, target_size,
+                    target_groups, target_group)
+            if not valid_source[source_group]:
+                report["dropped_invalid_source_groups"] += 1
+                continue
+            if not valid_target[target_group]:
+                report["dropped_invalid_target_groups"] += 1
+                continue
+            if (source_group in source_identity_conflicts
+                    or target_group in target_identity_conflicts):
+                report["dropped_conflicting_landmark_edges"] += 1
+                continue
+            source_aliases = tuple(map(int, source_groups[source_group]))
+            target_aliases = tuple(map(int, target_groups[target_group]))
+            pair = min(matches)
+            source_claim_ids = tuple(sorted(source_claims[source_group]))
+            target_claim_ids = tuple(sorted(target_claims[target_group]))
+            edge = {
+                "pair": pair,
+                "source_group_id": int(source_group),
+                "target_group_id": int(target_group),
+                "source_alias_rows": source_aliases,
+                "target_alias_rows": target_aliases,
+                "source_landmark_ids": source_claim_ids,
+                "target_landmark_ids": target_claim_ids,
+                "partition_source_group_ordinal": int(source_group),
+            }
+            (fit_edges if source_group % 2 == 0 else held_edges).append(edge)
+
+        fit_edges.sort(
+            key=lambda edge: (edge["source_group_id"], edge["target_group_id"])
+        )
+        held_edges.sort(
+            key=lambda edge: (edge["source_group_id"], edge["target_group_id"])
+        )
+        fit_source_groups = {edge["source_group_id"] for edge in fit_edges}
+        held_source_groups = {edge["source_group_id"] for edge in held_edges}
+        fit_target_groups = {edge["target_group_id"] for edge in fit_edges}
+        held_target_groups = {edge["target_group_id"] for edge in held_edges}
+        if (fit_source_groups & held_source_groups
+                or fit_target_groups & held_target_groups):
+            report.update(reason="physical_partition_overlap", invalid_inputs=True)
+            fit_edges, held_edges = [], []
+
+        fit_pairs = np.asarray([edge["pair"] for edge in fit_edges], dtype=np.int64).reshape(-1, 2)
+        held_pairs = np.asarray([edge["pair"] for edge in held_edges], dtype=np.int64).reshape(-1, 2)
+        report.update(
+            physical_edges_accepted=int(len(fit_edges) + len(held_edges)),
+            fit_group_count=int(len(fit_edges)),
+            holdout_group_count=int(len(held_edges)),
+            dropped_duplicate_descriptor_pairs=max(0, int(len(pairs) - len(edge_matches))),
+            reason=("physical_edges_partitioned" if len(fit_edges) and len(held_edges)
+                    else "insufficient_physical_fit_or_holdout"),
+        )
+        return {
+            "fit_pairs": fit_pairs,
+            "held_pairs": held_pairs,
+            "fit_edges": fit_edges,
+            "held_edges": held_edges,
+            "report": report,
+        }
+
     def _prepare_stereo_arbitration(self, index, current, capture_rows=False):
         report = {'choice': 'map', 'reason': 'missing_previous_supported_frame'}
         previous = self.previous_supported_stereo
@@ -1606,32 +1853,53 @@ class SharedSlam:
                 or previous.calibration_identity != current.calibration_identity):
             return None, report
         pairs = self._match(previous.descriptors, current.descriptors)
-        if not len(pairs):
-            report['reason'] = 'insufficient_supported_pool'
-            return None, report
-        # Multiple SIFT orientations can describe one physical pixel. Drop every
-        # duplicate in either full extraction before splitting the matching pool.
-        _, previous_inverse, previous_counts = np.unique(
-            np.asarray(previous.pixels, np.float32), axis=0, return_inverse=True, return_counts=True)
-        _, current_inverse, current_counts = np.unique(
-            np.asarray(current.pixels, np.float32), axis=0, return_inverse=True, return_counts=True)
-        a, b = pairs.T
-        valid = (np.isfinite(previous.points[a]).all(axis=1)
-                 & np.isfinite(current.points[b]).all(axis=1)
-                 & np.isfinite(previous.right_u[a]) & np.isfinite(current.right_u[b])
-                 & (previous.right_u[a] >= 0) & (previous.right_u[a] < previous.image_size[0])
-                 & (current.right_u[b] >= 0) & (current.right_u[b] < current.image_size[0])
-                 & (previous_counts[previous_inverse[a]] == 1)
-                 & (current_counts[current_inverse[b]] == 1))
-        pool = pairs[valid]
-        fit = pool[pool[:, 0] % 2 == 0]
-        held = pool[pool[:, 0] % 2 == 1]
+        physical_mode = bool(getattr(self.config, "stereo_physical_match_pool", False))
+        fit_edges = held_edges = None
+        if physical_mode:
+            partition = self._partition_physical_stereo_matches(previous, current, pairs)
+            report.update(partition["report"])
+            report["physical_identity"] = "strict_full_alias_edges_v1"
+            if partition["report"].get("invalid_inputs"):
+                return None, report
+            fit = partition["fit_pairs"]
+            held = partition["held_pairs"]
+            fit_edges = partition["fit_edges"]
+            held_edges = partition["held_edges"]
+            if not len(pairs):
+                report["reason"] = "insufficient_supported_pool"
+                return None, report
+            report.update(supported_pool=len(fit) + len(held), fit_count=len(fit),
+                          holdout_count=len(held), source_frame=previous.frame,
+                          target_frame=index)
+        else:
+            if not len(pairs):
+                report['reason'] = 'insufficient_supported_pool'
+                return None, report
+            # Preserve the default numerical path exactly. It drops duplicate
+            # endpoint pixels before splitting descriptor rows by source index.
+            _, previous_inverse, previous_counts = np.unique(
+                np.asarray(previous.pixels, np.float32), axis=0,
+                return_inverse=True, return_counts=True)
+            _, current_inverse, current_counts = np.unique(
+                np.asarray(current.pixels, np.float32), axis=0,
+                return_inverse=True, return_counts=True)
+            a, b = pairs.T
+            valid = (np.isfinite(previous.points[a]).all(axis=1)
+                     & np.isfinite(current.points[b]).all(axis=1)
+                     & np.isfinite(previous.right_u[a]) & np.isfinite(current.right_u[b])
+                     & (previous.right_u[a] >= 0) & (previous.right_u[a] < previous.image_size[0])
+                     & (current.right_u[b] >= 0) & (current.right_u[b] < current.image_size[0])
+                     & (previous_counts[previous_inverse[a]] == 1)
+                     & (current_counts[current_inverse[b]] == 1))
+            pool = pairs[valid]
+            fit = pool[pool[:, 0] % 2 == 0]
+            held = pool[pool[:, 0] % 2 == 1]
+            report.update(supported_pool=len(pool), fit_count=len(fit), holdout_count=len(held),
+                          dropped_duplicate_matches=int(np.sum(
+                              (previous_counts[previous_inverse[a]] > 1)
+                              | (current_counts[current_inverse[b]] > 1))),
+                          source_frame=previous.frame, target_frame=index)
         minimum = self.config.min_inliers
-        report.update(supported_pool=len(pool), fit_count=len(fit), holdout_count=len(held),
-                      dropped_duplicate_matches=int(np.sum(
-                          (previous_counts[previous_inverse[a]] > 1)
-                          | (current_counts[current_inverse[b]] > 1))),
-                      source_frame=previous.frame, target_frame=index)
         if (min(len(fit), len(held)) < minimum
                 or any(coverage(frame.pixels[subset[:, column]], frame.image_size) < 3
                        for subset in (fit, held)
@@ -1639,16 +1907,42 @@ class SharedSlam:
             report['reason'] = 'insufficient_reserved_support'
             return None, report
         source, target = held.T
-        source_pixels = {self._physical_pixel_key(p) for p in previous.pixels[source]}
-        target_pixels = {self._physical_pixel_key(p) for p in current.pixels[target]}
-        excluded_targets = {j for j, p in enumerate(current.pixels)
-                            if self._physical_pixel_key(p) in target_pixels}
-        excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
-        excluded_landmarks.update(lid for lid, p in self.previous_tracks
-                                  if self._physical_pixel_key(p) in source_pixels)
+        if physical_mode:
+            held_source_aliases = sorted({row for edge in held_edges
+                                          for row in edge["source_alias_rows"]})
+            held_target_aliases = sorted({row for edge in held_edges
+                                          for row in edge["target_alias_rows"]})
+            source_pixels = {self._physical_pixel_key(previous.pixels[row])
+                             for row in held_source_aliases}
+            target_pixels = {self._physical_pixel_key(current.pixels[row])
+                             for row in held_target_aliases}
+            excluded_targets = set(held_target_aliases)
+            excluded_landmarks = {
+                landmark_id for edge in held_edges
+                for landmark_id in (edge["source_landmark_ids"]
+                                    + edge["target_landmark_ids"])
+            }
+            excluded_landmarks.update(
+                int(landmark_id) for landmark_id, pixel in self.previous_tracks
+                if self._physical_pixel_key(pixel) in source_pixels
+            )
+            held_landmark_ids = np.asarray([
+                edge["source_landmark_ids"][0]
+                if len(edge["source_landmark_ids"]) == 1 else -1
+                for edge in held_edges
+            ], dtype=np.int64)
+        else:
+            source_pixels = {self._physical_pixel_key(p) for p in previous.pixels[source]}
+            target_pixels = {self._physical_pixel_key(p) for p in current.pixels[target]}
+            excluded_targets = {j for j, p in enumerate(current.pixels)
+                                if self._physical_pixel_key(p) in target_pixels}
+            excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
+            excluded_landmarks.update(lid for lid, p in self.previous_tracks
+                                      if self._physical_pixel_key(p) in source_pixels)
+            held_landmark_ids = previous.landmark_ids[source]
         evidence = SupportedStereoHoldout(previous.points[source], current.pixels[target],
                                          current.right_u[target], source, target,
-                                         previous.landmark_ids[source],
+                                         held_landmark_ids,
                                          'immutable_supported_extraction', previous.frame,
                                          previous.calibration_identity)
         fit_epoch = None
@@ -1712,12 +2006,17 @@ class SharedSlam:
             independent_fit_target_ids=context['fit'][:, 1],
             map_fit_target_ids=list(context['map_fit_targets']),
             map_fit_landmark_ids=list(context['map_fit_landmarks']))
+        physical_identity = (
+            "strict_full_alias_edges_v1"
+            if getattr(self.config, "stereo_physical_match_pool", False)
+            else "exact_float32_pixels_duplicates_dropped"
+        )
         return {**context['report'], **report,
                 'independent_fit_sha256': hashlib.sha256(
                     np.ascontiguousarray(context['fit'], dtype='<i8').tobytes()).hexdigest(),
                 'map_fit_landmarks': len(context['map_fit_landmarks']),
                 'map_fit_target_features': len(context['map_fit_targets']),
-                'physical_identity': 'exact_float32_pixels_duplicates_dropped'}
+                'physical_identity': physical_identity}
 
     def _validate_stereo_associations_at_pose(
         self, pose, associations, accepted_tracks, pixels, size, final_solve_positions,

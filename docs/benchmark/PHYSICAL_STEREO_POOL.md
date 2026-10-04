@@ -33,7 +33,7 @@ These are short diagnostic prefixes with only one KITTI segment on 04 and eight 
 
 ## Reproduction
 
-Use the same Python environment for both modes. The recorded runtime used Python 3.12.14, OpenCV 5.0.0, NumPy 2.5.3, SciPy 1.18.1 and PyTorch 2.7.1+cu126 on a GTX 1660 SUPER. OpenCV and BLAS used one worker. GPU matching was active in every run; no feature cache was used.
+Use the same Python environment for both modes. The recorded runtime used Python 3.12.14, OpenCV 5.0.0, NumPy 2.5.3, SciPy 1.18.1 and PyTorch 2.7.1+cu126 on a GTX 1660 SUPER. OpenCV and BLAS used one worker. GPU matching was active in all four shared-SLAM policy runs; preserved VO uses its original CPU matcher. No feature cache was used.
 
 ```sh
 python scripts/evaluate_shared_slam.py --stereo \
@@ -49,3 +49,24 @@ Repeat into a separate output directory with `--stereo-physical-match-pool`. For
 The exact source/runtime fingerprint is `3d6075338d8a6e73ff9751f5769d7f2fb440cb6ea90392cdf09f5ec22afdba11`. Backend validation passed 579 tests; the focused subset passed 82 tests. Coverage includes alias conflicts, invalid competing topology, stable physical sample ordering and real nonplanar forward/reverse stereo PnP. Synthetic checks do not establish dataset accuracy.
 
 Saved controls reproduce the earlier control trajectories, sparse maps and independent motion ledgers exactly. Completed outputs and failed experiments remain preserved locally. The validation scheduler remains paused; this experiment has not been merged into main.
+
+## Fresh comparison with preserved stereo VO
+
+Two additional original-VO runs use the same input and reference hashes, calibration and frame-zero prefixes as the control above. The preserved VO class matches `origin/main`; its stereo solver thresholds are unchanged. The current control keeps the experimental physical policy disabled.
+
+| Sequence / frames | Estimator | SE(3) ATE m | Translation % | Rotation deg/m | Lost frames | Parent worker s | Peak RAM MiB |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 04 / 80 | preserved stereo VO | 0.443515 | 1.672844 | 0.012412 | 0 | 45.45 | 232.05 |
+| 04 / 80 | current control | 0.111884 | 0.280753 | 0.005653 | 0 | 52.61 | 970.60 |
+| 01 / 128 | preserved stereo VO | 2.102676 | 3.617194 | 0.016696 | 0 | 62.89 | 237.83 |
+| 01 / 128 | current control | 2.588752 | 4.402350 | 0.012833 | 0 | 99.36 | 999.88 |
+
+The current control improves ATE 74.8%, translation drift 83.2% and rotation drift 54.5% on 04. On 01 it improves rotation drift 23.1%, but worsens ATE 23.1% and translation drift 21.7%. Thus it does not yet meet the objective of consistent improvement over the original estimator.
+
+Here the timing column uses parent worker duration for both estimators, including process startup and reporting. It must not be compared directly with the processing-only timing above. These cross-cycle, shared-host observations are descriptive: current workers take 15.7% and 58.0% longer, and saved peak RAM is approximately 4.2 times baseline. No streaming or real-time claim follows from these prefixes.
+
+![Original VO versus current control, with raw position errors](plots/preserved-vo-current-control-prefixes.png)
+
+A separate same-measurement diagnostic compared seed-free EPNP and ITERATIVE RANSAC, followed by the same LM refinement. Six saved fitting sets and two known-truth noisy/outlier synthetic scenes produced identical inlier sets and effectively identical poses (translation differences below 0.000002 m). This falsifies that specific solver-method hypothesis; it does not justify another method switch or benchmark replay.
+
+Local experiment history is maintained as an append-only evidence journal with a readable timeline, artifact hashes, recorded revisions/configuration, outcomes and explicit provenance gaps. Failed, interrupted and rejected trials are retained. Historical statuses copied from artifacts are not claims that old processes are currently running.

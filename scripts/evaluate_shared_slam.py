@@ -613,9 +613,6 @@ def main():
                 metrics["segments"] = []
                 metrics["segment_count"] = 0
             report["metrics"] = {k: v for k, v in metrics.items() if k != "segments"}
-    (args.output / "evaluation.json").write_text(
-        json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
-    )
     report["total_wall_seconds"] = time.perf_counter() - invocation_started
     write_json(args.output / "evaluation.json", report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("loop_events", "source_sha256")}, indent=2), flush=True)

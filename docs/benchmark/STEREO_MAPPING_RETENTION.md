@@ -25,3 +25,5 @@ Backend validation: the initial full run passed 651 tests and failed two older C
 ![Sparse maps](figures/mapping-retention-01-maps.png)
 
 Retention-only exceptions exercised: 1. The 90 retained observations restored cross-keyframe connections and enabled additional bundle updates. These lowered image residuals while trajectory accuracy worsened; the mechanism alone does not establish the cause. Full frame-level diagnostics remain in the locally retained run exports. Source fingerprint: 483ec9ee6733682359b0b409681c18b4b319474a401a84238bd782825b12e9a2.
+
+[Follow-up solver and measurement diagnosis](STEREO_BUNDLE_SOLVER_DIAGNOSIS.md).

@@ -28,7 +28,7 @@ class PackagedEntryTests(unittest.TestCase):
         with patch.object(entry.original,'assert_runtime_ready') as host, patch.object(entry.original,'run_foreground') as run, contextlib.redirect_stdout(io.StringIO()) as text:
             self.assertEqual(entry.main(['--preset','quick04','--check']),0)
         host.assert_not_called();run.assert_not_called()
-        self.assertEqual(json.loads(text.getvalue())['packaged_binding_files_verified'],80)
+        self.assertEqual(json.loads(text.getvalue())['packaged_binding_files_verified'],83)
 
     def test_changed_binding_manifest_refused(self):
         with patch.object(entry,'BINDINGS_SHA256','0'*64), self.assertRaisesRegex(ValueError,'manifest changed'):

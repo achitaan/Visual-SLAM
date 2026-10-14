@@ -25,3 +25,5 @@ The latest actual browser check recorded prepared → running → stopping → c
 - Added the 79-file local binding package and a tested, non-overwriting restore helper; all four prepared preset selectors pass from packaged data.
 - Extended the bindings to 80 files for the ordered full01 launcher; added the repository command and packaged dashboard.
 - The packaged entry completed an actual 60-frame normal run, with 62 browser receipts, two strict maps, immutable poses and confirmed cleanup. Final focused release review remains pending; no new accuracy claim is made here.
+
+Final release review31 clears the local package after the isolated hello-order repair. `local-bindings.json` preserves all 80 earlier bindings and adds three handshake successors (83 total). The repository entry routes to these successors; the algorithm and original application proofs are preserved. See `docs/benchmark/online-native/application/native-packaged-release-review31-result.json`.

@@ -33,7 +33,11 @@
     "native-repository-restore-final-tests.log": "db731985a83917fcbb232bb547f3a2512873990e147a595de8150db1ec0941aa"
   },
   "ground_truth_read_by_application": false,
-  "final_independent_review": "pending_one_additional_authorized_Lane_call",
+  "final_independent_review": "approve_scoped_local_main_readiness",
   "main_updated": false,
-  "utc": "2026-10-14T04:29:34.744463+00:00"
+  "utc": "2026-10-14T04:29:34.744463+00:00",
+  "review_result": "native-packaged-release-review31-result.json",
+  "closure_component_checks": 25,
+  "new_numerical_benchmarks_for_closure": 0,
+  "final_binding_count": 83
 }

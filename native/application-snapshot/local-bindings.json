@@ -320,6 +320,18 @@
     "native_application_launcher_ordered_full_v10.py": {
       "sha256": "716beb9bcd31e5add5232f62f420db840cc5cc36bf505c3616a4c6099b8ab026",
       "bytes": 26910
+    },
+    "native_application_control_handshake_v7.py": {
+      "sha256": "a4abe418ff891ecde644d400b716c904e13a846d43eb3174d70e1b669ca720b5",
+      "bytes": 2683
+    },
+    "native_application_launcher_handshake_v12.py": {
+      "sha256": "fb86efb7a982aade22745795bab442d50a77a0355f388465a940e6e7f34984a5",
+      "bytes": 26914
+    },
+    "native_application_launcher_handshake_full_v10.py": {
+      "sha256": "a833a3c05e4c3c71430a5345d8db8ae7eda13b3d2eee666404528079d888d839",
+      "bytes": 26914
     }
   },
   "runtime_installed": false,

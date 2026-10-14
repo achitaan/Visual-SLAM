@@ -1,0 +1,37 @@
+{
+  "utc": "2026-10-14T04:49:36.484824+00:00",
+  "status": "two_review_findings_repaired_pending_same_independent_review_closure",
+  "sources_sha256": {
+    "scripts/run_native_candidate.py": "25d82573c30a7c60e106c9fc6406b56ee2066d6c35513a06d42dd41fa7f21b3d",
+    "scripts/test_run_native_candidate.py": "6aa7ae0b36ed32b03d6e14f57400319b31e6d29a11beb65ea3f21cd551961f5c",
+    "scripts/test_native_candidate_handshake.py": "b05300f85428e29e8d9e65e42192ca6dc52118f2ab500fb18beb475959b49c6f",
+    "native/application-snapshot/campaign/native_application_control_handshake_v7.py": "a4abe418ff891ecde644d400b716c904e13a846d43eb3174d70e1b669ca720b5",
+    "native/application-snapshot/campaign/native_application_launcher_handshake_v12.py": "fb86efb7a982aade22745795bab442d50a77a0355f388465a940e6e7f34984a5",
+    "native/application-snapshot/campaign/native_application_launcher_handshake_full_v10.py": "a833a3c05e4c3c71430a5345d8db8ae7eda13b3d2eee666404528079d888d839",
+    "native/application-snapshot/local-bindings.json": "068e44c97a254b4ea397a5e7a812b6f977674393fdeb7fe15ff2b9c5bbe38bfe",
+    "docs/NATIVE-RELEASE.md": "0d88a67f6a946c20f8351d618e5ea66b50d3c1ef440d22cce48be702e6ed52d6"
+  },
+  "evidence_sha256": {
+    "native-review31-handshake-old-red.log": "1be42accb56ce9be37b5ceb092411310e1dc41110db6fc36c43c34771a353404",
+    "native-review31-handshake-new-green.log": "05ed042bea27451ef446bb01df99d84394297527f3a06a81759465a5af3b253d",
+    "native-review31-existing-socket-contracts.log": "3b9430d0f1ded20157c7146d555c5659378ead287e5f35b87a8a2770dfd35f96",
+    "native-review31-entry-tests.log": "6dfa3fc2ed779581f5a3ade6854ba4b556bc8837c21a20b73a1fb806fac3ba8f",
+    "native-review31-restore-tests.log": "08338b6808d6d16f7593c64fd2a10657a244547ae5d6d8061d609b6be1992ded"
+  },
+  "changes": [
+    "New isolated V7 registers client only after successful hello while holding shared send lock. V6 and all native proofs preserved.",
+    "New launchers change only control import/component manifest from prior ordered launchers.",
+    "83 bindings include all80 old bindings unchanged plus3 successors. Entry strict manifest updated.",
+    "Documented commands use qualified GPU Python explicitly."
+  ],
+  "tests": {
+    "old_three_handshake_checks": "2failures proves old contract defect",
+    "new_handshake_checks": 3,
+    "existing_socket_contracts": 11,
+    "entry_guards": 6,
+    "restoration": 5
+  },
+  "native_benchmarks_run": 0,
+  "original_component_and_evidence_preserved": true,
+  "main_changed": false
+}

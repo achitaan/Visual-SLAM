@@ -1,0 +1,39 @@
+test_existing_peer_still_receives_queued_authoritative_state (__main__.Handshake.test_existing_peer_still_receives_queued_authoritative_state) ... FAIL
+test_failed_hello_does_not_admit_peer_or_claim_delivery (__main__.Handshake.test_failed_hello_does_not_admit_peer_or_claim_delivery) ... ok
+test_queued_broadcast_cannot_precede_new_peer_hello (__main__.Handshake.test_queued_broadcast_cannot_precede_new_peer_hello) ... FAIL
+
+======================================================================
+FAIL: test_existing_peer_still_receives_queued_authoritative_state (__main__.Handshake.test_existing_peer_still_receives_queued_authoritative_state)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Achita\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Achita\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Achita\Documents\ChatGPT\VSLAM\scripts\test_native_candidate_handshake.py", line 78, in test_existing_peer_still_receives_queued_authoritative_state
+    self.assertEqual(joining.messages[0]['type'], 'control_hello')
+AssertionError: 'control_state' != 'control_hello'
+- control_state
++ control_hello
+
+
+======================================================================
+FAIL: test_queued_broadcast_cannot_precede_new_peer_hello (__main__.Handshake.test_queued_broadcast_cannot_precede_new_peer_hello)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Achita\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Achita\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Achita\Documents\ChatGPT\VSLAM\scripts\test_native_candidate_handshake.py", line 51, in test_queued_broadcast_cannot_precede_new_peer_hello
+    self.assertNotIn(peer, server._clients)
+AssertionError: <__main__.Peer object at 0x0000023AE2261520> unexpectedly found in {<__main__.Peer object at 0x0000023AE2261520>}
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.066s
+
+FAILED (failures=2)

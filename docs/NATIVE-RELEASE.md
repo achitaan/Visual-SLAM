@@ -9,7 +9,8 @@ This setup targets the existing qualified Windows checkout at `C:\Users\Achita\D
 In one terminal, from the repository root:
 
 ```powershell
-python -B scripts/start_native_dashboard.py
+$nativePython = 'C:\Users\Achita\.codex\worktrees\e824\VSLAM\.venv-performance-gpu\Scripts\python.exe'
+& $nativePython -B scripts/start_native_dashboard.py
 ```
 
 The helper reuses `dashboard/node_modules` through a scoped junction and serves `native/dashboard` on loopback port 4301. It refuses a different existing dependency directory or an occupied port. If the earlier isolated dashboard still owns 4301, use that existing viewer until it has been intentionally shut down; do not start a duplicate. The package keeps the qualified route, components, styles and layout bytes unchanged, and disables persistent webpack caching.
@@ -19,7 +20,7 @@ The helper reuses `dashboard/node_modules` through a scoped junction and serves 
 Check the source/configuration bindings and host before dispatch:
 
 ```powershell
-python -B scripts/run_native_candidate.py --preset quick04 --setup --check --check-host
+& 'C:\Users\Achita\.codex\worktrees\e824\VSLAM\.venv-performance-gpu\Scripts\python.exe' -B scripts/run_native_candidate.py --preset quick04 --setup --check --check-host
 ```
 
 `--setup` restores only missing files from the packaged bindings, after validating every source hash. Existing differing files are preserved and cause refusal. `--check` starts no estimator or browser.
@@ -27,7 +28,7 @@ python -B scripts/run_native_candidate.py --preset quick04 --setup --check --che
 Run the short demonstration:
 
 ```powershell
-python -B scripts/run_native_candidate.py --preset quick04
+& 'C:\Users\Achita\.codex\worktrees\e824\VSLAM\.venv-performance-gpu\Scripts\python.exe' -B scripts/run_native_candidate.py --preset quick04
 ```
 
 Open its printed browser link before the readiness deadline. The application starts native processing only after the browser has connected to its control and telemetry streams. Use **Stop run** or terminal Ctrl+C to request owned cleanup. Cancelled runs retain their emitted pose/map prefix and explicit unprocessed original IDs; they are incomplete runs. **Clear display** changes the display only.
@@ -51,13 +52,16 @@ Outputs remain in `results/recovery-campaign/20261006T003837Z/<run-id>_applicati
 - The full01 original normal application test delivered 1,101 poses and 37 strict maps with immutable bytes, disk reserve and owned cleanup verified. Its ordered-control successor changes only the control import and component manifest; the estimator and other launcher code are AST-identical. This does not claim a fresh full01 execution of the successor.
 - Focused package and restoration tests check guarded routing, missing/corrupt files and preservation of existing data. No accuracy reruns are attributed to packaging work.
 
-Final release review and the final packaged launch scope remain pending. Main has not been updated.
+The [final independent review](benchmark/online-native/application/native-packaged-release-review31-result.json) clears this package for the qualified local Windows/Ubuntu WSL release scope. The connection-order successor preserves the tested launcher behavior and admits a subscriber only after its hello has been sent; 25 focused checks pass. The prior full01 and short actual browser evidence remains applicable as scoped by the review. Main has not been updated.
+
+A new run still requires its documented free-space threshold. At review time, quick04 admission correctly refused 1,675,972,608 available bytes against 1,680,612,736 required. This operational storage guard does not change the completed release checks.
 
 ## Release notes
 
 - Added the exact benchmarked native C++ source, original license notices and hash verification.
 - Packaged application source/configuration dependencies and safe restoration tooling.
 - Added a repository command for the four prepared native presets and a packaged dashboard using existing dependencies.
-- Fixed external Stop publication ordering and verified browser stopping/cleanup delivery on the short native application.
+- Fixed external Stop publication ordering and the new-client hello ordering race, preserving owned cleanup and immutable poses.
+- Qualified the short browser normal/Stop paths and completed an independent release review; setup commands now select the tested Python runtime.
 - Published all 19 numerical comparisons, with the accepted full00/full10 RPE tradeoffs retained explicitly.
 - Supported setup remains the qualified local Windows/Ubuntu WSL environment; cross-machine installation is not yet qualified.

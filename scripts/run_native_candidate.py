@@ -13,16 +13,16 @@ from restore_native_application_bindings import PACKAGE, restore
 from verify_native_release_source import PACKAGE as SOURCE_PACKAGE, verify as verify_source
 
 ROOT = Path(__file__).resolve().parents[1]
-BINDINGS_SHA256 = '14c90026a89bf590144a57010eaabd7e3685159aab1ea967371689e4824bb4d2'
+BINDINGS_SHA256 = '068e44c97a254b4ea397a5e7a812b6f977674393fdeb7fe15ff2b9c5bbe38bfe'
 FRONTEND_SHA256 = {
     'scripts/online_candidate.py':'63e83d8fd8037ef9cf7453454cd15abce9a5a9dc2105de506ffbb26e43c1d25e',
     'scripts/online_candidate_stop.py':'6bc9fa517183cd7fa84077149ac0cc8b5bc88c1bbf0339cd31c8e7af33400886',
 }
 LAUNCHERS = {
-    'quick04': 'native_application_launcher_ordered_v11.py',
-    'short04': 'native_application_launcher_ordered_v11.py',
-    'short01': 'native_application_launcher_ordered_v11.py',
-    'full01': 'native_application_launcher_ordered_full_v10.py',
+    'quick04': 'native_application_launcher_handshake_v12.py',
+    'short04': 'native_application_launcher_handshake_v12.py',
+    'short01': 'native_application_launcher_handshake_v12.py',
+    'full01': 'native_application_launcher_handshake_full_v10.py',
 }
 
 

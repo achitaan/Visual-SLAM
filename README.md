@@ -4,33 +4,7 @@ Stereo and monocular visual odometry with a live dashboard and offline pose grap
 
 The project aims to build reliable visual SLAM across environments. KITTI is used to diagnose accuracy and tracking failures; benchmark scores are not the sole development objective.
 
-## Online replacement candidate
-
-The native ORB-SLAM3 candidate performs tracking, pose optimization and mapping during processing. Emitted poses stay immutable. **Real-time throughput is not required for this implementation.** The exact benchmarked source, guarded repository launcher and qualified dashboard are packaged on this branch. See [local setup and release notes](docs/NATIVE-RELEASE.md). The packaged-entry normal-completion and Stop checks pass. The final independent review clears this package for the qualified local, non-real-time release scope; see the [review result](docs/benchmark/online-native/application/native-packaged-release-review31-result.json).
-
-### Verified native benchmarks
-
-**19 completed paired comparisons: 17 strict passes and two explicitly accepted translation-RPE tradeoffs.** Every candidate run improved aligned ATE and total runtime and had zero tracking losses. Full sequences are shown below; three-seed entries use the median of each metric for each system.
-
-| KITTI sequence | Seeds | VO ATE (m) | Native ATE (m) | VO runtime (s) | Native runtime (s) |
-|---|---|---:|---:|---:|---:|
-| 00† | 0 | 20.610 | 3.947 | 2642.8 | 1029.8 |
-| 01 | 0,1,2 | 77.732 | 15.105 | 449.2 | 155.1 |
-| 03 | 0 | 2.327 | 1.273 | 449.6 | 94.1 |
-| 04 | 0,1,2 | 1.743 | 0.288 | 139.3 | 34.6 |
-| 05 | 0 | 9.555 | 2.212 | 1460.0 | 376.6 |
-| 06 | 0 | 2.815 | 2.561 | 511.5 | 133.3 |
-| 07 | 0 | 3.913 | 1.363 | 581.6 | 120.6 |
-| 09 | 0 | 5.133 | 3.299 | 790.2 | 205.0 |
-| 10† | 0 | 2.564 | 1.363 | 644.2 | 154.6 |
-
-† Full00 and full10 have accepted one-second translation-RPE regressions of **2.005%** and **0.228%**, respectively. Their original strict failures remain recorded. ATE and runtime improved in both cases.
-
-ATE uses SE(3) alignment without scale fitting; lower is better. Runtimes include whole dispatch/export overhead. This compares Linux C++/OpenCV4.8.1 with Windows Python/OpenCV5.0 as whole systems. Full00 includes a recorded bootstrap/storage pause between its baseline and candidate runs. KITTI02/08 remain untested on this exact source. Results are public KITTI development-set measurements, not hidden-test results.
-
-See [all 19 runs (CSV)](docs/benchmark/online-native/results.csv), [metrics and provenance (JSON)](docs/benchmark/online-native/results.json), and the [benchmark methodology and evidence](docs/benchmark/online-native/README.md). The original pipeline and its historical results below remain available.
-
-## Original pipeline status
+## Pipeline status
 
 The stereo pipeline uses SIFT features, SGBM disparity and PnP motion estimation. Offline loop verification uses stereo geometry, followed by a SciPy pose graph optimizer and correction propagation to the full trajectory. Ground truth is used only for evaluation and display, never to initialize motion, recover scale or construct graph constraints.
 

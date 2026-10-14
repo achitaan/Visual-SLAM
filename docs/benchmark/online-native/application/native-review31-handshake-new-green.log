@@ -1,8 +1,0 @@
-test_existing_peer_still_receives_queued_authoritative_state (__main__.Handshake.test_existing_peer_still_receives_queued_authoritative_state) ... ok
-test_failed_hello_does_not_admit_peer_or_claim_delivery (__main__.Handshake.test_failed_hello_does_not_admit_peer_or_claim_delivery) ... ok
-test_queued_broadcast_cannot_precede_new_peer_hello (__main__.Handshake.test_queued_broadcast_cannot_precede_new_peer_hello) ... ok
-
-----------------------------------------------------------------------
-Ran 3 tests in 0.098s
-
-OK

@@ -1,3 +1,0 @@
-# Preserve the exact bytes bound by manifest.json on Windows and Linux.
-*.json -text
-*.csv -text

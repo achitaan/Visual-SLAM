@@ -1,0 +1,435 @@
+{
+  "status": "verified_complete_serialized_two_sequence_source_screen_not_retention",
+  "utc": "2026-10-13T01:10:20.653658+00:00",
+  "protocol_sha256": "ba14e59ad4c0aeb9c0d28e8be59f583a7a14b25323296e4fc6fdc05592e58bfd",
+  "component": {
+    "status": "qualified_actual_60_frame_new_source_and_entire_arm_component_not_accuracy_acceptance",
+    "case_sha256": "3136742a8eac896052a5a4aefb4e82de52a43c4e539b08a6b145e2973f0dea2a",
+    "frames": 60,
+    "causal": {
+      "frames": 60,
+      "held_frames": 0,
+      "tracked_pose_proofs": 59,
+      "online_local_solves": 25,
+      "post_emission_local_solves": 2,
+      "primary_map_id": 0,
+      "scope": "causal/coverage/lifecycle proof only; accuracy requires evaluator and baseline comparison",
+      "primary_map_generation": 1
+    },
+    "maps": [
+      {
+        "frame": 30,
+        "keyframes": 17,
+        "points": 2620,
+        "sha256": "8e0bb0a7acde25d7c7dc2e841803770cfeb0c7b009c8af4d1cb08f1d3b2ba7d1"
+      },
+      {
+        "frame": 59,
+        "keyframes": 39,
+        "points": 3326,
+        "sha256": "41e7ef158f8f32d4059c5b87779d79fa111b93520bb1335b25ab7938d71021e7"
+      }
+    ],
+    "deadline_proof": {
+      "status": "verified_observed_entire_arm_and_finalizer_original_deadline_v3",
+      "cap_s": 180.0,
+      "outer": {
+        "status": "verified_entire_arm_original_deadline_v2",
+        "cap_s": 180.0,
+        "outer_process_identity": {
+          "pid": 437,
+          "pid_start_ticks": 1516,
+          "process_group": 437,
+          "session": 437
+        }
+      },
+      "finalizer": {
+        "status": "verified_saved_bounded_finalization",
+        "wall_s": 10.536750481999999,
+        "cap_s": 180.0,
+        "process_identity": {
+          "pid": 567,
+          "pid_start_ticks": 2497,
+          "process_group": 567,
+          "session": 567
+        }
+      },
+      "watchdog_observed_before_original_deadline": true
+    },
+    "ground_truth_read": false
+  },
+  "pairs": [
+    {
+      "sequence": "04",
+      "frames": 80,
+      "seed": 0,
+      "full": false,
+      "order": [
+        "candidate",
+        "vo"
+      ],
+      "gates": {
+        "ate_rmse_m": true,
+        "raw_ate_rmse_m": true,
+        "translation_percent": true,
+        "rotation_deg_per_m": true,
+        "rpe_translation_rmse_m": true,
+        "rpe_rotation_rmse_deg": true,
+        "held_lost": true,
+        "runtime": true
+      },
+      "pass_all": true,
+      "measurements": {
+        "vo": {
+          "trajectory": {
+            "frames": 80,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 0.4435152333644527,
+            "raw_ate_rmse_m": 0.9714209956677107,
+            "segment_count": 1,
+            "translation_percent": 1.6728443545690346,
+            "rotation_deg_per_m": 0.012411752678546415
+          },
+          "rpe": {
+            "frames": 80,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 70,
+            "translation_rmse_m": 0.2226972354239782,
+            "rotation_rmse_deg": 0.18414189696210886,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        },
+        "native": {
+          "trajectory": {
+            "frames": 80,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 0.2289366715126401,
+            "raw_ate_rmse_m": 0.4484571678047313,
+            "segment_count": 1,
+            "translation_percent": 0.7006838498408916,
+            "rotation_deg_per_m": 0.0025888021180900133
+          },
+          "rpe": {
+            "frames": 80,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 70,
+            "translation_rmse_m": 0.1334044918819584,
+            "rotation_rmse_deg": 0.09322200518228063,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        }
+      },
+      "causal_proof": {
+        "frames": 80,
+        "held_frames": 0,
+        "tracked_pose_proofs": 79,
+        "online_local_solves": 32,
+        "post_emission_local_solves": 1,
+        "primary_map_id": 0,
+        "scope": "causal/coverage/lifecycle proof only; accuracy requires evaluator and baseline comparison",
+        "primary_map_generation": 1
+      },
+      "losses": {
+        "vo": 0,
+        "native": 0
+      },
+      "whole_wall_s": {
+        "vo": 40.062999999994645,
+        "native": 12.139999999984866
+      },
+      "native_frame_ms_percentiles": {
+        "50": 56.836847,
+        "95": 65.6750445,
+        "99": 68.78706937
+      },
+      "native_child_peak_rss_kib": 586584,
+      "provenance": {
+        "gt_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+        "timestamps_sha256": "d78cfcd055c9281ae3e6bfeebab1874aeb3730f09f129bd94c53ecfe40f9b0fb",
+        "cases": {
+          "vo": {
+            "name": "native_serialized_screen_vo_04_seed0",
+            "sha256": "13ed1971ad0a9ef3d72ac5ec976ab00f341f540f44114fd804b668af03238761"
+          },
+          "native": {
+            "name": "native_serialized_screen_candidate_04_seed0",
+            "sha256": "f05a77bf46e0e73a03f56ee40e4a28915ffec92271fd0e82f1e1c232770aba31"
+          }
+        },
+        "baseline_pose_sha256": "98a4a0ddce38577d6f1143bfa31cbfeeb36fd3d582beef19ea7b63e94206af3a",
+        "baseline_evaluation_sha256": "f4a897e6d723945b8d801c54ac3330c62ef8b505984b18f0ce11ff684db4f2f2"
+      },
+      "linux_arm_wall_s": 11.815955609000003,
+      "maps": [
+        {
+          "frame": 30,
+          "version": 2,
+          "generation": 1,
+          "points": 2622,
+          "keyframes": 17,
+          "observations": 9117,
+          "sha256": "6019972433771d99fb88ce370bed6395ebdb165e2e5bd6ad6aab7298a2daed1d"
+        },
+        {
+          "frame": 60,
+          "version": 2,
+          "generation": 1,
+          "points": 2859,
+          "keyframes": 40,
+          "observations": 9959,
+          "sha256": "11bdc8f2e2343777571e95042b4fb6d5da94363251ebef4e6236d47606c17d7f"
+        },
+        {
+          "frame": 79,
+          "version": 2,
+          "generation": 1,
+          "points": 3324,
+          "keyframes": 55,
+          "observations": 12599,
+          "sha256": "81117aebc3bda5f74d9b3e65ef1c9dbdc39b695dcde2562014d65635cd5f68ed"
+        }
+      ]
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "seed": 0,
+      "full": false,
+      "order": [
+        "vo",
+        "candidate"
+      ],
+      "gates": {
+        "ate_rmse_m": true,
+        "raw_ate_rmse_m": true,
+        "translation_percent": true,
+        "rotation_deg_per_m": true,
+        "rpe_translation_rmse_m": true,
+        "rpe_rotation_rmse_deg": true,
+        "held_lost": true,
+        "runtime": true,
+        "frozen01_ate_rmse_m": true,
+        "frozen01_translation_percent": true,
+        "frozen01_rotation_deg_per_m": true
+      },
+      "pass_all": true,
+      "measurements": {
+        "vo": {
+          "trajectory": {
+            "frames": 350,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 21.509820274719495,
+            "raw_ate_rmse_m": 30.300731946057315,
+            "segment_count": 140,
+            "translation_percent": 8.357438736874615,
+            "rotation_deg_per_m": 0.010860731525477764
+          },
+          "rpe": {
+            "frames": 350,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 340,
+            "translation_rmse_m": 4.365526128021852,
+            "rotation_rmse_deg": 0.45800837962326063,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        },
+        "native": {
+          "trajectory": {
+            "frames": 350,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 3.841577681581512,
+            "raw_ate_rmse_m": 6.911685732791243,
+            "segment_count": 140,
+            "translation_percent": 1.840756543833998,
+            "rotation_deg_per_m": 0.003903708006551205
+          },
+          "rpe": {
+            "frames": 350,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 340,
+            "translation_rmse_m": 0.5279852259713547,
+            "rotation_rmse_deg": 0.17911853039399955,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        }
+      },
+      "causal_proof": {
+        "frames": 350,
+        "held_frames": 0,
+        "tracked_pose_proofs": 349,
+        "online_local_solves": 143,
+        "post_emission_local_solves": 1,
+        "primary_map_id": 0,
+        "scope": "causal/coverage/lifecycle proof only; accuracy requires evaluator and baseline comparison",
+        "primary_map_generation": 1
+      },
+      "losses": {
+        "vo": 18,
+        "native": 0
+      },
+      "whole_wall_s": {
+        "vo": 156.76599999997416,
+        "native": 41.405999999988126
+      },
+      "native_frame_ms_percentiles": {
+        "50": 58.874866999999995,
+        "95": 70.03403200000001,
+        "99": 89.42353232999987
+      },
+      "native_child_peak_rss_kib": 910452,
+      "provenance": {
+        "gt_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+        "timestamps_sha256": "713ffd768507bd11ed168d2456de26f7b4d941bed236b5b581c2dcd26db17f69",
+        "cases": {
+          "vo": {
+            "name": "native_serialized_screen_vo_01_seed0",
+            "sha256": "a789b0906f0e3e57e889eee3ad78499f3736eb04bde29e49af4625511481638b"
+          },
+          "native": {
+            "name": "native_serialized_screen_candidate_01_seed0",
+            "sha256": "5e850c799796c2722f2632e38c9fa4f671d1c7dac2fa03062c735745478920d2"
+          }
+        },
+        "baseline_pose_sha256": "9cd077f0e56be1507616e46aab7e0bff34ebd4486f9bd1b7e724d1d07fbdb141",
+        "baseline_evaluation_sha256": "c39831bd282ddd1c2b1f09abb1e87e9066373feecc1a5242b3178cc2863f52f7"
+      },
+      "linux_arm_wall_s": 36.692329526,
+      "maps": [
+        {
+          "frame": 30,
+          "version": 2,
+          "generation": 1,
+          "points": 2819,
+          "keyframes": 20,
+          "observations": 10605,
+          "sha256": "906957bbefae5a1e8b2d5773f6d620f42b7a60c9fd769d7dc05a4f274cde9d34"
+        },
+        {
+          "frame": 60,
+          "version": 2,
+          "generation": 1,
+          "points": 4148,
+          "keyframes": 46,
+          "observations": 14748,
+          "sha256": "4e9639dee5c18df7c7d736d4c413098d5c4eaa8d822c0704b93ee4edc027ebc5"
+        },
+        {
+          "frame": 90,
+          "version": 2,
+          "generation": 1,
+          "points": 5687,
+          "keyframes": 70,
+          "observations": 19754,
+          "sha256": "e0187af4e1151700d2e531f3b251a69187256b93a12bffb464f1b2d3bb906cfc"
+        },
+        {
+          "frame": 120,
+          "version": 2,
+          "generation": 1,
+          "points": 7713,
+          "keyframes": 95,
+          "observations": 27297,
+          "sha256": "3a4d3505ae39b73306a08c89b2268559d593537c50ad4dd60ccb9c137d14df9e"
+        },
+        {
+          "frame": 150,
+          "version": 2,
+          "generation": 1,
+          "points": 8343,
+          "keyframes": 125,
+          "observations": 29713,
+          "sha256": "9c8e4522594ba2fdd1b43d2a6bce2857a61abad6c736cab0a95e980d3e127f12"
+        },
+        {
+          "frame": 180,
+          "version": 2,
+          "generation": 1,
+          "points": 9075,
+          "keyframes": 155,
+          "observations": 31729,
+          "sha256": "32eef64b6dcee0322ccd21ef1300e8f7b00d098689211e53f65b091aac089e83"
+        },
+        {
+          "frame": 210,
+          "version": 2,
+          "generation": 1,
+          "points": 11232,
+          "keyframes": 183,
+          "observations": 37983,
+          "sha256": "334144c87a8c9e27c6da07cb76ad47478d3976d680c95937a71e65b247edaee8"
+        },
+        {
+          "frame": 240,
+          "version": 2,
+          "generation": 1,
+          "points": 12849,
+          "keyframes": 200,
+          "observations": 44328,
+          "sha256": "b5034b0c55721a4e27cf3abe5ccd535f8aa1e56f13e892f0bc282416b017cd4a"
+        },
+        {
+          "frame": 270,
+          "version": 2,
+          "generation": 1,
+          "points": 13013,
+          "keyframes": 226,
+          "observations": 46229,
+          "sha256": "52c87ea3dea2a89ef926e6f0aeee1227d264241cbc71b5345f29af1bef887300"
+        },
+        {
+          "frame": 300,
+          "version": 2,
+          "generation": 1,
+          "points": 14724,
+          "keyframes": 256,
+          "observations": 61682,
+          "sha256": "2875d113861d84b6d4d48d2f538f6e3f05b4f63d4658458d90102939d8a947ac"
+        },
+        {
+          "frame": 330,
+          "version": 2,
+          "generation": 1,
+          "points": 17170,
+          "keyframes": 286,
+          "observations": 76855,
+          "sha256": "5b9fd90acd0db3951cb08afcd80121e8b64580811da299ae92f03ce0db715dcb"
+        },
+        {
+          "frame": 349,
+          "version": 2,
+          "generation": 1,
+          "points": 19014,
+          "keyframes": 304,
+          "observations": 85263,
+          "sha256": "dc9ec657e9e4024fea79d451478e9c6f83f63c063402a78c459979b00bb26705"
+        }
+      ]
+    }
+  ],
+  "source_manifest_sha256": "8fc711ec8d8c629e126c588b2ef78cbe24507f7a3f8aee89cb1c041a33aae4b6",
+  "runtime_definition": "Candidate Windows-to-WSL whole dispatch wall; separate Linux entire-arm wall retained. No pooling with historical timing definitions.",
+  "source_old17_results_transferred": false,
+  "independent_review": false,
+  "retained": false,
+  "main_changed": false
+}

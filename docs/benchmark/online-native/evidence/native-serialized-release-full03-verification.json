@@ -1,0 +1,374 @@
+{
+  "status": "verified_complete_serialized_release_full03_not_retention",
+  "utc": "2026-10-13T07:47:29.179992+00:00",
+  "protocol_sha256": "1a590c3418639121d50f7b0eed8b98bf119b8e94b6b4e05876359826531da574",
+  "source_manifest_sha256": "8fc711ec8d8c629e126c588b2ef78cbe24507f7a3f8aee89cb1c041a33aae4b6",
+  "pairs": [
+    {
+      "sequence": "03",
+      "frames": 801,
+      "seed": 0,
+      "full": true,
+      "order": [
+        "vo",
+        "candidate"
+      ],
+      "gates": {
+        "ate_rmse_m": true,
+        "raw_ate_rmse_m": true,
+        "translation_percent": true,
+        "rotation_deg_per_m": true,
+        "rpe_translation_rmse_m": true,
+        "rpe_rotation_rmse_deg": true,
+        "held_lost": true,
+        "runtime": true
+      },
+      "pass_all": true,
+      "measurements": {
+        "vo": {
+          "trajectory": {
+            "frames": 801,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 2.3271327269247837,
+            "raw_ate_rmse_m": 5.395227392078128,
+            "segment_count": 184,
+            "translation_percent": 1.704861364488081,
+            "rotation_deg_per_m": 0.007540841762900646
+          },
+          "rpe": {
+            "frames": 801,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 791,
+            "translation_rmse_m": 0.1525684762054302,
+            "rotation_rmse_deg": 0.12825062125617534,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        },
+        "native": {
+          "trajectory": {
+            "frames": 801,
+            "ate_alignment": "se3",
+            "alignment_scale": 1.0,
+            "ate_rmse_m": 1.2727487947588703,
+            "raw_ate_rmse_m": 2.4134773782901933,
+            "segment_count": 184,
+            "translation_percent": 0.9003063758038102,
+            "rotation_deg_per_m": 0.0019488738211617311
+          },
+          "rpe": {
+            "frames": 801,
+            "interval_s": 1.0,
+            "tolerance_s": 0.05,
+            "pairs": 791,
+            "translation_rmse_m": 0.12296685754798184,
+            "rotation_rmse_deg": 0.09968321988428602,
+            "all_pose_rows_retained": true,
+            "alignment": "none",
+            "scale_fitted": false,
+            "overlapping_pairs_are_independent": false
+          }
+        }
+      },
+      "causal_proof": {
+        "frames": 801,
+        "held_frames": 0,
+        "tracked_pose_proofs": 800,
+        "online_local_solves": 238,
+        "post_emission_local_solves": 0,
+        "primary_map_id": 0,
+        "scope": "causal/coverage/lifecycle proof only; accuracy requires evaluator and baseline comparison",
+        "primary_map_generation": 1
+      },
+      "losses": {
+        "vo": 0,
+        "native": 0
+      },
+      "whole_wall_s": {
+        "vo": 449.59399999998277,
+        "native": 94.10999999998603
+      },
+      "native_frame_ms_percentiles": {
+        "50": 67.800678,
+        "95": 86.513494,
+        "99": 94.791683
+      },
+      "native_child_peak_rss_kib": 827260,
+      "provenance": {
+        "gt_sha256": "5475332c7e90cd6b0f9f948efff69e747dbba81d006efed4298f3d31b5773b67",
+        "timestamps_sha256": "dfabf563ac698165e445d2b6f7ca18da0a85b2cf317e30a7fecb2d8d754c4fec",
+        "cases": {
+          "vo": {
+            "name": "native_serialized_release_full03_vo_03_seed0",
+            "sha256": "45c97b50ab55cfcd19dbb6273324876c522181d3bedd104b0f8fb5bdea509b38"
+          },
+          "native": {
+            "name": "native_serialized_release_full03_candidate_03_seed0",
+            "sha256": "8ee9a738591b117f8fb99cfaf60aff8e1c161e11498c33d4137d7dfb1d4957f5"
+          }
+        },
+        "baseline_pose_sha256": "9bcc6b760e4b9b83e739c2ec1904087f4c147426c0ab77ce6fde7e4df547fb72",
+        "baseline_evaluation_sha256": "7d42b67a8d4a675b73c834ba63bb08d3a5ecee44aac52d299f9116755949844e"
+      },
+      "maps": [
+        {
+          "frame": 30,
+          "version": 2,
+          "generation": 1,
+          "points": 2147,
+          "keyframes": 13,
+          "observations": 6049,
+          "sha256": "c9bb6c57222728a9a4d44cc93c1e9915688223eb22d5a1322755c4687a6e76cc"
+        },
+        {
+          "frame": 60,
+          "version": 2,
+          "generation": 1,
+          "points": 3004,
+          "keyframes": 23,
+          "observations": 10014,
+          "sha256": "85c68bf664ee29a23ee92176b9a1133e61d97b0dc0e3000f69c7b846b1735f2d"
+        },
+        {
+          "frame": 90,
+          "version": 2,
+          "generation": 1,
+          "points": 3944,
+          "keyframes": 31,
+          "observations": 15259,
+          "sha256": "421bc567e1d581327cdb90d46da8e7890effdcb7ba11f9cd24cf0b49c8113e5c"
+        },
+        {
+          "frame": 120,
+          "version": 2,
+          "generation": 1,
+          "points": 5025,
+          "keyframes": 39,
+          "observations": 19595,
+          "sha256": "1dc8c2fe2d1f90586900c5b880651bbdf4963e5724ff01d18bbe09e3a00b36a1"
+        },
+        {
+          "frame": 150,
+          "version": 2,
+          "generation": 1,
+          "points": 6327,
+          "keyframes": 48,
+          "observations": 24269,
+          "sha256": "d4d5bb6ed0755151c12a7cbd79965ad358e4f7776ff142d20e892eda60808a57"
+        },
+        {
+          "frame": 180,
+          "version": 2,
+          "generation": 1,
+          "points": 7153,
+          "keyframes": 55,
+          "observations": 26858,
+          "sha256": "780e6dc79b6ab273102a0748ffa4e5915b8d0ebbe9979bab36507616ab04fce2"
+        },
+        {
+          "frame": 210,
+          "version": 2,
+          "generation": 1,
+          "points": 7781,
+          "keyframes": 61,
+          "observations": 28820,
+          "sha256": "df836ccd3c49b97c821c88d3a67a67ad73939631532bfd7faeb2e3ef5f2116f0"
+        },
+        {
+          "frame": 240,
+          "version": 2,
+          "generation": 1,
+          "points": 8659,
+          "keyframes": 71,
+          "observations": 33591,
+          "sha256": "39e1559a3d584e81fa8991c339e09f0dec8f21ec9d035727340650841f22cd57"
+        },
+        {
+          "frame": 270,
+          "version": 2,
+          "generation": 1,
+          "points": 9563,
+          "keyframes": 79,
+          "observations": 37213,
+          "sha256": "061f600b3a07e790d90a18502c06cc8cb6966c2162892ffebf85aea4ea8b4f0b"
+        },
+        {
+          "frame": 300,
+          "version": 2,
+          "generation": 1,
+          "points": 10786,
+          "keyframes": 86,
+          "observations": 40282,
+          "sha256": "f41f4df53286e2ba47dbcc2f496ad89ea3c92288ff3aa882c4fa70f2f3404bc1"
+        },
+        {
+          "frame": 330,
+          "version": 2,
+          "generation": 1,
+          "points": 11464,
+          "keyframes": 94,
+          "observations": 43199,
+          "sha256": "836df609a6a9dc09572dcad990f4c283f3cd4429281f6b45684e14f30085b0b4"
+        },
+        {
+          "frame": 360,
+          "version": 2,
+          "generation": 1,
+          "points": 12891,
+          "keyframes": 106,
+          "observations": 49650,
+          "sha256": "b78cf47ea486bf579f977e52c6d17b6637c8d00220f4999a52e463fe4ee3bd49"
+        },
+        {
+          "frame": 390,
+          "version": 2,
+          "generation": 1,
+          "points": 13628,
+          "keyframes": 114,
+          "observations": 52796,
+          "sha256": "1f7b11099126ec813fba38ceb7ab65d97c852529b8d7782ee11884f06c76a78e"
+        },
+        {
+          "frame": 420,
+          "version": 2,
+          "generation": 1,
+          "points": 15179,
+          "keyframes": 132,
+          "observations": 63173,
+          "sha256": "848d8318f7ae51b1aa0fa910ab010a47819cb138296b12310cc1eea261327c27"
+        },
+        {
+          "frame": 450,
+          "version": 2,
+          "generation": 1,
+          "points": 16322,
+          "keyframes": 143,
+          "observations": 67991,
+          "sha256": "6a8a80c3bcfa050db4c0928886d1acb4346fb30cd089434b0bd716c1f49d3b8e"
+        },
+        {
+          "frame": 480,
+          "version": 2,
+          "generation": 1,
+          "points": 17732,
+          "keyframes": 157,
+          "observations": 74866,
+          "sha256": "c6f534c3e1fc98f13bf9b7fb1afcae317ceb05aae06f7213438d8cc1fd4625b1"
+        },
+        {
+          "frame": 510,
+          "version": 2,
+          "generation": 1,
+          "points": 18652,
+          "keyframes": 165,
+          "observations": 78692,
+          "sha256": "1fece7c2a3dfc6060c08fe11404183ff22ac150e391c25d6cae4c3d085eb96c0"
+        },
+        {
+          "frame": 540,
+          "version": 2,
+          "generation": 1,
+          "points": 19553,
+          "keyframes": 174,
+          "observations": 83315,
+          "sha256": "b33df8e01ef8714e8f1709e54ebafe77b97ea158e0fc0ade426cc84c6635290d"
+        },
+        {
+          "frame": 570,
+          "version": 2,
+          "generation": 1,
+          "points": 20671,
+          "keyframes": 185,
+          "observations": 87985,
+          "sha256": "e7e8a73afb59541c6f4ca13d6d22e35519510900da71f3ea39dc4afae102aa4c"
+        },
+        {
+          "frame": 600,
+          "version": 2,
+          "generation": 1,
+          "points": 20905,
+          "keyframes": 197,
+          "observations": 87519,
+          "sha256": "4e0d078bee45836e11d713b9473711218a489f87283da6b437f1e0f62f00dc74"
+        },
+        {
+          "frame": 630,
+          "version": 2,
+          "generation": 1,
+          "points": 22531,
+          "keyframes": 212,
+          "observations": 97396,
+          "sha256": "8b003e41c92ac5cab29fdcb94435079396419d33918d7835f96e9a735409281c"
+        },
+        {
+          "frame": 660,
+          "version": 2,
+          "generation": 1,
+          "points": 23652,
+          "keyframes": 221,
+          "observations": 102568,
+          "sha256": "6a5557fa371ef93eab25dcc566f25fd378692dfb3dcdccd4b81102056b172b95"
+        },
+        {
+          "frame": 690,
+          "version": 2,
+          "generation": 1,
+          "points": 24726,
+          "keyframes": 229,
+          "observations": 107068,
+          "sha256": "aa79bef1de1b9af8098ae94c4fcb2ff2885313a676e3d254e4c5b020ea9d971f"
+        },
+        {
+          "frame": 720,
+          "version": 2,
+          "generation": 1,
+          "points": 26232,
+          "keyframes": 242,
+          "observations": 117386,
+          "sha256": "ca057800259a2b6b6e86c36c307ff163e344b0d6ed7a7b3fbbfc9245cf600494"
+        },
+        {
+          "frame": 750,
+          "version": 2,
+          "generation": 1,
+          "points": 26809,
+          "keyframes": 247,
+          "observations": 120447,
+          "sha256": "dfc12ca339f0880ea7a03551a6246e44c5e7f6cf4239c801f92525bfc904a672"
+        },
+        {
+          "frame": 780,
+          "version": 2,
+          "generation": 1,
+          "points": 27281,
+          "keyframes": 250,
+          "observations": 122034,
+          "sha256": "838dc5b89d7471918c129e84ee4b6aab8a2e2104943671f0b8249fa3694e02d3"
+        },
+        {
+          "frame": 800,
+          "version": 2,
+          "generation": 1,
+          "points": 27491,
+          "keyframes": 251,
+          "observations": 122597,
+          "sha256": "3f6d4008c023f9e3ac2e9f419f56f9112e4f6e0b8add6f8dc7cfca95bcf4fc9c"
+        }
+      ],
+      "linux_arm_wall_s": 89.280577533
+    }
+  ],
+  "case_sha256": {
+    "native_serialized_release_full03_vo_03_seed0": "45c97b50ab55cfcd19dbb6273324876c522181d3bedd104b0f8fb5bdea509b38",
+    "native_serialized_release_full03_candidate_03_seed0": "8ee9a738591b117f8fb99cfaf60aff8e1c161e11498c33d4137d7dfb1d4957f5"
+  },
+  "historical17_groups_transferred": false,
+  "independent_review": false,
+  "retained": false,
+  "main_changed": false,
+  "runtime_definition": "Whole Windows-to-WSL dispatch including finalization; Linux arm wall separately retained"
+}

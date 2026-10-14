@@ -1,0 +1,21 @@
+{
+  "status": "human_accepts_specific_small_full10_rpe_tradeoff_pending_release_validation",
+  "utc": "2026-10-13T02:16:43.221532+00:00",
+  "human_statement": "honestly if only very small things are worse then thats fine, do you think it will be ready to be the main version yet",
+  "applies_to": "Observed serialized-source full10 seed0 one-second translation RPE only; no blanket future threshold relaxation.",
+  "native_rpe_m": 0.11856257926695125,
+  "vo_rpe_m": 0.11829330076086601,
+  "relative_regression_pct": 0.22763631106177407,
+  "native_ate_m": 1.3631883633516515,
+  "vo_ate_m": 2.5639068371801974,
+  "native_wall_s": 154.625,
+  "vo_wall_s": 644.2339999999967,
+  "original_strict_protocol_result": "complete_rejected_serialized_generalization10",
+  "original_result_preserved": true,
+  "new_accuracy_measurement": false,
+  "strict_gate_pass_claimed": false,
+  "retained": false,
+  "main_merge_authorized": false,
+  "next_priority": "Finish actual application Stop/live integration, representative repaired-source release validation and independent retention review. Further RPE diagnostic is optional; no10replay solely to rescue timing/accuracy.",
+  "diagnostic_component_status": "uninstalled/unapplied; reviewA1 must be corrected before optional future use"
+}

@@ -2,7 +2,17 @@
 
 This preserves the 32 Python files reached by static imports from the ordered-control launcher and its owned native driver. Every copied byte matches the working application used in the quick04 Stop test. `manifest.json` records their original relative paths and SHA256 hashes. Files under `campaign/` intentionally retain their original imports, paths, deadlines and provenance checks.
 
-This is a source preservation checkpoint, **not yet a standalone application installation**. The launcher still refers to the original campaign location and its protocol/review records, WSL runtime, prepared input data and dashboard. Those bindings must be assembled and tested from the repository before a clean checkout can use it. Do not bypass the original identity checks to make these copies run.
+`local-bindings.json` additionally covers 79 files, including the original protocol, review, calibration and resource records required by all four prepared presets. Preset selection succeeds using only these packaged records. The packaged record statuses remain historical evidence, rather than new acceptance claims.
+
+Check existing local bindings without writing anything:
+
+```console
+python scripts/restore_native_application_bindings.py
+```
+
+Add `--apply` to restore missing files into the repository's original campaign layout. The helper first validates every packaged hash, refuses any existing differing file, never overwrites evidence and preserves the 1.5 GiB reserve. Five tests exercise exact restoration of the complete package, idempotence, check-only behavior, existing-file preservation, corrupt input and path traversal rejection.
+
+This remains **a qualified local-layout snapshot, not yet a standalone application installation**. The launcher retains the pinned Windows checkout, WSL runtime, prepared datasets and isolated dashboard requirements. Restoration installs none of those external requirements. Repository entrypoint and dashboard assembly still need completion before a clean checkout can launch the application. Do not bypass the original identity checks to make these copies run.
 
 The exact entrypoint is `campaign/native_application_launcher_ordered_v11.py`. It uses the tested ordered-control class; the legacy protocol/output names retain their V7 suffix for existing saved verifiers. This naming does not make the changed launcher the independently reviewed original V7.
 
@@ -12,4 +22,5 @@ The latest actual browser check recorded prepared → running → stopping → c
 
 - Preserved the tested launcher, control, ownership, observation, telemetry and map-export dependency sources in Git.
 - Retained exact source bytes and historical module names for comparison with qualification evidence.
-- Application relocation and clean-checkout launch verification remain outstanding; no new main or accuracy claim is made here.
+- Added the 79-file local binding package and a tested, non-overwriting restore helper; all four prepared preset selectors pass from packaged data.
+- Repository entrypoint/dashboard assembly and clean-checkout launch verification remain outstanding; no new main or accuracy claim is made here.

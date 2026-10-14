@@ -1,0 +1,14 @@
+{
+  "status": "bounded_latest_snapshot_retention_component_predeclared",
+  "utc": "2026-10-13T06:29:19.508828+00:00",
+  "predecessor": "native_application_launcher_release_v8.py",
+  "predecessor_sha256": "cd6da14972cbff5bb52d4d8755d082e0ae6498dd89f86ce5720d69af96a2d271",
+  "failure": "native-full01-application-resource-failure.json",
+  "prediction": "Retain only the latest raw snapshot for final sparse export. The causal reader still tracks and validates every snapshot signature/hash/frame, and telemetry still accepts/publishes every snapshot in the same order. Retained raw-map heap becomes max snapshot size instead of cumulative snapshot sizes.",
+  "source_evidence": "Only snapshots[-1] is consumed for export. Delivery reader _accepted stores compact signature/hash/completion records, not raw maps. Full01 stage held37 snapshots totaling414MB of immutable raw files; Python object size was not measured.",
+  "scope": "Two launcher retention statements only; native source/math/configuration, snapshot geometry/causality validation, telemetry, message order, ownership, Stop and original deadlines unchanged.",
+  "verification": "Actual source statements with weak-reference positive/old-negative memory contracts, object identity/all-map delivery/export and normalized AST projection. No fresh native replay until bounded recorder and concrete physical-space forecasts are qualified.",
+  "unsupported_claims": "No measured RSS reduction, new accuracy/speed gain, repaired original UNC cause or storage acceptance inferred from these contracts.",
+  "main_changed": false,
+  "retained": false
+}

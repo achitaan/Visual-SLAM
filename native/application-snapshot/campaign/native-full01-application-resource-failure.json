@@ -1,0 +1,36 @@
+{
+  "status": "functional_full01_completed_storage_reserve_gate_failed_no_full_release_pass",
+  "utc": "2026-10-13T06:22:51.487623+00:00",
+  "run_id": "native_prototype_fullappv8_normal_01_1101_seed0_20261013a",
+  "frames": 1101,
+  "immutable_pose_rows_emitted": 1101,
+  "whole_owned_cleanup_confirmed": true,
+  "observed_physical_c_free_bytes_during_receipt_finalization": 243052544,
+  "observation_source": "Root actual Get-PSDrive C snapshot after1101poses/result existed, while owned qualification session37325 was live; original tool output retained in chat",
+  "reserve_bytes": 1610612736,
+  "predeclared_output_forecast_bytes": 3500000000,
+  "predispatch_free_bytes": 5820715008,
+  "physical_c_free_after_terminal": 2632712192,
+  "component_acceptance": false,
+  "estimator_accuracy_failure_claimed": false,
+  "mathematical_source_changed": false,
+  "main_changed": false,
+  "retained": false,
+  "owned_session37325_terminal_exit_code": 0,
+  "observed_owned_record_bytes": {
+    "native-fullapp-v8-normal-01-1101-seed0-20261013a-observation.json": 637137149,
+    "native-fullapp-v8-normal-01-1101-seed0-20261013a-cli.log": 323953989,
+    "native_prototype_fullappv8_normal_01_1101_seed0_20261013a_application_release_v8\\published.jsonl": 340826793
+  },
+  "demonstrated_sources": [
+    "Launcher retains every full snapshot in snapshots[] although only the last is exported",
+    "Browser recorder retains and returns every entire message as one CLI value, then duplicates large response strings and pretty-prints the saved JSON"
+  ],
+  "diagnosis_limits": "Transient extra physical allocation source is unproven; after owned browser/harness exit about2.4GB returned. System pagefile allocation24,088MiB/current5,917MiB/peak6,696MiB is a whole-host snapshot, not attributable per-run memory. Do not claim a native geometry failure.",
+  "next_component": "Bound application latest-map retention and browser/saved-observation recording; preserve all immutable files/messages/map hash history. Validate saved full01 with a bounded streaming verifier, no estimator replay. Design from this concrete resource failure before another native run.",
+  "evidence_sha256": {
+    "native_prototype_fullappv8_normal_01_1101_seed0_20261013a_application_release_v8\\result.json": "73b23d5610f1bcece0ff84d37d88e2e0d8d21ecc75549fcb1485168bd019d429",
+    "native-fullapp-v8-normal-01-1101-seed0-20261013a-result.json": "82fb5b342db994494705f13f266a8c6855d98143c6d8e5bae5b414ba70ac7828",
+    "native-full04-output-growth-and-full01-preparation.json": "a364b101932b01df52ecef6e26e586fe90587efd000cd6f3cfd37f0220a35c40"
+  }
+}

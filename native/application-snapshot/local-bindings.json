@@ -1,0 +1,328 @@
+{
+  "scope": "data/source dependencies for the original qualified local layout",
+  "files": {
+    "NativeOwnedStopControlV2.tsx": {
+      "sha256": "3ae7cf9544938f54c6bb0d49e765b42e220e8224925641d78a94648f866d1b63",
+      "bytes": 8325
+    },
+    "native-app-adapter-origin/native_app_follower.py": {
+      "sha256": "14009248518e3dedbae7adddc8201d8691f6f7c08bac225f41e920373646a64d",
+      "bytes": 5476
+    },
+    "native-app-adapter-origin/native_app_follower_delivery.py": {
+      "sha256": "d09e2e3e6ddfbfb34719837d18d824c06220e219e3f5b76001dceb6f8f3719df",
+      "bytes": 1545
+    },
+    "native-app-adapter-origin/native_app_telemetry.py": {
+      "sha256": "c36a9ce502a58b22d58e38f09ceffec067755d50016a4a0f4190688eb31b1f14",
+      "bytes": 3811
+    },
+    "native-app-adapter-origin/native_live_snapshots.py": {
+      "sha256": "7222d75d3d9076cd46c6e01c3fa81d7c67e903d4f571daa75a381c2358f2cbde",
+      "bytes": 6516
+    },
+    "native-app-adapter-origin/native_live_snapshots_delivery.py": {
+      "sha256": "fa5a5d09d27e81e3dfea457238954d381e16f42dfebefc590db3b928ccc37b47",
+      "bytes": 5841
+    },
+    "native-app-adapter-origin/native_map_export.py": {
+      "sha256": "1ad4cdbcd696b1f18edafcad7fa717c895462066f2640bd96cd62b1b572a56d4",
+      "bytes": 6356
+    },
+    "native-app-adapter-origin/native_online_adapter.py": {
+      "sha256": "34e40cbc97e4099f77575bdd89923b401c4d8915c016d8951fb21b423980cea7",
+      "bytes": 6794
+    },
+    "native-app-adapter-origin/native_run_follower.py": {
+      "sha256": "8eade963bd97ae4ecdbc6ef9cac6d729470112a99063b064f032e08237d9a1b6",
+      "bytes": 3904
+    },
+    "native-application-prepared-presets.json": {
+      "sha256": "7cba5e55e5274bdf2582fb2a458fabc8055568cedbfb3758b86602382fcd2a79",
+      "bytes": 9024
+    },
+    "native-application-raw-finalizer-repair-design.json": {
+      "sha256": "b6c5c349a8ef8c8a7a97c2012fdc973585b16c93f6acdd23915a0c184f3e6147",
+      "bytes": 1150
+    },
+    "native-application-raw-finalizer-repair-verification.json": {
+      "sha256": "d6adba28fc771985476a639c9229df6487d92ca7246885453836530641d4f13a",
+      "bytes": 8576
+    },
+    "native-bounded-full-browser-design.json": {
+      "sha256": "4a6934ec9281aced0acb171dda5f997bed7e0e6bd81096d812e0ac1b7ac39abd",
+      "bytes": 1515
+    },
+    "native-bounded-full01-measured-resource-design.json": {
+      "sha256": "c2301f715ced1abf37b803e1b76e555379fa2ee4dc48088fc15c2ee07846d12a",
+      "bytes": 2811
+    },
+    "native-component-independent-review17-result.json": {
+      "sha256": "a677079e6d4cf557ca124710aa7daf3ee2db209acb3264e194458aea97300073",
+      "bytes": 978
+    },
+    "native-component-review18-B1-packet.json": {
+      "sha256": "ba3714fc08cd203a31db4c302fcbff194e756609f5cf3f0abb6619c72759e4d0",
+      "bytes": 1523
+    },
+    "native-component-review18-B1-result.json": {
+      "sha256": "6909ba8118360e8ae0feece65949bb3170dcfbe89c082a7646ff9f976fb53232",
+      "bytes": 1066
+    },
+    "native-full01-application-resource-failure.json": {
+      "sha256": "85d3f9e7cf2b2b1e3026e78c2d2d2e89265c3f80b1d1a37421344c7799383702",
+      "bytes": 2648
+    },
+    "native-full01-experimental-prototype-retention29.json": {
+      "sha256": "4787863254c99027b471c515f8525c926b9066d14677ea844508f210737c9c23",
+      "bytes": 5142
+    },
+    "native-full10-human-tradeoff-acceptance.json": {
+      "sha256": "940563298cdedfb6e2bc5851f5feb96ae264f261caf01835a78cb2b5e055f19e",
+      "bytes": 1294
+    },
+    "native-fullapp-v10-independent-review29-result.json": {
+      "sha256": "edbcbaa0ffddae7fa3db6d88a94f208de25b0f8d7cc4c2baa515333c3e402dd5",
+      "bytes": 4156
+    },
+    "native-fullapp-v8-normal-01-1101-seed0-20261013a-streaming-verification.json": {
+      "sha256": "4c0d2f4d23b7f0ad22c1408e216f9f13062da5f0a6db1d0270baad9c511c1eb2",
+      "bytes": 2348
+    },
+    "native-fullapp-v9-mapping-04-271-seed0-20261013b-streaming-verification.json": {
+      "sha256": "cbb05148389c1cc514fd509506db989c302378efb948b40da558a7d6ee407121",
+      "bytes": 2722
+    },
+    "native-fullapp-v9-normal-04-271-seed0-20261013a-streaming-verification.json": {
+      "sha256": "2af60a724c10b688587c47333f52043407c12330f803aaf5521ad4a53aab7b09",
+      "bytes": 2714
+    },
+    "native-latest-map-memory-design.json": {
+      "sha256": "533b4886a99215ad7f2d3de716232fe087a476a1a544fc9d3b5ce2d12e2ff209",
+      "bytes": 1619
+    },
+    "native-online-build/configurations-real/01.yaml": {
+      "sha256": "401dc6b155bdac8e031b12a53940eb930e71bf54000ddbe43478f7c4004de9f7",
+      "bytes": 1968
+    },
+    "native-online-build/configurations-real/04.yaml": {
+      "sha256": "533a575ebcaad417ff7db4381ccb1b5488771c7eafd3491af7161fc83708a388",
+      "bytes": 1970
+    },
+    "native-origin-serialized-build.json": {
+      "sha256": "bc768fb2685f54557ad66e3119f372cb209079a0297c529972763ae330bc37b7",
+      "bytes": 5943
+    },
+    "native-origin-serialized-development-verification.json": {
+      "sha256": "007999ff60fdd00c91308f18d22e668da0b787210962437e1d5d4a9beb07e329",
+      "bytes": 14471
+    },
+    "native-origin-serialized-development.json": {
+      "sha256": "ba14e59ad4c0aeb9c0d28e8be59f583a7a14b25323296e4fc6fdc05592e58bfd",
+      "bytes": 33631
+    },
+    "native-origin-serialized-source.json": {
+      "sha256": "8fc711ec8d8c629e126c588b2ef78cbe24507f7a3f8aee89cb1c041a33aae4b6",
+      "bytes": 44164
+    },
+    "native-release25-terminal-repair-verification.json": {
+      "sha256": "87f303525e1a0c8bdaf4c1ed06fb823c1ad86f9fdbe7f776cbe84d5c67dfefc4",
+      "bytes": 2307
+    },
+    "native-release26-terminal-followup-findings.md": {
+      "sha256": "36d2b568fa2fac9194478d40a631290542e2a5e00190f42cbc425eb010e9d9b0",
+      "bytes": 3019
+    },
+    "native-release26-terminal-followup-result.json": {
+      "sha256": "257d02d4ef474be265786fadee697e11adab29bf841b069c46867324133c8cfe",
+      "bytes": 2897
+    },
+    "native-restricted-prototype-candidate-retention.json": {
+      "sha256": "9306e6e1023710c81c175723a0c62469e1d7541c758839d0b02136aa0d8ca8c0",
+      "bytes": 4348
+    },
+    "native-serialized-release-confirmation-summary.json": {
+      "sha256": "b46821af2c0cbd5e04fe469fec622725c52b886c2ae1282b251a3974d8204df1",
+      "bytes": 38288
+    },
+    "native-serialized-release-full01-verification.json": {
+      "sha256": "98fe8536d13ba6b797dde975b1a3fa830f19600867b24e4fda76054f58675900",
+      "bytes": 14188
+    },
+    "native-serialized-release-full01.json": {
+      "sha256": "8cf400c741c9c2b8f81fe5b9bfb3f0611f9e7040817327265bb6e897d41cc30d",
+      "bytes": 31722
+    },
+    "native-serialized-release-representative-verification.json": {
+      "sha256": "b3239f29b026d3f8370c4afd020c3b3f1934c7bd914ba92fabda704e160c07ab",
+      "bytes": 40819
+    },
+    "native-serialized-release-representative.json": {
+      "sha256": "eb38947dbf4f3e2a5f722e893ef231a52d4b1b3e00f7443c2120385c950767c3",
+      "bytes": 60609
+    },
+    "native-serialized-release-seed-confirmation-verification.json": {
+      "sha256": "b1034d8d90d5754785901f7696eca5e6c83a8ffe296ef2e7d4201fd148579496",
+      "bytes": 68252
+    },
+    "native-serialized-release-seed-confirmation.json": {
+      "sha256": "9a3116ec4505a4faf49bc47f335ed7970f691b0cb09c82332aea3836bb1cff79",
+      "bytes": 95096
+    },
+    "native-stop-v2-page.tsx": {
+      "sha256": "3286f9e4afe034588d965f336e4cac14cd1ecec6b29b7e276a3906872c0acac0",
+      "bytes": 2962
+    },
+    "native_application_admission_v4.py": {
+      "sha256": "08048672a8425a7064b663a9cc40e51d52a4d22a8b9ff30d0d0451fb878e251d",
+      "bytes": 28266
+    },
+    "native_application_arm_owner_v4.py": {
+      "sha256": "22618a14f27b27f70b86c19becef5e4e08a6fdc2d875f3f76adf145fd6420919",
+      "bytes": 14030
+    },
+    "native_application_arm_owner_v6.py": {
+      "sha256": "41515322d27bd761d5bdb0fb3ac9ad84bae2bc415bda296eb4bc20152b31da19",
+      "bytes": 6790
+    },
+    "native_application_control_ordered_v6.py": {
+      "sha256": "96f9d8e0c15ab5c20ebfab4d9cd1ebdc3816549ea8727d9bb6458c74612cef79",
+      "bytes": 2597
+    },
+    "native_application_control_v4.py": {
+      "sha256": "27d0591f97ef1b9b27b8e271cb81d803bb1bf9d090954c11fdf14bbf99676794",
+      "bytes": 4172
+    },
+    "native_application_follower_v3.py": {
+      "sha256": "be23e878790640ab559eab35d8c5e544f8ab6077b738c6566f97730f0f9d3d0c",
+      "bytes": 7992
+    },
+    "native_application_follower_v4.py": {
+      "sha256": "a1327150e46a48afa5fb45d212f400ac69a00f84e43dffe29b944adc11cff9f4",
+      "bytes": 1580
+    },
+    "native_application_launcher_ordered_v11.py": {
+      "sha256": "242de051989ca2c81bca9f0b6488fdcd2604742a51c1f36ca085fca5d3119561",
+      "bytes": 26910
+    },
+    "native_application_launcher_release_v10.py": {
+      "sha256": "613353f791c598d3ddb22be59d2383f5c253d153cc5917b4e5f827dd530d93ba",
+      "bytes": 27333
+    },
+    "native_application_launcher_release_v7.py": {
+      "sha256": "9ff00f3c75155ffbf90cf69a20349a34eedb375689a8634cc7d9aace3b2d2c88",
+      "bytes": 27332
+    },
+    "native_application_live_driver_core.py": {
+      "sha256": "58f8ca95bf7e79d60b9fead0c9339af0fdd199ad5813ae2fc3fd14980852f4a1",
+      "bytes": 13766
+    },
+    "native_application_live_driver_core_v2.py": {
+      "sha256": "753e8f3b8135308a90d653ad3a8d92a9d57861f1d32c17aa6216dd501fa77f9f",
+      "bytes": 13789
+    },
+    "native_application_presets_v1.py": {
+      "sha256": "443a216f65323093e59d2d05115e86e5e0f781446217f815657b333cb9866379",
+      "bytes": 2826
+    },
+    "native_application_presets_v2.py": {
+      "sha256": "c3620520cde8b6bc4ef3bc72cfe7a0101e07a014ec8e83461e7a7e78486a97ef",
+      "bytes": 1250
+    },
+    "native_application_raw_finalizer.py": {
+      "sha256": "d857ffadca5d3dbf092604906f94631543962be9e740dffeadce8303482d33d8",
+      "bytes": 20004
+    },
+    "native_application_stop_owner_v2.py": {
+      "sha256": "b09bf5fce040e3d4bc19a121047aa0c089017c1d23b137b14f9236ad39e0f584",
+      "bytes": 6460
+    },
+    "native_application_stop_state_v3.py": {
+      "sha256": "438c5e4a2ac428b9927665e30a0e533e7672696fde6cf156ffff19fd0eeaee05",
+      "bytes": 7242
+    },
+    "native_application_stop_state_v4.py": {
+      "sha256": "656dba5cda5250337b724840c2c9547a4df2c0255b0dae00ca90635230f0cd33",
+      "bytes": 1524
+    },
+    "native_bounded_arm_owner_v2.py": {
+      "sha256": "4b1fb137e8b850cc0210db7c0bfdc77677d4c9289ab1023033e8e90d73f2943d",
+      "bytes": 13755
+    },
+    "native_browser_receipt_sink.py": {
+      "sha256": "a6ad6cf0993364d23a97451095f6d12a7246d747b310c4f466b6c4ca2bcaee39",
+      "bytes": 3201
+    },
+    "native_compact_output.py": {
+      "sha256": "c30708e6a2ed789dcc8e53c5a90f795286a4371d17046dbb15a9ac66859fb220",
+      "bytes": 6746
+    },
+    "native_fifo_telemetry.py": {
+      "sha256": "ef869994b9c8e206e7dc6009131889c6e3ea82a95a185acea3031ddeb6dbda64",
+      "bytes": 5291
+    },
+    "native_finalizer_owned.py": {
+      "sha256": "e3594b506809e3db148b6f4d0bee2ea5f6bcb709783b52a80e96813073c827d5",
+      "bytes": 19395
+    },
+    "native_local_output.py": {
+      "sha256": "3d1ed5f1dcfb32ae80dd3897731b0fcdf7da1936b75f87dc58aa26634450ffb9",
+      "bytes": 4761
+    },
+    "native_observation.py": {
+      "sha256": "ab5558f5af2e364a7f7eb9a95bdf412fe24357ff900352400fc4b72d7ae22708",
+      "bytes": 3881
+    },
+    "native_observation_delivery.py": {
+      "sha256": "7e019db49fbe99376f19669484d4901ad7809ee88e7ffc9184d965d7e992369d",
+      "bytes": 4694
+    },
+    "native_online_validation.py": {
+      "sha256": "000863bf596b244ee3eb2a66bcf0d216e5e0475e132c06ef7d8ab0a2c1434814",
+      "bytes": 4368
+    },
+    "native_owned_deadline.py": {
+      "sha256": "56c1198b180c2527fbc43bf8930e756883b3365b4d292b69c7bdd5d59402fe2b",
+      "bytes": 6048
+    },
+    "native_physical_disk_sample.py": {
+      "sha256": "25da605debc51943a3c5735f09c9e00b7e2d21e39edfa8e3a0fb69b94d4f2005",
+      "bytes": 1501
+    },
+    "native_process_owner_guarded.py": {
+      "sha256": "3b64b7feba82c4d636c71488e229d38ed3f28d2deb04decbbaf413c2ea9ccc5c",
+      "bytes": 4404
+    },
+    "native_saved_observation_stream.py": {
+      "sha256": "ee1a32e5848228108636209aecd7ba403317a7a8f968f50ee3f0f4318f83d0c8",
+      "bytes": 3908
+    },
+    "qualify_native_bounded_full_browser_v10_safe.py": {
+      "sha256": "214047ec701d3350a41b4b046798c72671d8f844bb394f10e4b85ce92c111d06",
+      "bytes": 20602
+    },
+    "retry-bundle-operator-source/src/telemetry.py": {
+      "sha256": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+      "bytes": 7895
+    },
+    "run_native_serialized_application_case_v3.py": {
+      "sha256": "934c6f12eeb6261ecee3f97b84ef171c0f59047d24713cd30cc4651ba27d893a",
+      "bytes": 1765
+    },
+    "run_native_serialized_application_case_v5.py": {
+      "sha256": "18bba456e1da65d8d1ca7d36bca24d0a5b93739d69218bf80a82747362abff04",
+      "bytes": 2720
+    },
+    "verify_native_bounded_full_browser_v10_safe.py": {
+      "sha256": "2da18b0d0e520b6778e66db7ccaa67e26e735eb848a6920a4e1c67bd9af86908",
+      "bytes": 9325
+    }
+  },
+  "runtime_installed": false,
+  "external_requirements": [
+    "pinned Windows GPU Python",
+    "qualified Ubuntu native binary/libraries/vocabulary",
+    "prepared KITTI inputs",
+    "qualified dashboard on loopback 4301"
+  ]
+}

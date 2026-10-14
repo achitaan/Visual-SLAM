@@ -1,0 +1,22 @@
+{
+  "status": "isolated_review17_B1_repair_prepared_unlaunched",
+  "utc": "2026-10-13T02:18:24.489117+00:00",
+  "parent_finalizer_sha256": "e3594b506809e3db148b6f4d0bee2ea5f6bcb709783b52a80e96813073c827d5",
+  "files": {
+    "native_application_raw_finalizer.py": "d857ffadca5d3dbf092604906f94631543962be9e740dffeadce8303482d33d8",
+    "native_application_live_driver_core_v2.py": "753e8f3b8135308a90d653ad3a8d92a9d57861f1d32c17aa6216dd501fa77f9f",
+    "run_native_serialized_application_case_v3.py": "934c6f12eeb6261ecee3f97b84ef171c0f59047d24713cd30cc4651ba27d893a"
+  },
+  "scope": "Completed/local expected status is bound to validated incoming terminal status; unknown local status rejected. Original deadlines, ownership, exporters, hash checks, incomplete handling and benchmark helpers unchanged.",
+  "new_native_runs": 0,
+  "original_failure_preserved": true,
+  "retained": false,
+  "main_changed": false,
+  "verification_required": [
+    "one old completed-local red fixture",
+    "new completed raw export",
+    "new incomplete raw export",
+    "late finalization rejection",
+    "new binding independent review"
+  ]
+}

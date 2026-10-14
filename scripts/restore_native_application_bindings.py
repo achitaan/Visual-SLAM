@@ -17,6 +17,8 @@ def restore(package: Path, destination: Path, *, apply: bool = False) -> dict:
     records = json.loads((package/'local-bindings.json').read_text())['files']
     source_root = (package/'campaign').resolve()
     destination_root = destination.resolve()
+    if not source_root.is_relative_to(ROOT.resolve()) or not destination_root.is_relative_to(ROOT.resolve()):
+        raise ValueError('Application restoration layout escaped the repository')
     pending = []
     for name, item in records.items():
         source = package/'campaign'/name

@@ -316,6 +316,10 @@
     "verify_native_bounded_full_browser_v10_safe.py": {
       "sha256": "2da18b0d0e520b6778e66db7ccaa67e26e735eb848a6920a4e1c67bd9af86908",
       "bytes": 9325
+    },
+    "native_application_launcher_ordered_full_v10.py": {
+      "sha256": "716beb9bcd31e5add5232f62f420db840cc5cc36bf505c3616a4c6099b8ab026",
+      "bytes": 26910
     }
   },
   "runtime_installed": false,

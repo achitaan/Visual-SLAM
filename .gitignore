@@ -13,6 +13,8 @@ node_modules/
 .pip-cache/
 .pytest_cache/
 .mpl-cache/
+.cache/
+.playwright-cli/
 *.tsbuildinfo
 results/
 .test-build/

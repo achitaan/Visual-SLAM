@@ -1,0 +1,3 @@
+# Preserve original bytes used by the qualified local frontend hashes.
+scripts/online_candidate.py -text
+scripts/online_candidate_stop.py -text

@@ -6,7 +6,7 @@ The project aims to build reliable visual SLAM across environments. KITTI is use
 
 ## Online replacement candidate
 
-The native ORB-SLAM3 candidate performs tracking, pose optimization and mapping during processing. Emitted poses stay immutable. **Real-time throughput is not required for this implementation.** The candidate is usable through tested experimental presets; packaging and launcher release checks are still in progress.
+The native ORB-SLAM3 candidate performs tracking, pose optimization and mapping during processing. Emitted poses stay immutable. **Real-time throughput is not required for this implementation.** The exact benchmarked source, guarded repository launcher and qualified dashboard are packaged on this branch. See [local setup and release notes](docs/NATIVE-RELEASE.md). The short packaged-entry normal-completion and Stop checks pass; final focused release review is pending.
 
 ### Verified native benchmarks
 

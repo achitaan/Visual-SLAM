@@ -1,0 +1,41 @@
+{
+  "status": "new_bounded_recorder_full01_resource_prediction_before_code_or_replay",
+  "utc": "2026-10-13T07:07:47.787834+00:00",
+  "sequence": "01",
+  "frames": 1101,
+  "seed": 0,
+  "previous_forecast_bytes": 3500000000,
+  "new_output_forecast_bytes": 2250000000,
+  "reserve_bytes": 1610612736,
+  "failed_predecessor_resource_gate_preserved": true,
+  "measured_basis": {
+    "largest_observed_1101_native_raw_stage_bytes": 469000000,
+    "two_native_raw_copies_allowance_bytes": 938000000,
+    "measured_full01_publication_bytes": 340826793,
+    "two_compact_publication_receipt_copies_allowance_bytes": 682000000,
+    "measured_full01_sparse_export_bytes": 115125933,
+    "exports_metadata_screenshot_causal_audit_allowance_bytes": 180000000,
+    "subtotal_bytes": 1800000000,
+    "additional_output_growth_allowance_bytes": 450000000
+  },
+  "prediction": "The bounded recorder removes the637MB pretty observation and324MB returned CLI history, retaining one raw map with32 pending receipts and2MiB/request. Two raw native copies, two compact immutable message ledgers and sparse exports are still preserved. Declare2.25GB aggregate output allowance,25% above1.8GB grounded allowance. This is a new implementation-specific output forecast, not a reduction of the1.5GiB reserve or an override of the failed predecessor.",
+  "limits": "A dispatch forecast is not a guarantee of peak physical allocation. Shared OS/pagefile growth is not attributable and may still fail the0.1s sampled physical reserve gate. No native accuracy or performance gain is inferred.",
+  "attempts": [
+    "ONE full01 mapping Stop after actual strict map receipt",
+    "ONE full01 normal run after Stop proof passes and actual capacity is sufficient"
+  ],
+  "native_or_geometry_edits": false,
+  "no_automatic_retry": true,
+  "no_timing_or_accuracy_threshold_changes": true,
+  "ground_truth_evaluator_only": true,
+  "main_changed": false,
+  "retained": false,
+  "evidence_sha256": {
+    "native-fullapp-v9-normal-04-271-seed0-20261013a-streaming-verification.json": "2af60a724c10b688587c47333f52043407c12330f803aaf5521ad4a53aab7b09",
+    "native-fullapp-v9-mapping-04-271-seed0-20261013b-streaming-verification.json": "cbb05148389c1cc514fd509506db989c302378efb948b40da558a7d6ee407121",
+    "native-fullapp-v8-normal-01-1101-seed0-20261013a-streaming-verification.json": "4c0d2f4d23b7f0ad22c1408e216f9f13062da5f0a6db1d0270baad9c511c1eb2",
+    "native-full01-application-resource-failure.json": "85d3f9e7cf2b2b1e3026e78c2d2d2e89265c3f80b1d1a37421344c7799383702",
+    "native-bounded-full-browser-design.json": "4a6934ec9281aced0acb171dda5f997bed7e0e6bd81096d812e0ac1b7ac39abd",
+    "native-latest-map-memory-design.json": "533b4886a99215ad7f2d3de716232fe087a476a1a544fc9d3b5ce2d12e2ff209"
+  }
+}

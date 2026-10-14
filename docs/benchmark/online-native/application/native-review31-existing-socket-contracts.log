@@ -1,0 +1,16 @@
+test_accepted_reply_waiting_on_send_lock_observes_terminal (test_native_candidate_control.Ordering.test_accepted_reply_waiting_on_send_lock_observes_terminal) ... ok
+test_initiator_disconnect_does_not_prevent_other_peer_terminal (test_native_candidate_control.Ordering.test_initiator_disconnect_does_not_prevent_other_peer_terminal) ... ok
+test_older_publication_enqueued_after_terminal_does_not_regress_either_peer (test_native_candidate_control.Ordering.test_older_publication_enqueued_after_terminal_does_not_regress_either_peer) ... ok
+test_pending_cleanup_is_visible_then_terminal_without_secret (test_native_candidate_control.Ordering.test_pending_cleanup_is_visible_then_terminal_without_secret) ... ok
+test_before_spawn_stop_broadcasts_cancellation_and_prevents_factory (test_native_candidate_control.load_tests.<locals>.SuccessorGuards.test_before_spawn_stop_broadcasts_cancellation_and_prevents_factory) ... ok
+test_failed_spawn_stop_is_private_and_never_a_cleanup_broadcast (test_native_candidate_control.load_tests.<locals>.SuccessorGuards.test_failed_spawn_stop_is_private_and_never_a_cleanup_broadcast) ... ok
+test_invalid_controls_do_not_broadcast_or_write_owned_pipe (test_native_candidate_control.load_tests.<locals>.SuccessorGuards.test_invalid_controls_do_not_broadcast_or_write_owned_pipe) ... ok
+test_pipe_failure_remains_stopping_without_cleanup_proof (test_native_candidate_control.load_tests.<locals>.SuccessorGuards.test_pipe_failure_remains_stopping_without_cleanup_proof) ... ok
+test_repeated_stop_does_not_repeat_pipe_write_or_claim_exit (test_native_candidate_control.load_tests.<locals>.SuccessorGuards.test_repeated_stop_does_not_repeat_pipe_write_or_claim_exit) ... ok
+test_frozen_server_does_not_publish_external_stop_to_display (test_native_candidate_control.load_tests.<locals>.SuccessorDelivery.test_frozen_server_does_not_publish_external_stop_to_display) ... ok
+test_proposed_server_publishes_actual_unconfirmed_stop_without_secret (test_native_candidate_control.load_tests.<locals>.SuccessorDelivery.test_proposed_server_publishes_actual_unconfirmed_stop_without_secret) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 1.558s
+
+OK

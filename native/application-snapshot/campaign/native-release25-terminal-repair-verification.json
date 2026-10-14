@@ -1,0 +1,41 @@
+{
+  "status": "qualified_R25_1_terminal_ordering_not_independent_clearance",
+  "utc": "2026-10-13T05:52:44.536310+00:00",
+  "predecessor_failures": 8,
+  "successor_passes": 9,
+  "unexecuted_test_bodies": 0,
+  "actual_source_terminal_try_except_finally_executed": true,
+  "real_atomic_state_v4": true,
+  "native_worker_executed": false,
+  "benchmark_replay": false,
+  "partial_hashes_injected_faults": [
+    "OSError22",
+    "source validation rejection",
+    "case hash",
+    "pose hash",
+    "audit hash"
+  ],
+  "additional_contracts": [
+    "All required reads precede commit; exactly one stage read",
+    "Stop during artifact collection wins",
+    "Stop during whole seal wins",
+    "Unexpected postcommit publication error reconciles persisted result, protocol and latest browser state"
+  ],
+  "numerical_source_changed": false,
+  "prepared_presets_unchanged": true,
+  "scope_projection": "All launcher functions except run AST-identical after v7 artifact-name normalization; run change confined to terminal evidence ordering/error reporting.",
+  "source_evidence_sha256": {
+    "native_application_launcher_release_v6.py": "2022aa5149f55da85e6a9bb37a19a011d6b57883298a8633b0b1cf7b7bcc8bd1",
+    "native_application_launcher_release_v7.py": "9ff00f3c75155ffbf90cf69a20349a34eedb375689a8634cc7d9aace3b2d2c88",
+    "test_native_release_terminal_artifact_order.py": "7ff45a0cc960b3eeabb4e267b094502e95383ebd701e8d8de295d4a14b768989",
+    "repair_native_release25_terminal_order.py": "6c9684f76d28b0d7fb4b48af3640572948f9dc3a2bc3e1c98a1b0f8e5b810bd8",
+    "native-release25-terminal-old-red.log": "63dccc12224c7653708b28b29eccffa973bf4d44cdef44ef96d0f24935066d1d",
+    "native-release25-terminal-new-green.log": "8799ea03c6005d425a298f88850cbc00348fb5849231303630e4bef0e05dfd32",
+    "native-release25-terminal-repair-design.json": "189376e0d3936f3d1dde52b9406444d543319a30428208358576f23586243002",
+    "native-release25-terminal-v6-v7.diff": "780406bc3e992f8640f86e0718600f2e24069b6f97986800cd7f62b4f76a0815"
+  },
+  "main_changed": false,
+  "retained": false,
+  "review_required": true,
+  "limitation": "Deterministic control/I/O fixtures, not a new live browser/native run. Reuse V6 actual live phases only within unchanged paths and explicit reviewed scope."
+}

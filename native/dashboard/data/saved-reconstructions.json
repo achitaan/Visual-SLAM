@@ -1,0 +1,34 @@
+[
+  {
+    "label": "KITTI 04 · current stereo · sparse map",
+    "url": "/saved-reconstructions/kitti04-validated-pnp-stereo.json"
+  },
+  {
+    "label": "KITTI 04 · current monocular · sparse map",
+    "url": "/saved-reconstructions/kitti04-validated-pnp-mono.json"
+  },
+  {
+    "label": "Retained KITTI 07 · stereo · corrected sparse map",
+    "url": "/saved-reconstructions/live-crash-recovery07-map.json"
+  },
+  {
+    "label": "Retained TUM desk · monocular · sparse + learned dense reconstruction",
+    "url": "/saved-reconstructions/tum-desk-persistent-dense.json"
+  },
+  {
+    "url": "/saved-reconstructions/kitti01-stereo.json",
+    "label": "KITTI 01 · current stereo · sparse map with tracking loss"
+  },
+  {
+    "url": "/saved-reconstructions/kitti01-mono.json",
+    "label": "KITTI 01 · current mono · sparse map with tracking loss"
+  },
+  {
+    "url": "/saved-reconstructions/kitti00-stereo.json",
+    "label": "KITTI 00 · current full stereo · sparse map and corrected trajectory"
+  },
+  {
+    "label": "KITTI 00 · current monocular · arbitrary-scale sparse map with tracking loss",
+    "url": "/saved-reconstructions/kitti00-mono.json"
+  }
+]

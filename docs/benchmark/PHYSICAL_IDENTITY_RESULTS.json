@@ -1,0 +1,774 @@
+{
+  "schema_version": 1,
+  "scope": "Fresh uncached partial KITTI 04/01 baseline and bundle prefixes; loops off",
+  "cycle": "results/integration/physical-identity-validation/880546a01e9d/focused/cycle.json",
+  "cycle_status": "completed_diagnostics",
+  "source_fingerprint": "880546a01e9d80a776f3b645c9f1d0d268f49c7707911426d54a9a3514227bdf",
+  "historical_comparator_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+  "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+  "requested_settings": {
+    "variants": [
+      "baseline",
+      "bundle"
+    ],
+    "data_root": "[local path omitted]",
+    "poses_root": "[local path omitted]",
+    "feature_cache": null,
+    "stereo_depth_policy": "verified_fallback",
+    "stereo_pose_arbitration": true,
+    "performance": {
+      "matching_backend": "cpu",
+      "retrieval": "current",
+      "cpu_optimizations": true,
+      "opencv_threads": 1
+    }
+  },
+  "input_reference_hashes": {
+    "04": {
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1"
+    },
+    "01": {
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8"
+    }
+  },
+  "partial_coverage": true,
+  "loops_off": true,
+  "gate_assessment": {
+    "accuracy_checks_vs_current_vo": {
+      "04_ate_not_worse": true,
+      "04_translation_not_worse": true,
+      "04_rotation_not_worse": true,
+      "04_lost_frames_not_increased": true,
+      "01_ate_improved": true,
+      "01_translation_improved": true,
+      "01_rotation_regression_within_5_percent": false,
+      "01_lost_frames_not_increased": true
+    },
+    "accuracy_gate_passed": false,
+    "release_ready": false,
+    "release_ready_reason": "Only partial 80/350-frame prefixes were evaluated.",
+    "historical_comparison_is_causal": false
+  },
+  "runs": [
+    {
+      "sequence": "04",
+      "variant": "baseline",
+      "frames": 80,
+      "coverage": "partial",
+      "status": "completed",
+      "lost_frames": 0,
+      "states": {},
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.44351523342332017,
+        "raw_ate_rmse_m": 0.9714209957357379,
+        "segment_count": 1,
+        "translation_percent": 1.672844352606981,
+        "rotation_deg_per_m": 0.012411752586322973
+      },
+      "estimator_elapsed_seconds": 39.181541700003436,
+      "total_wall_seconds": null,
+      "peak_memory_mib": 230.9375,
+      "keyframes": null,
+      "landmarks": null,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "source_fingerprint": "880546a01e9d80a776f3b645c9f1d0d268f49c7707911426d54a9a3514227bdf",
+      "source_archive_sha256": "74069c55877b7fff824af8c7841581b92958ccd3c6b531c0c49dcf445079909f",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "evidence_sha256": "8aaea0a271fb765712c5772dd2dea65691a9b24443f609ffef6db721123e3cd9",
+      "lost_intervals": [],
+      "ground_truth_used_for_estimation": false,
+      "median_tracking_reprojection_px": null,
+      "stage_timings_inclusive": {},
+      "stage_timing_semantics": null,
+      "matching_backend": null,
+      "opencv_threads": null,
+      "loops": null,
+      "loop_events": 0,
+      "bundle_adjustments_applied": null
+    },
+    {
+      "sequence": "04",
+      "variant": "bundle",
+      "frames": 80,
+      "coverage": "partial",
+      "status": "completed",
+      "lost_frames": 0,
+      "states": {
+        "tracking": 80
+      },
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.11188367637566381,
+        "raw_ate_rmse_m": 0.27379108167601507,
+        "segment_count": 1,
+        "translation_percent": 0.2807531045984703,
+        "rotation_deg_per_m": 0.005652783299876321
+      },
+      "estimator_elapsed_seconds": 67.41111260000616,
+      "total_wall_seconds": 68.51904270000523,
+      "peak_memory_mib": 262.90234375,
+      "keyframes": 11,
+      "landmarks": 10288,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "880546a01e9d80a776f3b645c9f1d0d268f49c7707911426d54a9a3514227bdf",
+      "source_archive_sha256": "033eda4214167e4686d6b8400fdce08ebe8a4eb636ff3ec090af2e8eb3a898ea",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "9608272098e00684f3aae819c58ca02f952718f34093097e7404bb74cbcb9a49",
+      "lost_intervals": [],
+      "ground_truth_used_for_estimation": false,
+      "median_tracking_reprojection_px": 0.3229635248579308,
+      "stage_timings_inclusive": {
+        "image_loading": {
+          "calls": 80,
+          "inclusive_seconds": 0.8717190999886952
+        },
+        "stereo_depth_verification": {
+          "calls": 145,
+          "inclusive_seconds": 0.7680530003271997
+        },
+        "_extract": {
+          "calls": 80,
+          "inclusive_seconds": 24.191595599870197
+        },
+        "_keyframe": {
+          "calls": 11,
+          "inclusive_seconds": 1.131753999972716
+        },
+        "matching": {
+          "calls": 158,
+          "inclusive_seconds": 18.605778899858706
+        },
+        "stereo_pose_arbitration_fit": {
+          "calls": 79,
+          "inclusive_seconds": 0.7059610000869725
+        },
+        "_track": {
+          "calls": 79,
+          "inclusive_seconds": 18.361747399903834
+        },
+        "local_bundle": {
+          "calls": 9,
+          "inclusive_seconds": 5.828133600007277
+        }
+      },
+      "stage_timing_semantics": "Inclusive timings; nested stages overlap",
+      "matching_backend": {
+        "requested": "cpu",
+        "cuda_available": false,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": null,
+        "cuda_runtime_version": null,
+        "cuda_device_index": null,
+        "cuda_device_name": null,
+        "cuda_device_capability": null,
+        "cuda_calls": 0,
+        "cpu_calls": 158,
+        "ambiguous_rows_on_cpu": 0,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 0.0,
+        "peak_cuda_reserved_mb": 0.0
+      },
+      "opencv_threads": 1,
+      "loops": 0,
+      "loop_events": 0,
+      "bundle_adjustments_applied": 9,
+      "bundle_adjustment_records": 9,
+      "bundle_adjustment_outcomes": {
+        "applied": 9
+      },
+      "physical_identity": {
+        "keyframes": 11,
+        "observations": 10917,
+        "unique_landmark_ids": 10288,
+        "multi_view_landmark_ids": 487,
+        "max_views_per_landmark": 6,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 0,
+        "extra_observation_rows_in_alias_groups": 0,
+        "alias_groups_with_shared_exact_world_point": 0,
+        "alias_groups_all_landmarks_same_exact_world_point": 0
+      }
+    },
+    {
+      "sequence": "04",
+      "variant": "bundle",
+      "source_label": "historical-70c4",
+      "frames": 80,
+      "coverage": "partial",
+      "status": "completed",
+      "lost_frames": 0,
+      "states": {
+        "tracking": 80
+      },
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.1996256410709722,
+        "raw_ate_rmse_m": 0.32966429240254813,
+        "segment_count": 1,
+        "translation_percent": 0.4610606797737615,
+        "rotation_deg_per_m": 0.00701595053413774
+      },
+      "estimator_elapsed_seconds": 42.54232589999447,
+      "total_wall_seconds": 43.188060099986615,
+      "peak_memory_mib": 261.83203125,
+      "keyframes": 9,
+      "landmarks": 10488,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "source_archive_sha256": "7c4018c7c9e8116c7769ca09e2f3f3d7a62d56846d73062b7d1af464b23b5a9f",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "d60c84cb8232357a201b0806e7be84820544be6f7101477dc8863575b3bc0d2d",
+      "poses_sha256": "7f8a9068be1ae9169f378035a68f97fc9c00f4be38b70f43b7da362f666b865a",
+      "physical_identity": {
+        "keyframes": 9,
+        "observations": 11006,
+        "unique_landmark_ids": 10488,
+        "multi_view_landmark_ids": 444,
+        "max_views_per_landmark": 4,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 1701,
+        "extra_observation_rows_in_alias_groups": 1838,
+        "alias_groups_with_shared_exact_world_point": 1664,
+        "alias_groups_all_landmarks_same_exact_world_point": 1662
+      },
+      "bundle_adjustment_records": 7,
+      "bundle_adjustment_outcomes": {
+        "applied": 7
+      },
+      "median_tracking_reprojection_px": 0.3229635248579308,
+      "stage_timings_inclusive": {
+        "image_loading": {
+          "calls": 80,
+          "inclusive_seconds": 0.529493400012143
+        },
+        "stereo_depth_verification": {
+          "calls": 140,
+          "inclusive_seconds": 0.5932210999017116
+        },
+        "_extract": {
+          "calls": 80,
+          "inclusive_seconds": 19.651728199853096
+        },
+        "_keyframe": {
+          "calls": 9,
+          "inclusive_seconds": 0.11117599997669458
+        },
+        "matching": {
+          "calls": 158,
+          "inclusive_seconds": 13.709998399892356
+        },
+        "stereo_pose_arbitration_fit": {
+          "calls": 79,
+          "inclusive_seconds": 0.5351955000369344
+        },
+        "_track": {
+          "calls": 79,
+          "inclusive_seconds": 10.101358000014443
+        },
+        "local_bundle": {
+          "calls": 7,
+          "inclusive_seconds": 3.3766028999816626
+        }
+      },
+      "stage_timing_semantics": "Inclusive timings; nested stages overlap",
+      "matching_backend": {
+        "requested": "cpu",
+        "cuda_available": false,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": null,
+        "cuda_runtime_version": null,
+        "cuda_device_index": null,
+        "cuda_device_name": null,
+        "cuda_device_capability": null,
+        "cuda_calls": 0,
+        "cpu_calls": 158,
+        "ambiguous_rows_on_cpu": 0,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 0.0,
+        "peak_cuda_reserved_mb": 0.0
+      },
+      "opencv_threads": 1,
+      "loops": 0,
+      "loop_events": 0,
+      "ground_truth_used_for_estimation": false
+    },
+    {
+      "sequence": "01",
+      "variant": "baseline",
+      "frames": 350,
+      "coverage": "partial",
+      "status": "completed_with_tracking_loss",
+      "lost_frames": 18,
+      "states": {},
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 21.509820274725715,
+        "raw_ate_rmse_m": 30.30073194617916,
+        "segment_count": 140,
+        "translation_percent": 8.357438736977558,
+        "rotation_deg_per_m": 0.01086073153383467
+      },
+      "estimator_elapsed_seconds": 174.61387030000333,
+      "total_wall_seconds": null,
+      "peak_memory_mib": 235.75,
+      "keyframes": null,
+      "landmarks": null,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "source_fingerprint": "880546a01e9d80a776f3b645c9f1d0d268f49c7707911426d54a9a3514227bdf",
+      "source_archive_sha256": "74069c55877b7fff824af8c7841581b92958ccd3c6b531c0c49dcf445079909f",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "evidence_sha256": "821a76a311322ae777b672af1ab7c08cbaade61881609780eadb9c94f9e25318",
+      "lost_intervals": [],
+      "ground_truth_used_for_estimation": false,
+      "median_tracking_reprojection_px": null,
+      "stage_timings_inclusive": {},
+      "stage_timing_semantics": null,
+      "matching_backend": null,
+      "opencv_threads": null,
+      "loops": null,
+      "loop_events": 0,
+      "bundle_adjustments_applied": null
+    },
+    {
+      "sequence": "01",
+      "variant": "bundle",
+      "frames": 350,
+      "coverage": "partial",
+      "status": "completed",
+      "lost_frames": 0,
+      "states": {
+        "tracking": 348,
+        "relocalized": 2
+      },
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 10.650785432502035,
+        "raw_ate_rmse_m": 21.900508286762385,
+        "segment_count": 140,
+        "translation_percent": 5.447435514992688,
+        "rotation_deg_per_m": 0.011486766309074326
+      },
+      "estimator_elapsed_seconds": 436.5729723999975,
+      "total_wall_seconds": 442.2938229999854,
+      "peak_memory_mib": 657.40625,
+      "keyframes": 149,
+      "landmarks": 109745,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "880546a01e9d80a776f3b645c9f1d0d268f49c7707911426d54a9a3514227bdf",
+      "source_archive_sha256": "033eda4214167e4686d6b8400fdce08ebe8a4eb636ff3ec090af2e8eb3a898ea",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "0483fe9043e434f9b1b5aee419ea8d592204fd0c41ca7ab22f9345f278ab1fc0",
+      "lost_intervals": [],
+      "ground_truth_used_for_estimation": false,
+      "median_tracking_reprojection_px": 0.5120200330321871,
+      "stage_timings_inclusive": {
+        "image_loading": {
+          "calls": 350,
+          "inclusive_seconds": 2.9572757999703754
+        },
+        "stereo_depth_verification": {
+          "calls": 640,
+          "inclusive_seconds": 3.3912211005808786
+        },
+        "_extract": {
+          "calls": 350,
+          "inclusive_seconds": 107.01810129982186
+        },
+        "_keyframe": {
+          "calls": 149,
+          "inclusive_seconds": 13.721079699957045
+        },
+        "matching": {
+          "calls": 816,
+          "inclusive_seconds": 93.42530360035016
+        },
+        "stereo_pose_arbitration_fit": {
+          "calls": 329,
+          "inclusive_seconds": 3.2133792999957222
+        },
+        "_track": {
+          "calls": 354,
+          "inclusive_seconds": 167.62584159977268
+        },
+        "local_bundle": {
+          "calls": 147,
+          "inclusive_seconds": 54.440492999972776
+        },
+        "stereo_pose_full_supported_fallback_fit": {
+          "calls": 28,
+          "inclusive_seconds": 0.3675954000209458
+        },
+        "_keyframe_stereo_reference": {
+          "calls": 3,
+          "inclusive_seconds": 3.476969800016377
+        },
+        "_relocalize": {
+          "calls": 1,
+          "inclusive_seconds": 2.088590800005477
+        }
+      },
+      "stage_timing_semantics": "Inclusive timings; nested stages overlap",
+      "matching_backend": {
+        "requested": "cpu",
+        "cuda_available": false,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": null,
+        "cuda_runtime_version": null,
+        "cuda_device_index": null,
+        "cuda_device_name": null,
+        "cuda_device_capability": null,
+        "cuda_calls": 0,
+        "cpu_calls": 816,
+        "ambiguous_rows_on_cpu": 0,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 0.0,
+        "peak_cuda_reserved_mb": 0.0
+      },
+      "opencv_threads": 1,
+      "loops": 0,
+      "loop_events": 0,
+      "bundle_adjustments_applied": 61,
+      "bundle_adjustment_records": 147,
+      "bundle_adjustment_outcomes": {
+        "applied": 61,
+        "independent_stereo_motion_inconsistency": 18,
+        "insufficient_observations": 68
+      },
+      "physical_identity": {
+        "keyframes": 149,
+        "observations": 113021,
+        "unique_landmark_ids": 109745,
+        "multi_view_landmark_ids": 2809,
+        "max_views_per_landmark": 8,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 0,
+        "extra_observation_rows_in_alias_groups": 0,
+        "alias_groups_with_shared_exact_world_point": 0,
+        "alias_groups_all_landmarks_same_exact_world_point": 0
+      }
+    },
+    {
+      "sequence": "01",
+      "variant": "bundle",
+      "source_label": "historical-70c4",
+      "frames": 350,
+      "coverage": "partial",
+      "status": "completed",
+      "lost_frames": 0,
+      "states": {
+        "tracking": 349,
+        "relocalized": 1
+      },
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 7.479312245224569,
+        "raw_ate_rmse_m": 21.627807773830593,
+        "segment_count": 140,
+        "translation_percent": 4.475547522084708,
+        "rotation_deg_per_m": 0.013115759252996873
+      },
+      "estimator_elapsed_seconds": 237.37992109998595,
+      "total_wall_seconds": 243.2151501000044,
+      "peak_memory_mib": 713.0,
+      "keyframes": 148,
+      "landmarks": 127600,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "source_archive_sha256": "7c4018c7c9e8116c7769ca09e2f3f3d7a62d56846d73062b7d1af464b23b5a9f",
+      "runtime_identity_sha256": "a7d00f93576ea5d80c4cc91bcae58159d6e974ee626b312b7c897ce19800d12f",
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "e2af4cfeb7b25f0c2d26844a045debfaaa31c2a0c17a3934b95a17bf224c3ec9",
+      "poses_sha256": "fe4b1b49ce91a5a71d74fd237b19861a45748bda32ff5fc8e2a2a0ee38500bed",
+      "physical_identity": {
+        "keyframes": 148,
+        "observations": 130514,
+        "unique_landmark_ids": 127600,
+        "multi_view_landmark_ids": 2625,
+        "max_views_per_landmark": 5,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 18657,
+        "extra_observation_rows_in_alias_groups": 19906,
+        "alias_groups_with_shared_exact_world_point": 18550,
+        "alias_groups_all_landmarks_same_exact_world_point": 18529
+      },
+      "bundle_adjustment_records": 146,
+      "bundle_adjustment_outcomes": {
+        "applied": 47,
+        "independent_stereo_motion_inconsistency": 20,
+        "insufficient_observations": 79
+      },
+      "median_tracking_reprojection_px": 0.5217474932437142,
+      "stage_timings_inclusive": {
+        "image_loading": {
+          "calls": 350,
+          "inclusive_seconds": 2.2876040998089593
+        },
+        "stereo_depth_verification": {
+          "calls": 630,
+          "inclusive_seconds": 2.766455600154586
+        },
+        "_extract": {
+          "calls": 350,
+          "inclusive_seconds": 87.99463280002237
+        },
+        "_keyframe": {
+          "calls": 148,
+          "inclusive_seconds": 1.5459956000267994
+        },
+        "matching": {
+          "calls": 794,
+          "inclusive_seconds": 71.90964220027672
+        },
+        "stereo_pose_arbitration_fit": {
+          "calls": 329,
+          "inclusive_seconds": 2.6013656000141054
+        },
+        "_track": {
+          "calls": 354,
+          "inclusive_seconds": 58.56904459980433
+        },
+        "local_bundle": {
+          "calls": 146,
+          "inclusive_seconds": 36.20061749985325
+        },
+        "stereo_pose_full_supported_fallback_fit": {
+          "calls": 26,
+          "inclusive_seconds": 0.30053700000280514
+        },
+        "_keyframe_stereo_reference": {
+          "calls": 2,
+          "inclusive_seconds": 1.2356627999979537
+        },
+        "_relocalize": {
+          "calls": 1,
+          "inclusive_seconds": 1.7426282000087667
+        }
+      },
+      "stage_timing_semantics": "Inclusive timings; nested stages overlap",
+      "matching_backend": {
+        "requested": "cpu",
+        "cuda_available": false,
+        "fallback_reason": null,
+        "python_version": "3.12.14",
+        "pytorch_version": null,
+        "cuda_runtime_version": null,
+        "cuda_device_index": null,
+        "cuda_device_name": null,
+        "cuda_device_capability": null,
+        "cuda_calls": 0,
+        "cpu_calls": 794,
+        "ambiguous_rows_on_cpu": 0,
+        "auto_decisions": {},
+        "peak_cuda_allocated_mb": 0.0,
+        "peak_cuda_reserved_mb": 0.0
+      },
+      "opencv_threads": 1,
+      "loops": 0,
+      "loop_events": 0,
+      "ground_truth_used_for_estimation": false
+    }
+  ],
+  "paired_comparisons": {
+    "04": {
+      "frames": 80,
+      "partial_coverage": true,
+      "current_bundle_minus_current_vo": {
+        "metrics": {
+          "ate_rmse_m": {
+            "left": 0.44351523342332017,
+            "right": 0.11188367637566381,
+            "right_minus_left": -0.33163155704765634,
+            "change_percent": -74.77343100211517
+          },
+          "translation_percent": {
+            "left": 1.672844352606981,
+            "right": 0.2807531045984703,
+            "right_minus_left": -1.3920912480085106,
+            "change_percent": -83.21702170551963
+          },
+          "rotation_deg_per_m": {
+            "left": 0.012411752586322973,
+            "right": 0.005652783299876321,
+            "right_minus_left": -0.006758969286446652,
+            "change_percent": -54.45620382325895
+          }
+        },
+        "lost_frames_delta": 0
+      },
+      "current_bundle_minus_historical_70c4_bundle": {
+        "metrics": {
+          "ate_rmse_m": {
+            "left": 0.1996256410709722,
+            "right": 0.11188367637566381,
+            "right_minus_left": -0.08774196469530839,
+            "change_percent": -43.95325381277739
+          },
+          "translation_percent": {
+            "left": 0.4610606797737615,
+            "right": 0.2807531045984703,
+            "right_minus_left": -0.18030757517529117,
+            "change_percent": -39.10712474196814
+          },
+          "rotation_deg_per_m": {
+            "left": 0.00701595053413774,
+            "right": 0.005652783299876321,
+            "right_minus_left": -0.0013631672342614195,
+            "change_percent": -19.42954454465738
+          }
+        },
+        "lost_frames_delta": 0,
+        "source_changed": true,
+        "interpretation": "descriptive comparison across saved source revisions; not causal"
+      }
+    },
+    "01": {
+      "frames": 350,
+      "partial_coverage": true,
+      "current_bundle_minus_current_vo": {
+        "metrics": {
+          "ate_rmse_m": {
+            "left": 21.509820274725715,
+            "right": 10.650785432502035,
+            "right_minus_left": -10.85903484222368,
+            "change_percent": -50.48407984600025
+          },
+          "translation_percent": {
+            "left": 8.357438736977558,
+            "right": 5.447435514992688,
+            "right_minus_left": -2.91000322198487,
+            "change_percent": -34.819318616235094
+          },
+          "rotation_deg_per_m": {
+            "left": 0.01086073153383467,
+            "right": 0.011486766309074326,
+            "right_minus_left": 0.0006260347752396565,
+            "change_percent": 5.764204494783402
+          }
+        },
+        "lost_frames_delta": -18
+      },
+      "current_bundle_minus_historical_70c4_bundle": {
+        "metrics": {
+          "ate_rmse_m": {
+            "left": 7.479312245224569,
+            "right": 10.650785432502035,
+            "right_minus_left": 3.171473187277466,
+            "change_percent": 42.40327296540408
+          },
+          "translation_percent": {
+            "left": 4.475547522084708,
+            "right": 5.447435514992688,
+            "right_minus_left": 0.9718879929079804,
+            "change_percent": 21.715510518258906
+          },
+          "rotation_deg_per_m": {
+            "left": 0.013115759252996873,
+            "right": 0.011486766309074326,
+            "right_minus_left": -0.001628992943922547,
+            "change_percent": -12.420119281697945
+          }
+        },
+        "lost_frames_delta": 0,
+        "source_changed": true,
+        "interpretation": "descriptive comparison across saved source revisions; not causal"
+      }
+    }
+  },
+  "reference_poses_used_for_estimation": false,
+  "interpretation_limit": "The current baseline/bundle rows are paired on one exact source/runtime/input. The 70c4 bundle is a verified historical source and input comparator; its delta does not isolate any single code change or establish full-sequence performance.",
+  "estimator_commit": "d3871825a842f8a76218ba44fdb82b4faaa8f26d",
+  "checks": {
+    "backend_passed": 348,
+    "optional_gpu_skips": 4,
+    "focused_passed": 270,
+    "frontend_passed": 4,
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "independent_export_audit_passed": true
+}

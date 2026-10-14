@@ -20,6 +20,7 @@ class TelemetryState:
     stream_enabled: bool = True
     mode: str = "slam"
     overlay_enabled: bool = True
+    mode_locked: bool = False
 
 
 def encode_image(image: np.ndarray, encoding: str = "jpg") -> Optional[Dict[str, Any]]:
@@ -66,6 +67,7 @@ def make_frame_message(
         "frame_index": frame_index,
         "timestamp": timestamp,
         "mode": state.mode,
+        "mode_locked": state.mode_locked,
         "translation_scale": translation_scale,
         "sequence": sequence,
         "total_frames": total_frames,
@@ -133,7 +135,7 @@ class TelemetryServer:
         self.state.stream_enabled = enabled
 
     def set_mode(self, mode: str) -> None:
-        self.state.mode = mode
+        if not self.state.mode_locked:self.state.mode = mode
 
     def set_overlay_enabled(self, enabled: bool) -> None:
         self.state.overlay_enabled = enabled

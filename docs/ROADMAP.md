@@ -12,6 +12,30 @@ The objective is reliable SLAM across environments with consistent settings. Eva
 
 See the [benchmark report](benchmark/REPORT.md) for measured results and limitations.
 
+## Experimental shared pipeline
+
+The shared branch adds persistent stereo and monocular mapping, geometric
+monocular initialization, local bundle adjustment, asynchronous image-verified
+SE(3)/Sim(3) corrections, geometric relocalization and optional offline learned
+depth reconstruction. These features have implementation and synthetic test
+coverage, but are not yet established as generally reliable.
+
+The current backend passes 78 tests. Full paired KITTI evaluation is in progress;
+only sequence 04 has completed both modes on the current frozen revision. Its
+monocular scale is arbitrary and fitted only during evaluation. Current TUM desk
+tracking still loses 155 of 613 frames. Retained shared-pipeline KITTI 01 revisions
+also remain less accurate than the original stereo baseline. See the
+[sensor coverage report](benchmark/SENSOR_COMPARISON.md) and
+[tracking diagnosis](benchmark/TRACKING_DIAGNOSIS.md) for separate revision groups.
+
+Before accepting the shared pipeline, finish the fixed-configuration stereo and
+monocular 00–10 batch, diagnose regressions without selecting poses using reference
+data, verify recovery across unresolved intervals, reconcile map observations
+after loop corrections, and validate larger graphs before lifting the current
+300-keyframe limit. Dense reconstruction also needs broader quality evaluation
+and validation of GPU execution. Passing synthetic tests or obtaining a lower
+ATE on one sequence does not complete these requirements.
+
 ## Priorities
 
 1. **Tracking and recovery:** investigate depth uncertainty, nearby static-feature support and motion prediction. Add recovery tests for low texture, rapid motion, dynamic objects and insufficient stereo depth. Do not improve apparent coverage by silently accepting weak estimates.

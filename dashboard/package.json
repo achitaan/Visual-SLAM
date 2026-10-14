@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "predev": "node scripts/sync-artifacts.cjs",
+    "prebuild": "node scripts/sync-artifacts.cjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

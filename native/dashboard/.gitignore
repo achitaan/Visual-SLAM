@@ -1,0 +1,6 @@
+node_modules/
+.next/
+*.tsbuildinfo
+.playwright-cli/
+AGENTS.md
+CLAUDE.md

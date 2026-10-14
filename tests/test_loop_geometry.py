@@ -34,6 +34,35 @@ def test_metric_loop_direction_with_outliers_and_bidirectional_geometry():
     assert np.allclose(loop['measurement'], np.linalg.inv(transform), atol=1e-4)
 
 
+def test_precomputed_physical_pairs_use_the_same_bidirectional_verifier():
+    cv.setRNGSeed(0)
+    first, second, matrix, transform = scene()
+    pairs = np.column_stack((np.arange(len(first.pixels)), np.arange(len(second.pixels))))
+
+    loop = verify_loop(first, second, matrix, pairs=pairs)
+
+    assert loop is not None
+    assert loop['descriptor_matches'] == len(pairs)
+    assert loop['inliers'] >= 160
+    assert np.allclose(loop['measurement'], np.linalg.inv(transform), atol=1e-4)
+    assert verify_loop(first, second, matrix, pairs=np.asarray([[0, 10**6]])) is None
+    assert verify_loop(first, second, matrix, pairs=np.asarray([[0, 0], [0, 1]])) is None
+
+
+def test_precomputed_pairs_collapse_duplicate_physical_edges_and_drop_cross_endpoints():
+    cv.setRNGSeed(0)
+    first, second, matrix, _ = scene()
+    first.pixels[1] = first.pixels[0]
+    pairs = np.column_stack((np.arange(len(first.pixels)), np.arange(len(second.pixels))))
+
+    loop = verify_loop(first, second, matrix, pairs=pairs)
+
+    assert loop is not None
+    # One source pixel cannot support two distinct target pixels. The two
+    # conflicting rows are removed before the unchanged geometric gates.
+    assert loop['descriptor_matches'] == len(pairs) - 2
+
+
 def test_appearance_match_without_geometry_is_rejected():
     cv.setRNGSeed(0)
     first, second, matrix, _ = scene()

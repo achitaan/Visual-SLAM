@@ -1,0 +1,333 @@
+{
+  "estimator_source_sha256": {
+    "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+    "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+    "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+    "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+    "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+    "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+    "live_loops.py": "2f21fe4527908339e40e8afa31569cb7ae5044a4293b827d60968f7f4ac7c0c4",
+    "local_bundle.py": "bd1a866068a48798d6ab36e1fdda83365816511dd8884a40ec0a2fdc4acfd9c1",
+    "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+    "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+    "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+    "mapping_geometry.py": "799a539c97cec492d90e34e2fcde9d70dcd129d4491510a20c4f5e0559b5dad7",
+    "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+    "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+    "reconstruction.py": "f523130eb06577afacf54373195822be8bf4eeecaa3797bf657545156a348eb1",
+    "shared_slam.py": "af95984fcfeef9301b8a5721952691dc0ec70535357bad033a0af0afa1c8d297",
+    "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+    "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+    "slam_state.py": "efe8bc2e9fd12e6afb3dcb6664b91301ce74b7cb401bbdb45559ad264d8886db",
+    "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+    "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+    "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+    "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+  },
+  "backend_tests": {
+    "passed": 74
+  },
+  "runtime_conditions": "Concurrent evaluations; wall time is not isolated throughput.",
+  "runs": [
+    {
+      "sequence": "01",
+      "dataset": "kitti",
+      "frames": 1101,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 1069,
+        "lost": 30,
+        "relocalized": 2
+      },
+      "lost_frames": 30,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.4612226000026567,
+      "relocalized_frames": 2,
+      "lost_intervals": [
+        {
+          "first_frame": 275,
+          "last_frame": 276,
+          "recovered": true
+        },
+        {
+          "first_frame": 1073,
+          "last_frame": 1100,
+          "recovered": false
+        }
+      ],
+      "keyframes": 532,
+      "landmarks": 264925,
+      "elapsed_s": 2581.912381300004,
+      "processing_fps": 0.42642810343767035,
+      "peak_memory_mb": 1422.2109375,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.6868739278276033,
+      "bundle_adjustments_applied": 323,
+      "metrics": {
+        "frames": 1101,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 87.7558719354425,
+        "raw_ate_rmse_m": 257.72544587075606,
+        "segment_count": 676,
+        "translation_percent": 10.900553756653549,
+        "rotation_deg_per_m": 0.013247829007860637
+      },
+      "status": "completed_with_tracking_loss",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 01",
+      "final_multiview_map_quality": {
+        "observations": 46555,
+        "median_reprojection_px": 0.41032490639572256,
+        "p90_reprojection_px": 1.1369207638581709,
+        "above_3px_percent": 1.718397594243368,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "04",
+      "dataset": "kitti",
+      "frames": 271,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 271
+      },
+      "lost_frames": 0,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.4085631999987527,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 32,
+      "landmarks": 36317,
+      "elapsed_s": 353.3338752999989,
+      "processing_fps": 0.7669799556295214,
+      "peak_memory_mb": 334.921875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.8120455804552624,
+      "bundle_adjustments_applied": 30,
+      "metrics": {
+        "frames": 271,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.763740956990857,
+        "raw_ate_rmse_m": 2.7765203094182898,
+        "segment_count": 43,
+        "translation_percent": 1.0047352980528859,
+        "rotation_deg_per_m": 0.008310891837218701
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 04",
+      "final_multiview_map_quality": {
+        "observations": 7864,
+        "median_reprojection_px": 0.36895669067472936,
+        "p90_reprojection_px": 1.1262646767947562,
+        "above_3px_percent": 1.5768056968463884,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "04",
+      "dataset": "kitti",
+      "frames": 271,
+      "stereo": false,
+      "translation_scale": "arbitrary",
+      "states": {
+        "initializing": 3,
+        "tracking": 268
+      },
+      "lost_frames": 0,
+      "initializing_frames": 3,
+      "initialization_frame": 3,
+      "initialization_elapsed_s": 1.422125099998084,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 61,
+      "landmarks": 5759,
+      "elapsed_s": 239.96438480000506,
+      "processing_fps": 1.1293342561058015,
+      "peak_memory_mb": 329.140625,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.5552383501639133,
+      "bundle_adjustments_applied": 59,
+      "metrics": {
+        "frames": 271,
+        "ate_alignment": "sim3",
+        "alignment_scale": 4.032602337115786,
+        "ate_rmse_m": 0.4151299230121963,
+        "raw_ate_rmse_m": null,
+        "segment_count": 0,
+        "translation_percent": null,
+        "rotation_deg_per_m": null
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 04",
+      "final_multiview_map_quality": {
+        "observations": 18441,
+        "median_reprojection_px": 0.2814220270277615,
+        "p90_reprojection_px": 1.0059379053735535,
+        "above_3px_percent": 2.5974730220703868,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "07",
+      "dataset": "kitti",
+      "frames": 1101,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 1101
+      },
+      "lost_frames": 0,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.34258309999859193,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 115,
+      "landmarks": 124755,
+      "elapsed_s": 1568.2852853000004,
+      "processing_fps": 0.7020406365601954,
+      "peak_memory_mb": 698.09765625,
+      "loops": 11,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.7318116076225045,
+      "bundle_adjustments_applied": 113,
+      "metrics": {
+        "frames": 1101,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.8375431844861396,
+        "raw_ate_rmse_m": 1.187834260632743,
+        "segment_count": 317,
+        "translation_percent": 0.8114284508288628,
+        "rotation_deg_per_m": 0.007063067428155944
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 07",
+      "final_multiview_map_quality": {
+        "observations": 65948,
+        "median_reprojection_px": 0.7897534967715898,
+        "p90_reprojection_px": 3.31496469460625,
+        "above_3px_percent": 11.889670649602717,
+        "behind_camera": 0
+      },
+      "last_loop_correction": {
+        "before": {
+          "ate_rmse_m": 1.8830374171675963,
+          "translation_percent": 1.0325471080453956
+        },
+        "after": {
+          "ate_rmse_m": 0.837543184486697,
+          "translation_percent": 0.8114284508486967
+        },
+        "comparison": "Immediately before and after the last applied correction; earlier live corrections are retained in before."
+      }
+    },
+    {
+      "sequence": "04",
+      "dataset": "tum",
+      "frames": 613,
+      "stereo": false,
+      "translation_scale": "arbitrary",
+      "states": {
+        "initializing": 4,
+        "tracking": 450,
+        "relocalized": 4,
+        "lost": 155
+      },
+      "lost_frames": 155,
+      "initializing_frames": 4,
+      "initialization_frame": 4,
+      "initialization_elapsed_s": 1.0018602999989525,
+      "relocalized_frames": 4,
+      "lost_intervals": [
+        {
+          "first_frame": 59,
+          "last_frame": 61,
+          "recovered": true
+        },
+        {
+          "first_frame": 198,
+          "last_frame": 349,
+          "recovered": true
+        }
+      ],
+      "keyframes": 123,
+      "landmarks": 9140,
+      "elapsed_s": 1047.0195185999983,
+      "processing_fps": 0.5854714158716554,
+      "peak_memory_mb": 298.53515625,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.8822203983220553,
+      "bundle_adjustments_applied": 121,
+      "metrics": {
+        "frames": 613,
+        "ate_alignment": "sim3",
+        "alignment_scale": 0.1813847380720237,
+        "ate_rmse_m": 0.806736026904805,
+        "raw_ate_rmse_m": null,
+        "segment_count": 0,
+        "translation_percent": null,
+        "rotation_deg_per_m": null
+      },
+      "status": "completed_with_tracking_loss",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "TUM fr1/desk RGB-only",
+      "final_multiview_map_quality": {
+        "observations": 31411,
+        "median_reprojection_px": 0.586286218344154,
+        "p90_reprojection_px": 1.356713323258717,
+        "above_3px_percent": 0.2769730349240712,
+        "behind_camera": 0
+      }
+    }
+  ]
+}

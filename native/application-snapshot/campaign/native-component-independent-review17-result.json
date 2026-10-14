@@ -1,0 +1,37 @@
+{
+  "review": 17,
+  "verdict_A": "block",
+  "verdict_B": "block",
+  "scope": "component_integration_preparation_only",
+  "findings": [
+    {
+      "id": "A1",
+      "priority": "P2",
+      "confidence": "high",
+      "issue": "Cross-record event/native-frame regression accepted"
+    },
+    {
+      "id": "B1",
+      "priority": "P1",
+      "confidence": "high",
+      "issue": "Completed local export conflicts with finalizer acceptance predicate"
+    }
+  ],
+  "inspected_hash_count": 24,
+  "packet_scoped_hash_count": 22,
+  "hash_mismatches": 0,
+  "constraints": [
+    "hooks_unapplied",
+    "trusted_same_boot_admission_unimplemented",
+    "launcher_assembly_unimplemented",
+    "native_partial_stop_unqualified",
+    "browser_stop_unqualified",
+    "full10_rejection_preserved"
+  ],
+  "no_tests": true,
+  "no_native_replay": true,
+  "no_retention": true,
+  "ground_truth_read": false,
+  "source_edits": false,
+  "files_written": false
+}

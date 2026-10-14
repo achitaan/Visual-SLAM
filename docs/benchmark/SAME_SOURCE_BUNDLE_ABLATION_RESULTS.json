@@ -1,0 +1,2702 @@
+{
+  "scope": "Same-source bundle adjustment ablation; partial KITTI prefixes",
+  "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+  "ground_truth_used_for_estimation": false,
+  "loop_mode": "off",
+  "release_ready": false,
+  "source_runtime_inputs_and_reference_match": true,
+  "configuration_difference": "bundle_enabled only",
+  "rows": [
+    {
+      "sequence": "01",
+      "variant": "map-only",
+      "frames": 350,
+      "status": "completed",
+      "states": {
+        "tracking": 349,
+        "relocalized": 1
+      },
+      "lost_frames": 0,
+      "keyframes": 148,
+      "landmarks": 128107,
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 6.772513175708635,
+        "raw_ate_rmse_m": 18.882233971683092,
+        "segment_count": 140,
+        "translation_percent": 3.9866098667653134,
+        "rotation_deg_per_m": 0.01554139508492454
+      },
+      "independently_recomputed_metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 6.772513175762743,
+        "raw_ate_rmse_m": 18.88223397160267,
+        "segment_count": 140,
+        "translation_percent": 3.9866098666892658,
+        "rotation_deg_per_m": 0.015541395086577408,
+        "segments": [
+          {
+            "first_frame": 0,
+            "last_frame": 81,
+            "length_m": 100.0,
+            "translation_percent": 6.044340029313738,
+            "rotation_deg_per_m": 0.020430394534296833
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 129,
+            "length_m": 200.0,
+            "translation_percent": 3.7671765295178608,
+            "rotation_deg_per_m": 0.017073778960533123
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 170,
+            "length_m": 300.0,
+            "translation_percent": 4.21443794816273,
+            "rotation_deg_per_m": 0.01431825132364245
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 208,
+            "length_m": 400.0,
+            "translation_percent": 4.358217070998522,
+            "rotation_deg_per_m": 0.014221007223073479
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 245,
+            "length_m": 500.0,
+            "translation_percent": 4.268079894830285,
+            "rotation_deg_per_m": 0.01270930949637152
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 283,
+            "length_m": 600.0,
+            "translation_percent": 4.4388048215447835,
+            "rotation_deg_per_m": 0.011847288255636737
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 320,
+            "length_m": 700.0,
+            "translation_percent": 4.78757639402887,
+            "rotation_deg_per_m": 0.012580266803880712
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 86,
+            "length_m": 100.0,
+            "translation_percent": 5.840605940456822,
+            "rotation_deg_per_m": 0.019529854167803028
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 133,
+            "length_m": 200.0,
+            "translation_percent": 3.453881100191739,
+            "rotation_deg_per_m": 0.01770113671831788
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 174,
+            "length_m": 300.0,
+            "translation_percent": 4.0575713561811035,
+            "rotation_deg_per_m": 0.014839259998728777
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 212,
+            "length_m": 400.0,
+            "translation_percent": 4.063134912539219,
+            "rotation_deg_per_m": 0.014438894061300785
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 249,
+            "length_m": 500.0,
+            "translation_percent": 4.007514619847441,
+            "rotation_deg_per_m": 0.012662939763507807
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 287,
+            "length_m": 600.0,
+            "translation_percent": 4.213057349103188,
+            "rotation_deg_per_m": 0.011598210476714553
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 324,
+            "length_m": 700.0,
+            "translation_percent": 4.586653838875034,
+            "rotation_deg_per_m": 0.012747232895480626
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 91,
+            "length_m": 100.0,
+            "translation_percent": 5.410281058652528,
+            "rotation_deg_per_m": 0.020317822493076385
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 137,
+            "length_m": 200.0,
+            "translation_percent": 3.3105398608676095,
+            "rotation_deg_per_m": 0.018377538376456563
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 178,
+            "length_m": 300.0,
+            "translation_percent": 4.1238454746963615,
+            "rotation_deg_per_m": 0.015955971952520742
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 216,
+            "length_m": 400.0,
+            "translation_percent": 3.9575364417144154,
+            "rotation_deg_per_m": 0.014603427970066156
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 253,
+            "length_m": 500.0,
+            "translation_percent": 3.897647437738582,
+            "rotation_deg_per_m": 0.013121949294127518
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 290,
+            "length_m": 600.0,
+            "translation_percent": 4.1390641295559485,
+            "rotation_deg_per_m": 0.011544673307913884
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 328,
+            "length_m": 700.0,
+            "translation_percent": 4.605329562527552,
+            "rotation_deg_per_m": 0.01294654765174384
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 96,
+            "length_m": 100.0,
+            "translation_percent": 4.432895059517074,
+            "rotation_deg_per_m": 0.021201863236272937
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 141,
+            "length_m": 200.0,
+            "translation_percent": 2.8902158823477917,
+            "rotation_deg_per_m": 0.018557940567709895
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 182,
+            "length_m": 300.0,
+            "translation_percent": 3.9802120304914386,
+            "rotation_deg_per_m": 0.01684003619825427
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 219,
+            "length_m": 400.0,
+            "translation_percent": 3.7309851100593017,
+            "rotation_deg_per_m": 0.014557567584741271
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 256,
+            "length_m": 500.0,
+            "translation_percent": 3.6675797034808078,
+            "rotation_deg_per_m": 0.013387952485312979
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 294,
+            "length_m": 600.0,
+            "translation_percent": 3.856276201947056,
+            "rotation_deg_per_m": 0.01134122014909333
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 331,
+            "length_m": 700.0,
+            "translation_percent": 4.2841887389512125,
+            "rotation_deg_per_m": 0.012731157417718185
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 101,
+            "length_m": 100.0,
+            "translation_percent": 2.6171165008321786,
+            "rotation_deg_per_m": 0.018507177416731857
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 145,
+            "length_m": 200.0,
+            "translation_percent": 2.4615027895092725,
+            "rotation_deg_per_m": 0.01814519116908128
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 186,
+            "length_m": 300.0,
+            "translation_percent": 3.9118700894447715,
+            "rotation_deg_per_m": 0.01743386356744101
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 223,
+            "length_m": 400.0,
+            "translation_percent": 4.197840390804264,
+            "rotation_deg_per_m": 0.01404678137569067
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 260,
+            "length_m": 500.0,
+            "translation_percent": 3.396143635287021,
+            "rotation_deg_per_m": 0.012920380572409892
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 298,
+            "length_m": 600.0,
+            "translation_percent": 3.3923807853173185,
+            "rotation_deg_per_m": 0.01105925210021972
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 335,
+            "length_m": 700.0,
+            "translation_percent": 3.7085937284842916,
+            "rotation_deg_per_m": 0.012584248641076662
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 107,
+            "length_m": 100.0,
+            "translation_percent": 1.1604860133204593,
+            "rotation_deg_per_m": 0.017859506441037027
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 150,
+            "length_m": 200.0,
+            "translation_percent": 2.957481385290057,
+            "rotation_deg_per_m": 0.018087550014222603
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 190,
+            "length_m": 300.0,
+            "translation_percent": 4.050089087033693,
+            "rotation_deg_per_m": 0.01752485547634527
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 227,
+            "length_m": 400.0,
+            "translation_percent": 4.0618177338650625,
+            "rotation_deg_per_m": 0.014234773435459591
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 265,
+            "length_m": 500.0,
+            "translation_percent": 3.362007873011746,
+            "rotation_deg_per_m": 0.012632085727709234
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 302,
+            "length_m": 600.0,
+            "translation_percent": 3.1272045909739785,
+            "rotation_deg_per_m": 0.010775975722071052
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 340,
+            "length_m": 700.0,
+            "translation_percent": 3.035207186985986,
+            "rotation_deg_per_m": 0.013940085783194953
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 113,
+            "length_m": 100.0,
+            "translation_percent": 1.0327371850983518,
+            "rotation_deg_per_m": 0.01802063795207592
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 156,
+            "length_m": 200.0,
+            "translation_percent": 3.715328613743094,
+            "rotation_deg_per_m": 0.017170026073690083
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 196,
+            "length_m": 300.0,
+            "translation_percent": 4.439187156364067,
+            "rotation_deg_per_m": 0.017602484779451463
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 233,
+            "length_m": 400.0,
+            "translation_percent": 4.1543803248769,
+            "rotation_deg_per_m": 0.013665024293327601
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 270,
+            "length_m": 500.0,
+            "translation_percent": 3.402502992686202,
+            "rotation_deg_per_m": 0.012236856192754402
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 308,
+            "length_m": 600.0,
+            "translation_percent": 3.076349863405179,
+            "rotation_deg_per_m": 0.011311332409350889
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 345,
+            "length_m": 700.0,
+            "translation_percent": 2.741275207872524,
+            "rotation_deg_per_m": 0.014966249138293287
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 121,
+            "length_m": 100.0,
+            "translation_percent": 1.8294373730370872,
+            "rotation_deg_per_m": 0.021164316828629598
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 163,
+            "length_m": 200.0,
+            "translation_percent": 4.252934061044014,
+            "rotation_deg_per_m": 0.017022097870506965
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 202,
+            "length_m": 300.0,
+            "translation_percent": 4.728652694267323,
+            "rotation_deg_per_m": 0.017118489250990607
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 239,
+            "length_m": 400.0,
+            "translation_percent": 4.229228951460781,
+            "rotation_deg_per_m": 0.012615000030265054
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 276,
+            "length_m": 500.0,
+            "translation_percent": 3.3927511447686682,
+            "rotation_deg_per_m": 0.011428133095153782
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 314,
+            "length_m": 600.0,
+            "translation_percent": 2.904421103621402,
+            "rotation_deg_per_m": 0.011406659367732594
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 128,
+            "length_m": 100.0,
+            "translation_percent": 2.5841433346544926,
+            "rotation_deg_per_m": 0.01987277786524392
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 170,
+            "length_m": 200.0,
+            "translation_percent": 4.744655547798485,
+            "rotation_deg_per_m": 0.015783463243115928
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 208,
+            "length_m": 300.0,
+            "translation_percent": 4.933781700125507,
+            "rotation_deg_per_m": 0.014546228288312717
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 245,
+            "length_m": 400.0,
+            "translation_percent": 4.191037982742848,
+            "rotation_deg_per_m": 0.011588462937442834
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 283,
+            "length_m": 500.0,
+            "translation_percent": 3.3744662051827277,
+            "rotation_deg_per_m": 0.010383756781240353
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 320,
+            "length_m": 600.0,
+            "translation_percent": 2.9045082799600705,
+            "rotation_deg_per_m": 0.011351857748748442
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 136,
+            "length_m": 100.0,
+            "translation_percent": 3.5979523812237124,
+            "rotation_deg_per_m": 0.019702965887755292
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 178,
+            "length_m": 200.0,
+            "translation_percent": 5.398884306763349,
+            "rotation_deg_per_m": 0.017034005086908464
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 215,
+            "length_m": 300.0,
+            "translation_percent": 4.916206075072278,
+            "rotation_deg_per_m": 0.012966707231747074
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 252,
+            "length_m": 400.0,
+            "translation_percent": 4.134399898938917,
+            "rotation_deg_per_m": 0.011335270337873309
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 290,
+            "length_m": 500.0,
+            "translation_percent": 3.421458374557182,
+            "rotation_deg_per_m": 0.00979736442065002
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 327,
+            "length_m": 600.0,
+            "translation_percent": 3.129330584623718,
+            "rotation_deg_per_m": 0.011847445012775609
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 145,
+            "length_m": 100.0,
+            "translation_percent": 4.859260365462626,
+            "rotation_deg_per_m": 0.019767574502572924
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 185,
+            "length_m": 200.0,
+            "translation_percent": 5.894500082069442,
+            "rotation_deg_per_m": 0.01824750272267018
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 222,
+            "length_m": 300.0,
+            "translation_percent": 4.878891242621992,
+            "rotation_deg_per_m": 0.012439567585994153
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 260,
+            "length_m": 400.0,
+            "translation_percent": 4.097024705616043,
+            "rotation_deg_per_m": 0.011642111318210704
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 297,
+            "length_m": 500.0,
+            "translation_percent": 3.411517503183639,
+            "rotation_deg_per_m": 0.009716798723192581
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 335,
+            "length_m": 600.0,
+            "translation_percent": 3.2190454854598056,
+            "rotation_deg_per_m": 0.01213373743366395
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 154,
+            "length_m": 100.0,
+            "translation_percent": 6.425776816370571,
+            "rotation_deg_per_m": 0.018790569355170917
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 193,
+            "length_m": 200.0,
+            "translation_percent": 6.117974044191553,
+            "rotation_deg_per_m": 0.018536465864971235
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 230,
+            "length_m": 300.0,
+            "translation_percent": 5.365599266508643,
+            "rotation_deg_per_m": 0.01319552741805826
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 268,
+            "length_m": 400.0,
+            "translation_percent": 4.038861757537259,
+            "rotation_deg_per_m": 0.011959910298953874
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 305,
+            "length_m": 500.0,
+            "translation_percent": 3.4049681693137765,
+            "rotation_deg_per_m": 0.010494515013212163
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 343,
+            "length_m": 600.0,
+            "translation_percent": 2.8386777331719824,
+            "rotation_deg_per_m": 0.015903051682408697
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 163,
+            "length_m": 100.0,
+            "translation_percent": 6.967076354227391,
+            "rotation_deg_per_m": 0.013818924167875814
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 202,
+            "length_m": 200.0,
+            "translation_percent": 6.324021920275844,
+            "rotation_deg_per_m": 0.015554455493480817
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 238,
+            "length_m": 300.0,
+            "translation_percent": 5.163577248796537,
+            "rotation_deg_per_m": 0.011507404304603206
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 276,
+            "length_m": 400.0,
+            "translation_percent": 4.124913023193518,
+            "rotation_deg_per_m": 0.011301234048966208
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 313,
+            "length_m": 500.0,
+            "translation_percent": 3.760159688136956,
+            "rotation_deg_per_m": 0.012051748749384512
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 172,
+            "length_m": 100.0,
+            "translation_percent": 6.927540656800508,
+            "rotation_deg_per_m": 0.01249388682755873
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 210,
+            "length_m": 200.0,
+            "translation_percent": 5.994848410222866,
+            "rotation_deg_per_m": 0.01145165084277802
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 247,
+            "length_m": 300.0,
+            "translation_percent": 4.705566488541537,
+            "rotation_deg_per_m": 0.00977986542510376
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 285,
+            "length_m": 400.0,
+            "translation_percent": 3.899753017303583,
+            "rotation_deg_per_m": 0.009947522881268047
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 322,
+            "length_m": 500.0,
+            "translation_percent": 3.7191907963783226,
+            "rotation_deg_per_m": 0.0125734582108701
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 181,
+            "length_m": 100.0,
+            "translation_percent": 7.127615210008558,
+            "rotation_deg_per_m": 0.015482360195768223
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 219,
+            "length_m": 200.0,
+            "translation_percent": 5.272789465583335,
+            "rotation_deg_per_m": 0.011510760239256505
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 256,
+            "length_m": 300.0,
+            "translation_percent": 4.281448431200739,
+            "rotation_deg_per_m": 0.012215417415775254
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 293,
+            "length_m": 400.0,
+            "translation_percent": 3.846333806622759,
+            "rotation_deg_per_m": 0.00968665789931893
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 331,
+            "length_m": 500.0,
+            "translation_percent": 4.122464914609709,
+            "rotation_deg_per_m": 0.013401300283036923
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 191,
+            "length_m": 100.0,
+            "translation_percent": 6.598940684513066,
+            "rotation_deg_per_m": 0.017322567883939478
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 227,
+            "length_m": 200.0,
+            "translation_percent": 5.3254690660945485,
+            "rotation_deg_per_m": 0.01340121269319525
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 265,
+            "length_m": 300.0,
+            "translation_percent": 3.9816661138491245,
+            "rotation_deg_per_m": 0.014118981126190748
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 302,
+            "length_m": 400.0,
+            "translation_percent": 4.007393483848742,
+            "rotation_deg_per_m": 0.011329086502702337
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 340,
+            "length_m": 500.0,
+            "translation_percent": 4.304384979508823,
+            "rotation_deg_per_m": 0.01760118702001793
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 199,
+            "length_m": 100.0,
+            "translation_percent": 5.822085085958756,
+            "rotation_deg_per_m": 0.017310815942916256
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 236,
+            "length_m": 200.0,
+            "translation_percent": 4.502696103028425,
+            "rotation_deg_per_m": 0.011455779002472521
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 274,
+            "length_m": 300.0,
+            "translation_percent": 3.515002622011869,
+            "rotation_deg_per_m": 0.012299177008722599
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 311,
+            "length_m": 400.0,
+            "translation_percent": 3.542485868029878,
+            "rotation_deg_per_m": 0.012547862101803496
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 349,
+            "length_m": 500.0,
+            "translation_percent": 3.962496399835296,
+            "rotation_deg_per_m": 0.018251747187656146
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 208,
+            "length_m": 100.0,
+            "translation_percent": 5.272192920048008,
+            "rotation_deg_per_m": 0.014298841453975218
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 245,
+            "length_m": 200.0,
+            "translation_percent": 3.953478011629028,
+            "rotation_deg_per_m": 0.013253520817879266
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 283,
+            "length_m": 300.0,
+            "translation_percent": 3.8875510076324735,
+            "rotation_deg_per_m": 0.01332560871827239
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 321,
+            "length_m": 400.0,
+            "translation_percent": 4.5069329237860245,
+            "rotation_deg_per_m": 0.015936695990632934
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 218,
+            "length_m": 100.0,
+            "translation_percent": 3.746764179320222,
+            "rotation_deg_per_m": 0.02061025359372044
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 255,
+            "length_m": 200.0,
+            "translation_percent": 3.7078071739786806,
+            "rotation_deg_per_m": 0.018919936846827207
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 292,
+            "length_m": 300.0,
+            "translation_percent": 4.557861946539282,
+            "rotation_deg_per_m": 0.013744944385755287
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 330,
+            "length_m": 400.0,
+            "translation_percent": 5.655583694186628,
+            "rotation_deg_per_m": 0.01803030372466448
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 227,
+            "length_m": 100.0,
+            "translation_percent": 4.383072407448957,
+            "rotation_deg_per_m": 0.02368599493695413
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 265,
+            "length_m": 200.0,
+            "translation_percent": 3.9418172533358695,
+            "rotation_deg_per_m": 0.021790590056949187
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 302,
+            "length_m": 300.0,
+            "translation_percent": 5.019164865972518,
+            "rotation_deg_per_m": 0.015649148138575784
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 340,
+            "length_m": 400.0,
+            "translation_percent": 5.876972749725006,
+            "rotation_deg_per_m": 0.022782386379613863
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 237,
+            "length_m": 100.0,
+            "translation_percent": 3.478979600819408,
+            "rotation_deg_per_m": 0.019537922128153133
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 275,
+            "length_m": 200.0,
+            "translation_percent": 3.8342454444064176,
+            "rotation_deg_per_m": 0.018087935150934025
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 312,
+            "length_m": 300.0,
+            "translation_percent": 4.74952217797513,
+            "rotation_deg_per_m": 0.017374362514042268
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 248,
+            "length_m": 100.0,
+            "translation_percent": 2.8392816815283983,
+            "rotation_deg_per_m": 0.01693454698087147
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 285,
+            "length_m": 200.0,
+            "translation_percent": 3.6455370355060377,
+            "rotation_deg_per_m": 0.01493880805553206
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 323,
+            "length_m": 300.0,
+            "translation_percent": 4.644987873426089,
+            "rotation_deg_per_m": 0.01885143333191257
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 258,
+            "length_m": 100.0,
+            "translation_percent": 2.348953582293445,
+            "rotation_deg_per_m": 0.018566124799574854
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 295,
+            "length_m": 200.0,
+            "translation_percent": 2.8026356249046085,
+            "rotation_deg_per_m": 0.01066934322028491
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 333,
+            "length_m": 300.0,
+            "translation_percent": 3.907237872776624,
+            "rotation_deg_per_m": 0.017428472520847817
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 268,
+            "length_m": 100.0,
+            "translation_percent": 1.6017189235990146,
+            "rotation_deg_per_m": 0.020045443657497816
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 305,
+            "length_m": 200.0,
+            "translation_percent": 2.6699438095934283,
+            "rotation_deg_per_m": 0.013417238028903463
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 343,
+            "length_m": 300.0,
+            "translation_percent": 3.399718071261192,
+            "rotation_deg_per_m": 0.02556087040238865
+          },
+          {
+            "first_frame": 240,
+            "last_frame": 278,
+            "length_m": 100.0,
+            "translation_percent": 2.1562538059946905,
+            "rotation_deg_per_m": 0.017917836813722457
+          },
+          {
+            "first_frame": 240,
+            "last_frame": 316,
+            "length_m": 200.0,
+            "translation_percent": 3.2047258971399435,
+            "rotation_deg_per_m": 0.018173509917356143
+          },
+          {
+            "first_frame": 250,
+            "last_frame": 288,
+            "length_m": 100.0,
+            "translation_percent": 2.1625954646241214,
+            "rotation_deg_per_m": 0.01037354233345008
+          },
+          {
+            "first_frame": 250,
+            "last_frame": 326,
+            "length_m": 200.0,
+            "translation_percent": 3.1391396313857545,
+            "rotation_deg_per_m": 0.019716457220567963
+          },
+          {
+            "first_frame": 260,
+            "last_frame": 298,
+            "length_m": 100.0,
+            "translation_percent": 1.020186662950781,
+            "rotation_deg_per_m": 0.005584615713227336
+          },
+          {
+            "first_frame": 260,
+            "last_frame": 336,
+            "length_m": 200.0,
+            "translation_percent": 2.551872246147566,
+            "rotation_deg_per_m": 0.01775913169890787
+          },
+          {
+            "first_frame": 270,
+            "last_frame": 308,
+            "length_m": 100.0,
+            "translation_percent": 0.7675386262795003,
+            "rotation_deg_per_m": 0.011602008420488676
+          },
+          {
+            "first_frame": 270,
+            "last_frame": 346,
+            "length_m": 200.0,
+            "translation_percent": 2.8119658291056133,
+            "rotation_deg_per_m": 0.027929092867202115
+          },
+          {
+            "first_frame": 280,
+            "last_frame": 318,
+            "length_m": 100.0,
+            "translation_percent": 2.0778465496145393,
+            "rotation_deg_per_m": 0.02116335981258026
+          },
+          {
+            "first_frame": 290,
+            "last_frame": 328,
+            "length_m": 100.0,
+            "translation_percent": 3.0445838335690616,
+            "rotation_deg_per_m": 0.03004414742103908
+          },
+          {
+            "first_frame": 300,
+            "last_frame": 338,
+            "length_m": 100.0,
+            "translation_percent": 3.773763866233014,
+            "rotation_deg_per_m": 0.03265572648717698
+          },
+          {
+            "first_frame": 310,
+            "last_frame": 348,
+            "length_m": 100.0,
+            "translation_percent": 5.573529449484123,
+            "rotation_deg_per_m": 0.04431992927558994
+          }
+        ]
+      },
+      "elapsed_s": 270.71513210001285,
+      "total_wall_seconds": 277.824663300009,
+      "peak_memory_mb": 706.08203125,
+      "bundle_adjustments_applied": 0,
+      "bundle_adjustment_records": 146,
+      "bundle_adjustment_outcomes": {
+        "diagnostic_ablation": 146
+      },
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": false,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "development_identity": {
+        "revision": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+        "runtime_identity": {
+          "version": 1,
+          "dependencies": {
+            "python": "3.12.14",
+            "implementation": "CPython",
+            "platform": "win32",
+            "machine": "AMD64",
+            "files": {
+              "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+              "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+              "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+              "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+            },
+            "packages": {
+              "bokeh": "3.10.0",
+              "cloudpickle": "3.1.2",
+              "colorama": "0.4.6",
+              "contourpy": "1.4.0",
+              "cycler": "0.12.1",
+              "fonttools": "4.66.1",
+              "iniconfig": "2.3.0",
+              "Jinja2": "3.1.6",
+              "joblib": "1.6.0",
+              "kiwisolver": "1.5.1",
+              "MarkupSafe": "3.0.3",
+              "matplotlib": "3.11.2",
+              "narwhals": "2.26.0",
+              "numpy": "2.5.3",
+              "opencv-contrib-python": "5.0.0.93",
+              "packaging": "26.3",
+              "pillow": "12.3.0",
+              "pluggy": "1.6.0",
+              "Pygments": "2.21.0",
+              "pyparsing": "3.3.3",
+              "pytest": "9.1.1",
+              "python-dateutil": "2.9.0.post0",
+              "PyYAML": "6.0.3",
+              "pyyaml": "6.0.3",
+              "scikit-learn": "1.9.1",
+              "scipy": "1.18.1",
+              "six": "1.17.0",
+              "threadpoolctl": "3.7.0",
+              "torch": "2.14.1+cpu",
+              "torchvision": "0.29.1+cpu",
+              "tornado": "6.5.10",
+              "websockets": "17.1",
+              "xyzservices": "2026.9.1"
+            }
+          },
+          "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+        },
+        "sequence": "01",
+        "frames": 350,
+        "coverage": "partial",
+        "input": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+        "variant": "map-only",
+        "cached": false,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "performance": {
+          "matching_backend": "cpu",
+          "retrieval": "current",
+          "cpu_optimizations": true,
+          "opencv_threads": 1
+        },
+        "reference": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8"
+      },
+      "source_archive": {
+        "source_sha256": {
+          "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+          "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+          "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+          "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+          "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+          "feature_cache.py": "9702572957cf7cd2fddf5246b7effbf294d88362b97a0d065b28eb82109deacb",
+          "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+          "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+          "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+          "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+          "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+          "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+          "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+          "main.py": "d8721cead93105aa26a3bf71b34d423d4e246435c547ba534bc0511cc0809bfe",
+          "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+          "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+          "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+          "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+          "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+          "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+          "shared_slam.py": "e12d4d29e1c4bae0fee915daeff158e345b2e329b0633d8103e95a67a928ec08",
+          "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+          "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+          "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+          "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+          "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+          "stereo_depth.py": "300bb6e1d0fe3da1d252173959072e2a78e7c0399a5f0e64bb85528527dfc43f",
+          "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+          "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+          "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+          "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+        },
+        "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505"
+      },
+      "evaluation_sha256": "b0f5a6bc98b3e8fb772d2f43c6fea05952d6e7fe83b8062abd9f6ac7090c3992",
+      "poses_sha256": "cdd7598f19e27b040fda954b31d0a50482c0ff32a578d75a33420ffbcba3ad2f",
+      "sparse_ply_sha256": "4ef840df4475a314426c971eb12cd78647bf68f9d5deccbbfddb34a135e91862",
+      "physical_identity": {
+        "keyframes": 148,
+        "observations": 130879,
+        "unique_landmark_ids": 128107,
+        "multi_view_landmark_ids": 2565,
+        "max_views_per_landmark": 5,
+        "landmark_births": 128107,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 18771,
+        "extra_observation_rows_in_alias_groups": 19975,
+        "distinct_landmark_ids_beyond_one_per_pixel": 19975,
+        "alias_groups_with_shared_exact_world_point": 18729,
+        "alias_groups_all_landmarks_same_exact_world_point": 18725,
+        "same_pixel_same_world_point_distinct_id_pairs": 21223
+      }
+    },
+    {
+      "sequence": "04",
+      "variant": "map-only",
+      "frames": 80,
+      "status": "completed",
+      "states": {
+        "tracking": 80
+      },
+      "lost_frames": 0,
+      "keyframes": 10,
+      "landmarks": 11557,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.3106162706209649,
+        "raw_ate_rmse_m": 0.8700746915847958,
+        "segment_count": 1,
+        "translation_percent": 1.3926563763171835,
+        "rotation_deg_per_m": 0.013548605501773473
+      },
+      "independently_recomputed_metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.3106162706290765,
+        "raw_ate_rmse_m": 0.8700746915486582,
+        "segment_count": 1,
+        "translation_percent": 1.3926563763274344,
+        "rotation_deg_per_m": 0.013548605479018882,
+        "segments": [
+          {
+            "first_frame": 0,
+            "last_frame": 73,
+            "length_m": 100.0,
+            "translation_percent": 1.3926563763274344,
+            "rotation_deg_per_m": 0.013548605479018882
+          }
+        ]
+      },
+      "elapsed_s": 53.66448879998643,
+      "total_wall_seconds": 54.46112079999875,
+      "peak_memory_mb": 261.15234375,
+      "bundle_adjustments_applied": 0,
+      "bundle_adjustment_records": 8,
+      "bundle_adjustment_outcomes": {
+        "diagnostic_ablation": 8
+      },
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": false,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "development_identity": {
+        "revision": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+        "runtime_identity": {
+          "version": 1,
+          "dependencies": {
+            "python": "3.12.14",
+            "implementation": "CPython",
+            "platform": "win32",
+            "machine": "AMD64",
+            "files": {
+              "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+              "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+              "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+              "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+            },
+            "packages": {
+              "bokeh": "3.10.0",
+              "cloudpickle": "3.1.2",
+              "colorama": "0.4.6",
+              "contourpy": "1.4.0",
+              "cycler": "0.12.1",
+              "fonttools": "4.66.1",
+              "iniconfig": "2.3.0",
+              "Jinja2": "3.1.6",
+              "joblib": "1.6.0",
+              "kiwisolver": "1.5.1",
+              "MarkupSafe": "3.0.3",
+              "matplotlib": "3.11.2",
+              "narwhals": "2.26.0",
+              "numpy": "2.5.3",
+              "opencv-contrib-python": "5.0.0.93",
+              "packaging": "26.3",
+              "pillow": "12.3.0",
+              "pluggy": "1.6.0",
+              "Pygments": "2.21.0",
+              "pyparsing": "3.3.3",
+              "pytest": "9.1.1",
+              "python-dateutil": "2.9.0.post0",
+              "PyYAML": "6.0.3",
+              "pyyaml": "6.0.3",
+              "scikit-learn": "1.9.1",
+              "scipy": "1.18.1",
+              "six": "1.17.0",
+              "threadpoolctl": "3.7.0",
+              "torch": "2.14.1+cpu",
+              "torchvision": "0.29.1+cpu",
+              "tornado": "6.5.10",
+              "websockets": "17.1",
+              "xyzservices": "2026.9.1"
+            }
+          },
+          "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+        },
+        "sequence": "04",
+        "frames": 80,
+        "coverage": "partial",
+        "input": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+        "variant": "map-only",
+        "cached": false,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "performance": {
+          "matching_backend": "cpu",
+          "retrieval": "current",
+          "cpu_optimizations": true,
+          "opencv_threads": 1
+        },
+        "reference": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1"
+      },
+      "source_archive": {
+        "source_sha256": {
+          "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+          "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+          "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+          "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+          "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+          "feature_cache.py": "9702572957cf7cd2fddf5246b7effbf294d88362b97a0d065b28eb82109deacb",
+          "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+          "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+          "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+          "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+          "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+          "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+          "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+          "main.py": "d8721cead93105aa26a3bf71b34d423d4e246435c547ba534bc0511cc0809bfe",
+          "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+          "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+          "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+          "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+          "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+          "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+          "shared_slam.py": "e12d4d29e1c4bae0fee915daeff158e345b2e329b0633d8103e95a67a928ec08",
+          "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+          "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+          "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+          "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+          "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+          "stereo_depth.py": "300bb6e1d0fe3da1d252173959072e2a78e7c0399a5f0e64bb85528527dfc43f",
+          "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+          "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+          "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+          "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+        },
+        "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505"
+      },
+      "evaluation_sha256": "bfa241f85f9b9ac605b5114b8c8567ee6a2bd12d165880f6ea1dc751c00f677f",
+      "poses_sha256": "6d86e44e5354b0a14893556b8fb871217020d5dec27a60430e41062810ffce6b",
+      "sparse_ply_sha256": "5c9ffbd266bd191d3b87220542228dd42f376392ccf165aecf94478fff5724b5",
+      "physical_identity": {
+        "keyframes": 10,
+        "observations": 12153,
+        "unique_landmark_ids": 11557,
+        "multi_view_landmark_ids": 546,
+        "max_views_per_landmark": 4,
+        "landmark_births": 11557,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 1818,
+        "extra_observation_rows_in_alias_groups": 1964,
+        "distinct_landmark_ids_beyond_one_per_pixel": 1964,
+        "alias_groups_with_shared_exact_world_point": 1812,
+        "alias_groups_all_landmarks_same_exact_world_point": 1811,
+        "same_pixel_same_world_point_distinct_id_pairs": 2120
+      }
+    },
+    {
+      "sequence": "01",
+      "variant": "bundle",
+      "frames": 350,
+      "status": "completed",
+      "states": {
+        "tracking": 349,
+        "relocalized": 1
+      },
+      "lost_frames": 0,
+      "keyframes": 148,
+      "landmarks": 127600,
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 7.479312245224569,
+        "raw_ate_rmse_m": 21.627807773830593,
+        "segment_count": 140,
+        "translation_percent": 4.475547522084708,
+        "rotation_deg_per_m": 0.013115759252996873
+      },
+      "independently_recomputed_metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 7.479312245069764,
+        "raw_ate_rmse_m": 21.627807773863083,
+        "segment_count": 140,
+        "translation_percent": 4.475547521985136,
+        "rotation_deg_per_m": 0.013115759245804244,
+        "segments": [
+          {
+            "first_frame": 0,
+            "last_frame": 81,
+            "length_m": 100.0,
+            "translation_percent": 7.441289359484635,
+            "rotation_deg_per_m": 0.017867789825144066
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 129,
+            "length_m": 200.0,
+            "translation_percent": 4.095768781449926,
+            "rotation_deg_per_m": 0.014161309682081465
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 170,
+            "length_m": 300.0,
+            "translation_percent": 4.282200210081037,
+            "rotation_deg_per_m": 0.011308116244460558
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 208,
+            "length_m": 400.0,
+            "translation_percent": 4.80532133280962,
+            "rotation_deg_per_m": 0.010301268748969927
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 245,
+            "length_m": 500.0,
+            "translation_percent": 4.893532305733598,
+            "rotation_deg_per_m": 0.012115619693052483
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 283,
+            "length_m": 600.0,
+            "translation_percent": 5.154898162234112,
+            "rotation_deg_per_m": 0.010538687651091127
+          },
+          {
+            "first_frame": 0,
+            "last_frame": 320,
+            "length_m": 700.0,
+            "translation_percent": 5.580161449341804,
+            "rotation_deg_per_m": 0.01144069167443244
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 86,
+            "length_m": 100.0,
+            "translation_percent": 7.160793430086897,
+            "rotation_deg_per_m": 0.016784181065551098
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 133,
+            "length_m": 200.0,
+            "translation_percent": 3.8564820295034368,
+            "rotation_deg_per_m": 0.013229923167015233
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 174,
+            "length_m": 300.0,
+            "translation_percent": 4.199189056083466,
+            "rotation_deg_per_m": 0.012267454186948796
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 212,
+            "length_m": 400.0,
+            "translation_percent": 4.729233444944946,
+            "rotation_deg_per_m": 0.010269034009048742
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 249,
+            "length_m": 500.0,
+            "translation_percent": 4.758411663186939,
+            "rotation_deg_per_m": 0.010148507036020691
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 287,
+            "length_m": 600.0,
+            "translation_percent": 5.107543076838708,
+            "rotation_deg_per_m": 0.010257542922711176
+          },
+          {
+            "first_frame": 10,
+            "last_frame": 324,
+            "length_m": 700.0,
+            "translation_percent": 5.548245418642424,
+            "rotation_deg_per_m": 0.011641457272592354
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 91,
+            "length_m": 100.0,
+            "translation_percent": 6.804330347557451,
+            "rotation_deg_per_m": 0.017722221505521444
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 137,
+            "length_m": 200.0,
+            "translation_percent": 3.743014486969926,
+            "rotation_deg_per_m": 0.01424367803644552
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 178,
+            "length_m": 300.0,
+            "translation_percent": 4.226112692693765,
+            "rotation_deg_per_m": 0.012639823044814433
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 216,
+            "length_m": 400.0,
+            "translation_percent": 4.675097931189345,
+            "rotation_deg_per_m": 0.0107910255721326
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 253,
+            "length_m": 500.0,
+            "translation_percent": 4.758776901804244,
+            "rotation_deg_per_m": 0.011036060695758253
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 290,
+            "length_m": 600.0,
+            "translation_percent": 5.081667473199192,
+            "rotation_deg_per_m": 0.010202032311563084
+          },
+          {
+            "first_frame": 20,
+            "last_frame": 328,
+            "length_m": 700.0,
+            "translation_percent": 5.599530526727743,
+            "rotation_deg_per_m": 0.0119234210402202
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 96,
+            "length_m": 100.0,
+            "translation_percent": 5.638902381149364,
+            "rotation_deg_per_m": 0.016573500726135008
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 141,
+            "length_m": 200.0,
+            "translation_percent": 2.9919131441007782,
+            "rotation_deg_per_m": 0.013885312986128846
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 182,
+            "length_m": 300.0,
+            "translation_percent": 4.162856455832115,
+            "rotation_deg_per_m": 0.012568802247890445
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 219,
+            "length_m": 400.0,
+            "translation_percent": 4.40562719003648,
+            "rotation_deg_per_m": 0.010792673739081155
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 256,
+            "length_m": 500.0,
+            "translation_percent": 4.544870657164205,
+            "rotation_deg_per_m": 0.010742400002540406
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 294,
+            "length_m": 600.0,
+            "translation_percent": 4.798308953694485,
+            "rotation_deg_per_m": 0.009936453023184874
+          },
+          {
+            "first_frame": 30,
+            "last_frame": 331,
+            "length_m": 700.0,
+            "translation_percent": 5.25684877337683,
+            "rotation_deg_per_m": 0.01165096167774956
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 101,
+            "length_m": 100.0,
+            "translation_percent": 3.4145276490263257,
+            "rotation_deg_per_m": 0.013582440601767713
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 145,
+            "length_m": 200.0,
+            "translation_percent": 2.4765295078471543,
+            "rotation_deg_per_m": 0.012926759226378981
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 186,
+            "length_m": 300.0,
+            "translation_percent": 4.218937460720294,
+            "rotation_deg_per_m": 0.01227345692543077
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 223,
+            "length_m": 400.0,
+            "translation_percent": 4.818068279048049,
+            "rotation_deg_per_m": 0.010258134360616405
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 260,
+            "length_m": 500.0,
+            "translation_percent": 4.261644509530777,
+            "rotation_deg_per_m": 0.010315700825588373
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 298,
+            "length_m": 600.0,
+            "translation_percent": 4.299669690666182,
+            "rotation_deg_per_m": 0.009789786541303394
+          },
+          {
+            "first_frame": 40,
+            "last_frame": 335,
+            "length_m": 700.0,
+            "translation_percent": 4.601666640399021,
+            "rotation_deg_per_m": 0.011292776318336818
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 107,
+            "length_m": 100.0,
+            "translation_percent": 1.934861930105825,
+            "rotation_deg_per_m": 0.01289219547756134
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 150,
+            "length_m": 200.0,
+            "translation_percent": 3.2026724332997545,
+            "rotation_deg_per_m": 0.012632425484185042
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 190,
+            "length_m": 300.0,
+            "translation_percent": 4.597438301647026,
+            "rotation_deg_per_m": 0.012474294006049224
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 227,
+            "length_m": 400.0,
+            "translation_percent": 4.788103974008018,
+            "rotation_deg_per_m": 0.010693196647742436
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 265,
+            "length_m": 500.0,
+            "translation_percent": 4.345605323200469,
+            "rotation_deg_per_m": 0.01133815640507122
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 302,
+            "length_m": 600.0,
+            "translation_percent": 4.308491188110586,
+            "rotation_deg_per_m": 0.009713524481012306
+          },
+          {
+            "first_frame": 50,
+            "last_frame": 340,
+            "length_m": 700.0,
+            "translation_percent": 4.292421162548497,
+            "rotation_deg_per_m": 0.012778324837018112
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 113,
+            "length_m": 100.0,
+            "translation_percent": 0.9159273684081316,
+            "rotation_deg_per_m": 0.010096045676478675
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 156,
+            "length_m": 200.0,
+            "translation_percent": 3.872380430438718,
+            "rotation_deg_per_m": 0.011888507337621841
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 196,
+            "length_m": 300.0,
+            "translation_percent": 4.877901866115875,
+            "rotation_deg_per_m": 0.011999327282791503
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 233,
+            "length_m": 400.0,
+            "translation_percent": 4.786672581570708,
+            "rotation_deg_per_m": 0.009969808533073088
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 270,
+            "length_m": 500.0,
+            "translation_percent": 4.254079439660174,
+            "rotation_deg_per_m": 0.01068912595098592
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 308,
+            "length_m": 600.0,
+            "translation_percent": 4.08729352029451,
+            "rotation_deg_per_m": 0.01029637527161478
+          },
+          {
+            "first_frame": 60,
+            "last_frame": 345,
+            "length_m": 700.0,
+            "translation_percent": 3.8092228045362293,
+            "rotation_deg_per_m": 0.013715593332530597
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 121,
+            "length_m": 100.0,
+            "translation_percent": 2.084589690077398,
+            "rotation_deg_per_m": 0.015126033395645576
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 163,
+            "length_m": 200.0,
+            "translation_percent": 4.665524557486714,
+            "rotation_deg_per_m": 0.011419230878454987
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 202,
+            "length_m": 300.0,
+            "translation_percent": 5.290385949698163,
+            "rotation_deg_per_m": 0.011021972033000297
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 239,
+            "length_m": 400.0,
+            "translation_percent": 4.869568495092524,
+            "rotation_deg_per_m": 0.008887208220760391
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 276,
+            "length_m": 500.0,
+            "translation_percent": 4.2268738658351,
+            "rotation_deg_per_m": 0.009729596789812925
+          },
+          {
+            "first_frame": 70,
+            "last_frame": 314,
+            "length_m": 600.0,
+            "translation_percent": 3.8748439996158806,
+            "rotation_deg_per_m": 0.009983133480309676
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 128,
+            "length_m": 100.0,
+            "translation_percent": 3.299841490784082,
+            "rotation_deg_per_m": 0.015577615202256184
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 170,
+            "length_m": 200.0,
+            "translation_percent": 5.291411933419366,
+            "rotation_deg_per_m": 0.011433509988921094
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 208,
+            "length_m": 300.0,
+            "translation_percent": 5.519249152949371,
+            "rotation_deg_per_m": 0.009991211955393143
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 245,
+            "length_m": 400.0,
+            "translation_percent": 4.907537296085346,
+            "rotation_deg_per_m": 0.011799424057509516
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 283,
+            "length_m": 500.0,
+            "translation_percent": 4.1819406869903375,
+            "rotation_deg_per_m": 0.00928191635139445
+          },
+          {
+            "first_frame": 80,
+            "last_frame": 320,
+            "length_m": 600.0,
+            "translation_percent": 3.78858785897194,
+            "rotation_deg_per_m": 0.01043750649589994
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 136,
+            "length_m": 100.0,
+            "translation_percent": 4.474492406174392,
+            "rotation_deg_per_m": 0.01705778624766634
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 178,
+            "length_m": 200.0,
+            "translation_percent": 5.913337112183034,
+            "rotation_deg_per_m": 0.013116328800843744
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 215,
+            "length_m": 300.0,
+            "translation_percent": 5.686249407683999,
+            "rotation_deg_per_m": 0.00941787061102653
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 252,
+            "length_m": 400.0,
+            "translation_percent": 4.899959179584434,
+            "rotation_deg_per_m": 0.009699852680277793
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 290,
+            "length_m": 500.0,
+            "translation_percent": 4.190002299140348,
+            "rotation_deg_per_m": 0.008885053598607145
+          },
+          {
+            "first_frame": 90,
+            "last_frame": 327,
+            "length_m": 600.0,
+            "translation_percent": 3.845856168984112,
+            "rotation_deg_per_m": 0.011035845646687826
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 145,
+            "length_m": 100.0,
+            "translation_percent": 6.162888902305226,
+            "rotation_deg_per_m": 0.017071151131098715
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 185,
+            "length_m": 200.0,
+            "translation_percent": 6.739561178041556,
+            "rotation_deg_per_m": 0.014383530994442301
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 222,
+            "length_m": 300.0,
+            "translation_percent": 5.74212868646814,
+            "rotation_deg_per_m": 0.009637035013616749
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 260,
+            "length_m": 400.0,
+            "translation_percent": 4.9999635460809,
+            "rotation_deg_per_m": 0.009575989986851476
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 297,
+            "length_m": 500.0,
+            "translation_percent": 4.1189117875741985,
+            "rotation_deg_per_m": 0.008977006788724626
+          },
+          {
+            "first_frame": 100,
+            "last_frame": 335,
+            "length_m": 600.0,
+            "translation_percent": 3.6304121838250385,
+            "rotation_deg_per_m": 0.01094579938275222
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 154,
+            "length_m": 100.0,
+            "translation_percent": 7.316790496951698,
+            "rotation_deg_per_m": 0.01590519909021486
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 193,
+            "length_m": 200.0,
+            "translation_percent": 6.839041579197488,
+            "rotation_deg_per_m": 0.015311514422268344
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 230,
+            "length_m": 300.0,
+            "translation_percent": 6.095813441883679,
+            "rotation_deg_per_m": 0.010626503969389129
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 268,
+            "length_m": 400.0,
+            "translation_percent": 4.791269033462656,
+            "rotation_deg_per_m": 0.01121070258266257
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 305,
+            "length_m": 500.0,
+            "translation_percent": 4.051034665299139,
+            "rotation_deg_per_m": 0.00991812152671281
+          },
+          {
+            "first_frame": 110,
+            "last_frame": 343,
+            "length_m": 600.0,
+            "translation_percent": 3.218479574434271,
+            "rotation_deg_per_m": 0.01453229646171189
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 163,
+            "length_m": 100.0,
+            "translation_percent": 7.3735371637087,
+            "rotation_deg_per_m": 0.009098488387809795
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 202,
+            "length_m": 200.0,
+            "translation_percent": 6.882189197761306,
+            "rotation_deg_per_m": 0.009284941619971994
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 238,
+            "length_m": 300.0,
+            "translation_percent": 5.710600659378272,
+            "rotation_deg_per_m": 0.008144179433282378
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 276,
+            "length_m": 400.0,
+            "translation_percent": 4.621222664904853,
+            "rotation_deg_per_m": 0.010103508627225035
+          },
+          {
+            "first_frame": 120,
+            "last_frame": 313,
+            "length_m": 500.0,
+            "translation_percent": 4.088821111443306,
+            "rotation_deg_per_m": 0.010715244218773654
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 172,
+            "length_m": 100.0,
+            "translation_percent": 7.145676782603206,
+            "rotation_deg_per_m": 0.011997792356777469
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 210,
+            "length_m": 200.0,
+            "translation_percent": 6.505551427376339,
+            "rotation_deg_per_m": 0.008340194408354045
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 247,
+            "length_m": 300.0,
+            "translation_percent": 5.253062813158514,
+            "rotation_deg_per_m": 0.0079840043509194
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 285,
+            "length_m": 400.0,
+            "translation_percent": 4.399691501836165,
+            "rotation_deg_per_m": 0.009655190860855733
+          },
+          {
+            "first_frame": 130,
+            "last_frame": 322,
+            "length_m": 500.0,
+            "translation_percent": 4.073120916547707,
+            "rotation_deg_per_m": 0.011865233441039996
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 181,
+            "length_m": 100.0,
+            "translation_percent": 7.661018064275164,
+            "rotation_deg_per_m": 0.0099972934517839
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 219,
+            "length_m": 200.0,
+            "translation_percent": 6.056658470618728,
+            "rotation_deg_per_m": 0.008709367793230028
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 256,
+            "length_m": 300.0,
+            "translation_percent": 4.998159953779854,
+            "rotation_deg_per_m": 0.009897052253313336
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 293,
+            "length_m": 400.0,
+            "translation_percent": 4.323091720315729,
+            "rotation_deg_per_m": 0.009533787993337858
+          },
+          {
+            "first_frame": 140,
+            "last_frame": 331,
+            "length_m": 500.0,
+            "translation_percent": 4.4092227323172875,
+            "rotation_deg_per_m": 0.012763788605836341
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 191,
+            "length_m": 100.0,
+            "translation_percent": 7.142531687975081,
+            "rotation_deg_per_m": 0.014008594750797743
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 227,
+            "length_m": 200.0,
+            "translation_percent": 5.948867797603234,
+            "rotation_deg_per_m": 0.010186697110222177
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 265,
+            "length_m": 300.0,
+            "translation_percent": 4.413164953428156,
+            "rotation_deg_per_m": 0.01327035462948265
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 302,
+            "length_m": 400.0,
+            "translation_percent": 4.104541064687647,
+            "rotation_deg_per_m": 0.010668242372769286
+          },
+          {
+            "first_frame": 150,
+            "last_frame": 340,
+            "length_m": 500.0,
+            "translation_percent": 4.060443893546554,
+            "rotation_deg_per_m": 0.015639048476825828
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 199,
+            "length_m": 100.0,
+            "translation_percent": 6.528585075170272,
+            "rotation_deg_per_m": 0.015431932094057032
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 236,
+            "length_m": 200.0,
+            "translation_percent": 5.057557050734596,
+            "rotation_deg_per_m": 0.008086561810408267
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 274,
+            "length_m": 300.0,
+            "translation_percent": 3.754984156829042,
+            "rotation_deg_per_m": 0.011150187783530958
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 311,
+            "length_m": 400.0,
+            "translation_percent": 3.347880286125795,
+            "rotation_deg_per_m": 0.011740113045237073
+          },
+          {
+            "first_frame": 160,
+            "last_frame": 349,
+            "length_m": 500.0,
+            "translation_percent": 3.32055788402641,
+            "rotation_deg_per_m": 0.016783174523368645
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 208,
+            "length_m": 100.0,
+            "translation_percent": 5.926932184912201,
+            "rotation_deg_per_m": 0.009638891106582649
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 245,
+            "length_m": 200.0,
+            "translation_percent": 4.499837933829944,
+            "rotation_deg_per_m": 0.013535086156369969
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 283,
+            "length_m": 300.0,
+            "translation_percent": 3.657021298927823,
+            "rotation_deg_per_m": 0.011760569875371692
+          },
+          {
+            "first_frame": 170,
+            "last_frame": 321,
+            "length_m": 400.0,
+            "translation_percent": 3.8454671502239783,
+            "rotation_deg_per_m": 0.013904910088628588
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 218,
+            "length_m": 100.0,
+            "translation_percent": 4.951042994251812,
+            "rotation_deg_per_m": 0.0102084636183329
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 255,
+            "length_m": 200.0,
+            "translation_percent": 3.92377718363778,
+            "rotation_deg_per_m": 0.011222452187951003
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 292,
+            "length_m": 300.0,
+            "translation_percent": 3.6297539090979716,
+            "rotation_deg_per_m": 0.011110971338961589
+          },
+          {
+            "first_frame": 180,
+            "last_frame": 330,
+            "length_m": 400.0,
+            "translation_percent": 4.290532308477179,
+            "rotation_deg_per_m": 0.015087914336190974
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 227,
+            "length_m": 100.0,
+            "translation_percent": 4.948414123262937,
+            "rotation_deg_per_m": 0.018650110839228934
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 265,
+            "length_m": 200.0,
+            "translation_percent": 3.6917487357611662,
+            "rotation_deg_per_m": 0.020354432298928374
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 302,
+            "length_m": 300.0,
+            "translation_percent": 4.455575872578568,
+            "rotation_deg_per_m": 0.014688106665993694
+          },
+          {
+            "first_frame": 190,
+            "last_frame": 340,
+            "length_m": 400.0,
+            "translation_percent": 5.192131737772928,
+            "rotation_deg_per_m": 0.02014805737573696
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 237,
+            "length_m": 100.0,
+            "translation_percent": 3.781585533245769,
+            "rotation_deg_per_m": 0.01750742213631363
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 275,
+            "length_m": 200.0,
+            "translation_percent": 3.650745395138624,
+            "rotation_deg_per_m": 0.01794592688616152
+          },
+          {
+            "first_frame": 200,
+            "last_frame": 312,
+            "length_m": 300.0,
+            "translation_percent": 4.465857357039612,
+            "rotation_deg_per_m": 0.01726689343077582
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 248,
+            "length_m": 100.0,
+            "translation_percent": 3.0652809647574055,
+            "rotation_deg_per_m": 0.014614948943581316
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 285,
+            "length_m": 200.0,
+            "translation_percent": 3.358812827172807,
+            "rotation_deg_per_m": 0.014800037285228917
+          },
+          {
+            "first_frame": 210,
+            "last_frame": 323,
+            "length_m": 300.0,
+            "translation_percent": 4.317411947684497,
+            "rotation_deg_per_m": 0.01741403713285147
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 258,
+            "length_m": 100.0,
+            "translation_percent": 3.0066955906572947,
+            "rotation_deg_per_m": 0.01419379985475649
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 295,
+            "length_m": 200.0,
+            "translation_percent": 2.781141499618057,
+            "rotation_deg_per_m": 0.011742046728122211
+          },
+          {
+            "first_frame": 220,
+            "last_frame": 333,
+            "length_m": 300.0,
+            "translation_percent": 3.9133277769336496,
+            "rotation_deg_per_m": 0.016207139924770464
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 268,
+            "length_m": 100.0,
+            "translation_percent": 1.5295035561073447,
+            "rotation_deg_per_m": 0.02167487513981923
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 305,
+            "length_m": 200.0,
+            "translation_percent": 2.594390263038322,
+            "rotation_deg_per_m": 0.014290806792560723
+          },
+          {
+            "first_frame": 230,
+            "last_frame": 343,
+            "length_m": 300.0,
+            "translation_percent": 3.54055467796896,
+            "rotation_deg_per_m": 0.02365073539530294
+          },
+          {
+            "first_frame": 240,
+            "last_frame": 278,
+            "length_m": 100.0,
+            "translation_percent": 1.951986789487255,
+            "rotation_deg_per_m": 0.02008023435664981
+          },
+          {
+            "first_frame": 240,
+            "last_frame": 316,
+            "length_m": 200.0,
+            "translation_percent": 3.2711420815886108,
+            "rotation_deg_per_m": 0.017464351822248866
+          },
+          {
+            "first_frame": 250,
+            "last_frame": 288,
+            "length_m": 100.0,
+            "translation_percent": 2.0936454460021414,
+            "rotation_deg_per_m": 0.012940686114583046
+          },
+          {
+            "first_frame": 250,
+            "last_frame": 326,
+            "length_m": 200.0,
+            "translation_percent": 3.24580627414206,
+            "rotation_deg_per_m": 0.018977425896477426
+          },
+          {
+            "first_frame": 260,
+            "last_frame": 298,
+            "length_m": 100.0,
+            "translation_percent": 1.6669304864608998,
+            "rotation_deg_per_m": 0.013209292516478682
+          },
+          {
+            "first_frame": 260,
+            "last_frame": 336,
+            "length_m": 200.0,
+            "translation_percent": 3.6493808477924086,
+            "rotation_deg_per_m": 0.018700022909216095
+          },
+          {
+            "first_frame": 270,
+            "last_frame": 308,
+            "length_m": 100.0,
+            "translation_percent": 0.7653907810434284,
+            "rotation_deg_per_m": 0.011510383082346913
+          },
+          {
+            "first_frame": 270,
+            "last_frame": 346,
+            "length_m": 200.0,
+            "translation_percent": 3.22111014903153,
+            "rotation_deg_per_m": 0.02600137711641385
+          },
+          {
+            "first_frame": 280,
+            "last_frame": 318,
+            "length_m": 100.0,
+            "translation_percent": 2.4844787064559903,
+            "rotation_deg_per_m": 0.017682704748456967
+          },
+          {
+            "first_frame": 290,
+            "last_frame": 328,
+            "length_m": 100.0,
+            "translation_percent": 3.2923839576904674,
+            "rotation_deg_per_m": 0.026456132272675247
+          },
+          {
+            "first_frame": 300,
+            "last_frame": 338,
+            "length_m": 100.0,
+            "translation_percent": 4.75622158254252,
+            "rotation_deg_per_m": 0.026388691646220465
+          },
+          {
+            "first_frame": 310,
+            "last_frame": 348,
+            "length_m": 100.0,
+            "translation_percent": 6.798303800052889,
+            "rotation_deg_per_m": 0.039469528896736605
+          }
+        ]
+      },
+      "elapsed_s": 237.37992109998595,
+      "total_wall_seconds": 243.2151501000044,
+      "peak_memory_mb": 713.0,
+      "bundle_adjustments_applied": 47,
+      "bundle_adjustment_records": 146,
+      "bundle_adjustment_outcomes": {
+        "applied": 47,
+        "independent_stereo_motion_inconsistency": 20,
+        "insufficient_observations": 79
+      },
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "development_identity": {
+        "revision": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+        "runtime_identity": {
+          "version": 1,
+          "dependencies": {
+            "python": "3.12.14",
+            "implementation": "CPython",
+            "platform": "win32",
+            "machine": "AMD64",
+            "files": {
+              "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+              "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+              "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+              "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+            },
+            "packages": {
+              "bokeh": "3.10.0",
+              "cloudpickle": "3.1.2",
+              "colorama": "0.4.6",
+              "contourpy": "1.4.0",
+              "cycler": "0.12.1",
+              "fonttools": "4.66.1",
+              "iniconfig": "2.3.0",
+              "Jinja2": "3.1.6",
+              "joblib": "1.6.0",
+              "kiwisolver": "1.5.1",
+              "MarkupSafe": "3.0.3",
+              "matplotlib": "3.11.2",
+              "narwhals": "2.26.0",
+              "numpy": "2.5.3",
+              "opencv-contrib-python": "5.0.0.93",
+              "packaging": "26.3",
+              "pillow": "12.3.0",
+              "pluggy": "1.6.0",
+              "Pygments": "2.21.0",
+              "pyparsing": "3.3.3",
+              "pytest": "9.1.1",
+              "python-dateutil": "2.9.0.post0",
+              "pyyaml": "6.0.3",
+              "PyYAML": "6.0.3",
+              "scikit-learn": "1.9.1",
+              "scipy": "1.18.1",
+              "six": "1.17.0",
+              "threadpoolctl": "3.7.0",
+              "torch": "2.14.1+cpu",
+              "torchvision": "0.29.1+cpu",
+              "tornado": "6.5.10",
+              "websockets": "17.1",
+              "xyzservices": "2026.9.1"
+            }
+          },
+          "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+        },
+        "sequence": "01",
+        "frames": 350,
+        "coverage": "partial",
+        "input": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+        "variant": "bundle",
+        "cached": false,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "performance": {
+          "matching_backend": "cpu",
+          "retrieval": "current",
+          "cpu_optimizations": true,
+          "opencv_threads": 1
+        },
+        "reference": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8"
+      },
+      "source_archive": {
+        "source_sha256": {
+          "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+          "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+          "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+          "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+          "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+          "feature_cache.py": "9702572957cf7cd2fddf5246b7effbf294d88362b97a0d065b28eb82109deacb",
+          "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+          "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+          "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+          "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+          "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+          "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+          "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+          "main.py": "d8721cead93105aa26a3bf71b34d423d4e246435c547ba534bc0511cc0809bfe",
+          "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+          "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+          "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+          "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+          "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+          "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+          "shared_slam.py": "e12d4d29e1c4bae0fee915daeff158e345b2e329b0633d8103e95a67a928ec08",
+          "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+          "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+          "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+          "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+          "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+          "stereo_depth.py": "300bb6e1d0fe3da1d252173959072e2a78e7c0399a5f0e64bb85528527dfc43f",
+          "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+          "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+          "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+          "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+        },
+        "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505"
+      },
+      "evaluation_sha256": "e2af4cfeb7b25f0c2d26844a045debfaaa31c2a0c17a3934b95a17bf224c3ec9",
+      "poses_sha256": "fe4b1b49ce91a5a71d74fd237b19861a45748bda32ff5fc8e2a2a0ee38500bed",
+      "sparse_ply_sha256": "45c89b095b09227460c110dbd03adce2d40fdf5a85bdec7575a8686311ce897f",
+      "physical_identity": {
+        "keyframes": 148,
+        "observations": 130514,
+        "unique_landmark_ids": 127600,
+        "multi_view_landmark_ids": 2625,
+        "max_views_per_landmark": 5,
+        "landmark_births": 127600,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 18657,
+        "extra_observation_rows_in_alias_groups": 19906,
+        "distinct_landmark_ids_beyond_one_per_pixel": 19906,
+        "alias_groups_with_shared_exact_world_point": 18550,
+        "alias_groups_all_landmarks_same_exact_world_point": 18529,
+        "same_pixel_same_world_point_distinct_id_pairs": 21100
+      }
+    },
+    {
+      "sequence": "04",
+      "variant": "bundle",
+      "frames": 80,
+      "status": "completed",
+      "states": {
+        "tracking": 80
+      },
+      "lost_frames": 0,
+      "keyframes": 9,
+      "landmarks": 10488,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.1996256410709722,
+        "raw_ate_rmse_m": 0.32966429240254813,
+        "segment_count": 1,
+        "translation_percent": 0.4610606797737615,
+        "rotation_deg_per_m": 0.00701595053413774
+      },
+      "independently_recomputed_metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.19962564106029634,
+        "raw_ate_rmse_m": 0.32966429238274825,
+        "segment_count": 1,
+        "translation_percent": 0.4610606767821622,
+        "rotation_deg_per_m": 0.007015950646514498,
+        "segments": [
+          {
+            "first_frame": 0,
+            "last_frame": 73,
+            "length_m": 100.0,
+            "translation_percent": 0.4610606767821622,
+            "rotation_deg_per_m": 0.007015950646514498
+          }
+        ]
+      },
+      "elapsed_s": 42.54232589999447,
+      "total_wall_seconds": 43.188060099986615,
+      "peak_memory_mb": 261.83203125,
+      "bundle_adjustments_applied": 7,
+      "bundle_adjustment_records": 7,
+      "bundle_adjustment_outcomes": {
+        "applied": 7
+      },
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "development_identity": {
+        "revision": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+        "runtime_identity": {
+          "version": 1,
+          "dependencies": {
+            "python": "3.12.14",
+            "implementation": "CPython",
+            "platform": "win32",
+            "machine": "AMD64",
+            "files": {
+              "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+              "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+              "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+              "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+            },
+            "packages": {
+              "bokeh": "3.10.0",
+              "cloudpickle": "3.1.2",
+              "colorama": "0.4.6",
+              "contourpy": "1.4.0",
+              "cycler": "0.12.1",
+              "fonttools": "4.66.1",
+              "iniconfig": "2.3.0",
+              "Jinja2": "3.1.6",
+              "joblib": "1.6.0",
+              "kiwisolver": "1.5.1",
+              "MarkupSafe": "3.0.3",
+              "matplotlib": "3.11.2",
+              "narwhals": "2.26.0",
+              "numpy": "2.5.3",
+              "opencv-contrib-python": "5.0.0.93",
+              "packaging": "26.3",
+              "pillow": "12.3.0",
+              "pluggy": "1.6.0",
+              "Pygments": "2.21.0",
+              "pyparsing": "3.3.3",
+              "pytest": "9.1.1",
+              "python-dateutil": "2.9.0.post0",
+              "pyyaml": "6.0.3",
+              "PyYAML": "6.0.3",
+              "scikit-learn": "1.9.1",
+              "scipy": "1.18.1",
+              "six": "1.17.0",
+              "threadpoolctl": "3.7.0",
+              "torch": "2.14.1+cpu",
+              "torchvision": "0.29.1+cpu",
+              "tornado": "6.5.10",
+              "websockets": "17.1",
+              "xyzservices": "2026.9.1"
+            }
+          },
+          "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+        },
+        "sequence": "04",
+        "frames": 80,
+        "coverage": "partial",
+        "input": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+        "variant": "bundle",
+        "cached": false,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true,
+        "performance": {
+          "matching_backend": "cpu",
+          "retrieval": "current",
+          "cpu_optimizations": true,
+          "opencv_threads": 1
+        },
+        "reference": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1"
+      },
+      "source_archive": {
+        "source_sha256": {
+          "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+          "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+          "descriptor_matching.py": "0ace7d489afa48ff647156bb083e16c9ed18ec259f238fd1a4c25714995350a3",
+          "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+          "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+          "feature_cache.py": "9702572957cf7cd2fddf5246b7effbf294d88362b97a0d065b28eb82109deacb",
+          "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+          "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+          "keyframe_retrieval.py": "4d8f379107ba222dd482e6e8b2e94abcea3dab1ba8112bf66157d4a6e5670b23",
+          "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+          "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+          "local_bundle.py": "5dbedb82e4c9a785b19fd46f963a018503d4e48a63c885e81c17c082b7c50a79",
+          "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+          "main.py": "d8721cead93105aa26a3bf71b34d423d4e246435c547ba534bc0511cc0809bfe",
+          "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+          "mapping_geometry.py": "181dcc5922e4e2140af8b786c83265117e9338f8356f50a44013520dcc2caf49",
+          "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+          "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+          "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+          "reconstruction.py": "ce4156df47aa2b7c9e4a244cc3706ffabce64975a8eb43ea618303ef62fb7f3d",
+          "shared_slam.py": "e12d4d29e1c4bae0fee915daeff158e345b2e329b0633d8103e95a67a928ec08",
+          "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+          "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+          "slam_state.py": "7478e54cafc50fec3b4c871082900141ecbfa50b2e7494e0385fe84d60e0f8af",
+          "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+          "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+          "stereo_depth.py": "300bb6e1d0fe3da1d252173959072e2a78e7c0399a5f0e64bb85528527dfc43f",
+          "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+          "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+          "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+          "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+        },
+        "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505"
+      },
+      "evaluation_sha256": "d60c84cb8232357a201b0806e7be84820544be6f7101477dc8863575b3bc0d2d",
+      "poses_sha256": "7f8a9068be1ae9169f378035a68f97fc9c00f4be38b70f43b7da362f666b865a",
+      "sparse_ply_sha256": "25c2922bb4419c0cff07a86a1c43ce52b845cb122c4c741f51c49ea3fdae40a4",
+      "physical_identity": {
+        "keyframes": 9,
+        "observations": 11006,
+        "unique_landmark_ids": 10488,
+        "multi_view_landmark_ids": 444,
+        "max_views_per_landmark": 4,
+        "landmark_births": 10488,
+        "exact_float32_pixel_alias_groups_with_distinct_landmarks": 1701,
+        "extra_observation_rows_in_alias_groups": 1838,
+        "distinct_landmark_ids_beyond_one_per_pixel": 1838,
+        "alias_groups_with_shared_exact_world_point": 1664,
+        "alias_groups_all_landmarks_same_exact_world_point": 1662,
+        "same_pixel_same_world_point_distinct_id_pairs": 1949
+      }
+    }
+  ],
+  "interpretation": "BA improves rotation in both prefixes, but worsens 01 position and translation. This does not justify blanket removal or prove full-sequence reliability."
+}

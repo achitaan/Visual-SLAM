@@ -1,0 +1,816 @@
+{
+  "schema_version": 1,
+  "scope": "Fresh uncached preserved-stereo baseline and shared-SLAM bundle prefixes",
+  "cycle": "results/integration/pre-full-heldout/70c4c2eeb8a7/focused/cycle.json",
+  "cycle_status": "completed_diagnostics",
+  "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+  "runtime_identity": {
+    "version": 1,
+    "dependencies": {
+      "python": "3.12.14",
+      "implementation": "CPython",
+      "platform": "win32",
+      "machine": "AMD64",
+      "files": {
+        "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+        "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+        "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+        "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+      },
+      "packages": {
+        "bokeh": "3.10.0",
+        "cloudpickle": "3.1.2",
+        "colorama": "0.4.6",
+        "contourpy": "1.4.0",
+        "cycler": "0.12.1",
+        "fonttools": "4.66.1",
+        "iniconfig": "2.3.0",
+        "Jinja2": "3.1.6",
+        "joblib": "1.6.0",
+        "kiwisolver": "1.5.1",
+        "MarkupSafe": "3.0.3",
+        "matplotlib": "3.11.2",
+        "narwhals": "2.26.0",
+        "numpy": "2.5.3",
+        "opencv-contrib-python": "5.0.0.93",
+        "packaging": "26.3",
+        "pillow": "12.3.0",
+        "pluggy": "1.6.0",
+        "Pygments": "2.21.0",
+        "pyparsing": "3.3.3",
+        "pytest": "9.1.1",
+        "python-dateutil": "2.9.0.post0",
+        "pyyaml": "6.0.3",
+        "PyYAML": "6.0.3",
+        "scikit-learn": "1.9.1",
+        "scipy": "1.18.1",
+        "six": "1.17.0",
+        "threadpoolctl": "3.7.0",
+        "torch": "2.14.1+cpu",
+        "torchvision": "0.29.1+cpu",
+        "tornado": "6.5.10",
+        "websockets": "17.1",
+        "xyzservices": "2026.9.1"
+      }
+    },
+    "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+  },
+  "requested": {
+    "variants": [
+      "baseline",
+      "bundle"
+    ],
+    "data_root": "[local path omitted]",
+    "poses_root": "[local path omitted]",
+    "feature_cache": null,
+    "stereo_depth_policy": "verified_fallback",
+    "stereo_pose_arbitration": true,
+    "performance": {
+      "matching_backend": "cpu",
+      "retrieval": "current",
+      "cpu_optimizations": true,
+      "opencv_threads": 1
+    }
+  },
+  "partial_coverage": true,
+  "loops_off": true,
+  "release_ready": false,
+  "gate_assessment": {
+    "exact_current_source_runtime_and_input_identity": true,
+    "four_uncached_exports_pass_finite_current_source_validation": true,
+    "bundle_loops_off": true,
+    "coverage_is_partial": true,
+    "release_ready": false,
+    "release_ready_reason": "Focused prefixes are partial, not full KITTI coverage.",
+    "accuracy_checks": {
+      "04_ate_not_worse": true,
+      "04_translation_not_worse": true,
+      "04_rotation_not_worse": true,
+      "04_lost_frames_not_increased": true,
+      "01_ate_improved": true,
+      "01_translation_improved": true,
+      "01_rotation_regression_within_5_percent": false,
+      "01_lost_frames_not_increased": true,
+      "diagnostic_accuracy_gate_passed": false
+    },
+    "rotation_regression_tolerance": 0.05,
+    "accuracy_gate_policy": "04 metrics and tracking loss do not worsen; 01 ATE and translation improve, rotation rises no more than 5%, and loss does not increase."
+  },
+  "rows": [
+    {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "partial",
+      "variant": "baseline",
+      "status": "completed",
+      "lost_frames": 0,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.44351523342332017,
+        "raw_ate_rmse_m": 0.9714209957357379,
+        "segment_count": 1,
+        "translation_percent": 1.672844352606981,
+        "rotation_deg_per_m": 0.012411752586322973
+      },
+      "estimator_elapsed_seconds": 36.63327210000716,
+      "total_wall_seconds": null,
+      "peak_memory_mb": 230.72265625,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "runtime_identity": {
+        "version": 1,
+        "dependencies": {
+          "python": "3.12.14",
+          "implementation": "CPython",
+          "platform": "win32",
+          "machine": "AMD64",
+          "files": {
+            "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+            "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+            "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+            "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+          },
+          "packages": {
+            "bokeh": "3.10.0",
+            "cloudpickle": "3.1.2",
+            "colorama": "0.4.6",
+            "contourpy": "1.4.0",
+            "cycler": "0.12.1",
+            "fonttools": "4.66.1",
+            "iniconfig": "2.3.0",
+            "Jinja2": "3.1.6",
+            "joblib": "1.6.0",
+            "kiwisolver": "1.5.1",
+            "MarkupSafe": "3.0.3",
+            "matplotlib": "3.11.2",
+            "narwhals": "2.26.0",
+            "numpy": "2.5.3",
+            "opencv-contrib-python": "5.0.0.93",
+            "packaging": "26.3",
+            "pillow": "12.3.0",
+            "pluggy": "1.6.0",
+            "Pygments": "2.21.0",
+            "pyparsing": "3.3.3",
+            "pytest": "9.1.1",
+            "python-dateutil": "2.9.0.post0",
+            "pyyaml": "6.0.3",
+            "PyYAML": "6.0.3",
+            "scikit-learn": "1.9.1",
+            "scipy": "1.18.1",
+            "six": "1.17.0",
+            "threadpoolctl": "3.7.0",
+            "torch": "2.14.1+cpu",
+            "torchvision": "0.29.1+cpu",
+            "tornado": "6.5.10",
+            "websockets": "17.1",
+            "xyzservices": "2026.9.1"
+          }
+        },
+        "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+      },
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "evidence_sha256": "a6783c368e69ebea21fa8e4395924d9272579df57b9ae7cb7ed1b9a2dc3499ca",
+      "output": "04-baseline-5621c83be26d",
+      "ground_truth_used_for_estimation": false
+    },
+    {
+      "sequence": "04",
+      "frames": 80,
+      "coverage": "partial",
+      "variant": "bundle",
+      "status": "completed",
+      "lost_frames": 0,
+      "metrics": {
+        "frames": 80,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.1996256410709722,
+        "raw_ate_rmse_m": 0.32966429240254813,
+        "segment_count": 1,
+        "translation_percent": 0.4610606797737615,
+        "rotation_deg_per_m": 0.00701595053413774
+      },
+      "estimator_elapsed_seconds": 42.54232589999447,
+      "total_wall_seconds": 43.188060099986615,
+      "peak_memory_mb": 261.83203125,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "input_sha256": "a6c5d77bcd5d974f499a497c1b883c480cfeaf433ab8e64f52874a19223ca317",
+      "reference_sha256": "4e1e0a630543706d76904b45f6ee2dbfa8b03b6e4319d6fc268ef302062806e1",
+      "runtime_identity": {
+        "version": 1,
+        "dependencies": {
+          "python": "3.12.14",
+          "implementation": "CPython",
+          "platform": "win32",
+          "machine": "AMD64",
+          "files": {
+            "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+            "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+            "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+            "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+          },
+          "packages": {
+            "bokeh": "3.10.0",
+            "cloudpickle": "3.1.2",
+            "colorama": "0.4.6",
+            "contourpy": "1.4.0",
+            "cycler": "0.12.1",
+            "fonttools": "4.66.1",
+            "iniconfig": "2.3.0",
+            "Jinja2": "3.1.6",
+            "joblib": "1.6.0",
+            "kiwisolver": "1.5.1",
+            "MarkupSafe": "3.0.3",
+            "matplotlib": "3.11.2",
+            "narwhals": "2.26.0",
+            "numpy": "2.5.3",
+            "opencv-contrib-python": "5.0.0.93",
+            "packaging": "26.3",
+            "pillow": "12.3.0",
+            "pluggy": "1.6.0",
+            "Pygments": "2.21.0",
+            "pyparsing": "3.3.3",
+            "pytest": "9.1.1",
+            "python-dateutil": "2.9.0.post0",
+            "pyyaml": "6.0.3",
+            "PyYAML": "6.0.3",
+            "scikit-learn": "1.9.1",
+            "scipy": "1.18.1",
+            "six": "1.17.0",
+            "threadpoolctl": "3.7.0",
+            "torch": "2.14.1+cpu",
+            "torchvision": "0.29.1+cpu",
+            "tornado": "6.5.10",
+            "websockets": "17.1",
+            "xyzservices": "2026.9.1"
+          }
+        },
+        "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+      },
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "d60c84cb8232357a201b0806e7be84820544be6f7101477dc8863575b3bc0d2d",
+      "output": "04-bundle-577540ecb76e",
+      "ground_truth_used_for_estimation": false
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "coverage": "partial",
+      "variant": "baseline",
+      "status": "completed_with_tracking_loss",
+      "lost_frames": 18,
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 21.509820274725715,
+        "raw_ate_rmse_m": 30.30073194617916,
+        "segment_count": 140,
+        "translation_percent": 8.357438736977558,
+        "rotation_deg_per_m": 0.01086073153383467
+      },
+      "estimator_elapsed_seconds": 138.30559229999199,
+      "total_wall_seconds": null,
+      "peak_memory_mb": 235.73046875,
+      "configuration": {
+        "feature_extractor": "preserved_stereo_defaults",
+        "loop_mode": "off"
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "runtime_identity": {
+        "version": 1,
+        "dependencies": {
+          "python": "3.12.14",
+          "implementation": "CPython",
+          "platform": "win32",
+          "machine": "AMD64",
+          "files": {
+            "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+            "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+            "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+            "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+          },
+          "packages": {
+            "bokeh": "3.10.0",
+            "cloudpickle": "3.1.2",
+            "colorama": "0.4.6",
+            "contourpy": "1.4.0",
+            "cycler": "0.12.1",
+            "fonttools": "4.66.1",
+            "iniconfig": "2.3.0",
+            "Jinja2": "3.1.6",
+            "joblib": "1.6.0",
+            "kiwisolver": "1.5.1",
+            "MarkupSafe": "3.0.3",
+            "matplotlib": "3.11.2",
+            "narwhals": "2.26.0",
+            "numpy": "2.5.3",
+            "opencv-contrib-python": "5.0.0.93",
+            "packaging": "26.3",
+            "pillow": "12.3.0",
+            "pluggy": "1.6.0",
+            "Pygments": "2.21.0",
+            "pyparsing": "3.3.3",
+            "pytest": "9.1.1",
+            "python-dateutil": "2.9.0.post0",
+            "pyyaml": "6.0.3",
+            "PyYAML": "6.0.3",
+            "scikit-learn": "1.9.1",
+            "scipy": "1.18.1",
+            "six": "1.17.0",
+            "threadpoolctl": "3.7.0",
+            "torch": "2.14.1+cpu",
+            "torchvision": "0.29.1+cpu",
+            "tornado": "6.5.10",
+            "websockets": "17.1",
+            "xyzservices": "2026.9.1"
+          }
+        },
+        "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+      },
+      "evaluator_sha256": "85c12189d13acb3459f8c2bf025ae4d8d695c5d38458458a91381957f861b611",
+      "evidence_sha256": "6c40e04e6399a1f93fd20e24575d132831d02237946dd1cd1f0e669f4a313253",
+      "output": "01-baseline-ee04201e144e",
+      "ground_truth_used_for_estimation": false
+    },
+    {
+      "sequence": "01",
+      "frames": 350,
+      "coverage": "partial",
+      "variant": "bundle",
+      "status": "completed",
+      "lost_frames": 0,
+      "metrics": {
+        "frames": 350,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 7.479312245224569,
+        "raw_ate_rmse_m": 21.627807773830593,
+        "segment_count": 140,
+        "translation_percent": 4.475547522084708,
+        "rotation_deg_per_m": 0.013115759252996873
+      },
+      "estimator_elapsed_seconds": 237.37992109998595,
+      "total_wall_seconds": 243.2151501000044,
+      "peak_memory_mb": 713.0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5,
+        "bundle_enabled": true,
+        "loop_mode": "off",
+        "retrieval_candidates": 8,
+        "stereo_feature_contrast_threshold": 0.02,
+        "stereo_depth_policy": "verified_fallback",
+        "stereo_pose_arbitration": true
+      },
+      "source_fingerprint": "70c4c2eeb8a711ba3e6fec3229b0b7cbb1b8b5d8b07c5d4e3c3f8d4294bdff05",
+      "input_sha256": "41778384aa466b43209c450d8a69749eb2b9e53ed102b7062a5bed31912f48ce",
+      "reference_sha256": "099889e883d91525934a575db9fbec66f7239f09217f575a4e823d8ab7dd22d8",
+      "runtime_identity": {
+        "version": 1,
+        "dependencies": {
+          "python": "3.12.14",
+          "implementation": "CPython",
+          "platform": "win32",
+          "machine": "AMD64",
+          "files": {
+            "requirement.txt": "02cd9c1f7b22e338793434dcea9f735d4cd833e0f8c76dce07e492ba51c5988e",
+            "requirements-lock.txt": "79667f89d01c4d464dbda3bae4bc5dfa9964f5cee4576c1edc3b9cf0c854ca88",
+            "requirements-depth.txt": "332a3cb9799d6fc43d9b1bcced554b0403684256510555bfdaf373fc4f3ae389",
+            "requirements-performance-gpu.txt": "ab3f79ddc4509dd00153dd861ab1222f8f25511b2d09dea3014559a3e884306b"
+          },
+          "packages": {
+            "bokeh": "3.10.0",
+            "cloudpickle": "3.1.2",
+            "colorama": "0.4.6",
+            "contourpy": "1.4.0",
+            "cycler": "0.12.1",
+            "fonttools": "4.66.1",
+            "iniconfig": "2.3.0",
+            "Jinja2": "3.1.6",
+            "joblib": "1.6.0",
+            "kiwisolver": "1.5.1",
+            "MarkupSafe": "3.0.3",
+            "matplotlib": "3.11.2",
+            "narwhals": "2.26.0",
+            "numpy": "2.5.3",
+            "opencv-contrib-python": "5.0.0.93",
+            "packaging": "26.3",
+            "pillow": "12.3.0",
+            "pluggy": "1.6.0",
+            "Pygments": "2.21.0",
+            "pyparsing": "3.3.3",
+            "pytest": "9.1.1",
+            "python-dateutil": "2.9.0.post0",
+            "pyyaml": "6.0.3",
+            "PyYAML": "6.0.3",
+            "scikit-learn": "1.9.1",
+            "scipy": "1.18.1",
+            "six": "1.17.0",
+            "threadpoolctl": "3.7.0",
+            "torch": "2.14.1+cpu",
+            "torchvision": "0.29.1+cpu",
+            "tornado": "6.5.10",
+            "websockets": "17.1",
+            "xyzservices": "2026.9.1"
+          }
+        },
+        "dependencies_sha256": "7074a9ea1d0275a23eaa066ce7cbb3fc18909a731fb76d417c53da4522f7884b"
+      },
+      "evaluator_sha256": "5566f9d5713397bb7740531e948807edf07f339acbd375a45da6caca516da505",
+      "evidence_sha256": "e2af4cfeb7b25f0c2d26844a045debfaaa31c2a0c17a3934b95a17bf224c3ec9",
+      "output": "01-bundle-3652996b2eae",
+      "ground_truth_used_for_estimation": false
+    }
+  ],
+  "paired_comparisons": {
+    "04": {
+      "frames": 80,
+      "coverage": "partial",
+      "bundle_minus_baseline": {
+        "ate_rmse_m": {
+          "reference": 0.44351523342332017,
+          "candidate": 0.1996256410709722,
+          "delta": -0.24388959235234797,
+          "change_percent": -54.99012750246702
+        },
+        "translation_percent": {
+          "reference": 1.672844352606981,
+          "candidate": 0.4610606797737615,
+          "delta": -1.2117836728332194,
+          "change_percent": -72.43851891807873
+        },
+        "rotation_deg_per_m": {
+          "reference": 0.012411752586322973,
+          "candidate": 0.00701595053413774,
+          "delta": -0.005395802052185233,
+          "change_percent": -43.47332912622744
+        }
+      },
+      "lost_frames_delta": 0
+    },
+    "01": {
+      "frames": 350,
+      "coverage": "partial",
+      "bundle_minus_baseline": {
+        "ate_rmse_m": {
+          "reference": 21.509820274725715,
+          "candidate": 7.479312245224569,
+          "delta": -14.030508029501146,
+          "change_percent": -65.22838336305
+        },
+        "translation_percent": {
+          "reference": 8.357438736977558,
+          "candidate": 4.475547522084708,
+          "delta": -3.8818912148928506,
+          "change_percent": -46.448335872537
+        },
+        "rotation_deg_per_m": {
+          "reference": 0.01086073153383467,
+          "candidate": 0.013115759252996873,
+          "delta": 0.0022550277191622035,
+          "change_percent": 20.76312918827859
+        }
+      },
+      "lost_frames_delta": -18
+    }
+  },
+  "preceding_e7_bundle_comparisons": {
+    "04": {
+      "frames": 80,
+      "coverage": "partial",
+      "current_bundle_minus_preceding_e7_bundle": {
+        "ate_rmse_m": {
+          "reference": 0.1996256410709722,
+          "candidate": 0.1996256410709722,
+          "delta": 0.0,
+          "change_percent": 0.0
+        },
+        "translation_percent": {
+          "reference": 0.4610606797737615,
+          "candidate": 0.4610606797737615,
+          "delta": 0.0,
+          "change_percent": 0.0
+        },
+        "rotation_deg_per_m": {
+          "reference": 0.00701595053413774,
+          "candidate": 0.00701595053413774,
+          "delta": 0.0,
+          "change_percent": 0.0
+        }
+      },
+      "lost_frames_delta": 0,
+      "source_revision_changed": true
+    },
+    "01": {
+      "frames": 350,
+      "coverage": "partial",
+      "current_bundle_minus_preceding_e7_bundle": {
+        "ate_rmse_m": {
+          "reference": 7.484202225199992,
+          "candidate": 7.479312245224569,
+          "delta": -0.004889979975422953,
+          "change_percent": -0.06533735765393865
+        },
+        "translation_percent": {
+          "reference": 4.557725539422935,
+          "candidate": 4.475547522084708,
+          "delta": -0.0821780173382276,
+          "change_percent": -1.8030488371318727
+        },
+        "rotation_deg_per_m": {
+          "reference": 0.012066067906574156,
+          "candidate": 0.013115759252996873,
+          "delta": 0.001049691346422717,
+          "change_percent": 8.699531235447434
+        }
+      },
+      "lost_frames_delta": -1,
+      "source_revision_changed": true
+    }
+  },
+  "e7_comparator_fingerprint": "e7e476f8cd27615282965b129745d97228cf519bd35cb6064b71cfca0671cd67",
+  "reference_poses_used_for_estimation": false,
+  "interpretation_limit": "Paired prefix results are descriptive. Source changed since e7; deltas do not isolate one causal change or establish full-sequence reliability.",
+  "estimator_commit": "5795bc5269a29dfc6bd1452110f62a1f0ac838af",
+  "checks": {
+    "backend_passed": 328,
+    "optional_gpu_skips": 4,
+    "focused_passed": 252,
+    "frontend_passed": 4,
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "decision_audit": {
+    "early_hard_half_winners": {
+      "count": 39,
+      "frames": [
+        12,
+        108,
+        113,
+        149,
+        150,
+        151,
+        154,
+        155,
+        156,
+        158,
+        171,
+        181,
+        214,
+        215,
+        236,
+        240,
+        241,
+        255,
+        259,
+        261,
+        298,
+        300,
+        301,
+        302,
+        306,
+        311,
+        314,
+        315,
+        316,
+        318,
+        319,
+        328,
+        329,
+        330,
+        331,
+        338,
+        340,
+        344,
+        348
+      ],
+      "connections": {
+        "insufficient_spatial_coverage": 7,
+        "retained": 18,
+        "insufficient_inliers": 3,
+        "insufficient_retention_ratio": 11
+      }
+    },
+    "full_retries": {
+      "count": 26,
+      "outcomes": {
+        "full_supported_reference_still_conflicts": 25,
+        "full_supported_reference_failed": 1
+      },
+      "pre_decisions": {
+        "no_strict_cost_improvement": 15,
+        "independent_support_failed": 10,
+        "independent_support_not_dominant": 1
+      },
+      "failed_rows": [
+        {
+          "frame": 333,
+          "state": "relocalized",
+          "pose_source": "descriptor_map"
+        }
+      ],
+      "consumed_holdout_diagnostic_leaks": []
+    },
+    "guard_failures": [],
+    "ledger": {
+      "edges": 344,
+      "max_translation_m": 0.467171182161759,
+      "max_rotation_deg": 1.4453540809038472,
+      "existing_final_gate_violations": []
+    },
+    "selected_frames": {
+      "308": {
+        "state": "tracking",
+        "tracking_ok": true,
+        "pose_source": "stereo_tracking_reference",
+        "map_reference_translation_error_m": 1.5121948021837162,
+        "map_reference_rotation_error_deg": 0.9394786918069494,
+        "arbitration": {
+          "choice": "existing_reference",
+          "reason": "full_supported_reference_still_conflicts",
+          "fit_source": "full_supported_reference",
+          "held_out_arbitration_used": false
+        },
+        "full_retry_attempted": true,
+        "pre_full_score": {
+          "choice": "map",
+          "reason": "no_strict_cost_improvement",
+          "fit_source": "reserved_supported_training_rows",
+          "held_out_arbitration_used": true,
+          "holdout_count": 36,
+          "supported_pool": 72,
+          "fit_count": 36,
+          "source_frame": 307,
+          "target_frame": 308,
+          "calibration_identity": "645478fbef28f40232d50a634585f6d5b0fdf27a01be90f6b2017ca7ffee4f34",
+          "map": {
+            "cost": 39.98641414456397,
+            "inliers": 17,
+            "cells": 3,
+            "eligible": true,
+            "reason": "accepted_support"
+          },
+          "independent": {
+            "cost": 52.29048142985265,
+            "inliers": 17,
+            "cells": 3,
+            "eligible": true,
+            "reason": "accepted_support"
+          }
+        },
+        "full_fit": {
+          "attempted": true,
+          "fit_source": "full_supported_reference",
+          "fit_depth_policy": "supported_raw",
+          "held_out_arbitration_used": false,
+          "raw_mutual_matches": 366,
+          "unique_physical_matches": 273,
+          "dropped_duplicate_matches": 93,
+          "source_frame": 307,
+          "target_frame": 308,
+          "calibration_identity": "645478fbef28f40232d50a634585f6d5b0fdf27a01be90f6b2017ca7ffee4f34",
+          "eligible": true,
+          "reason": "full_supported_reference_verified",
+          "reverse_checked": true,
+          "reference_matches": 76,
+          "reference_inliers": 52,
+          "reference_median_reprojection_px": 0.7962658617900198,
+          "half_pool_conflicted_with_map": true,
+          "half_pool_translation_error_m": 1.1822266046876064,
+          "half_pool_rotation_error_deg": 0.6522344696017104,
+          "reservation_context_available": true
+        },
+        "before_BA_holdout": null,
+        "after_BA_holdout": null,
+        "final_previous_vs_GT": {
+          "translation_m": 0.0937503752300494,
+          "rotation_deg": 0.20252295086531297
+        },
+        "final_pose_held_previous": false,
+        "raw_edge": {
+          "source_frame": 307,
+          "raw_vs_GT": {
+            "translation_m": 0.09375037300861504,
+            "rotation_deg": 0.2025229507140172
+          },
+          "raw_vs_final": {
+            "translation_m": 2.479977918545776e-09,
+            "rotation_deg": 1.5390566338705634e-10
+          }
+        }
+      },
+      "344": {
+        "state": "tracking",
+        "tracking_ok": true,
+        "pose_source": "reserved_stereo_arbitration",
+        "map_reference_translation_error_m": 0.5964485898026314,
+        "map_reference_rotation_error_deg": 0.14897975491701268,
+        "arbitration": {
+          "choice": "independent",
+          "reason": "reserved_stereo_evidence_improved",
+          "fit_source": "reserved_supported_training_rows",
+          "held_out_arbitration_used": true,
+          "holdout_count": 54,
+          "supported_pool": 95,
+          "fit_count": 41,
+          "source_frame": 343,
+          "target_frame": 344,
+          "calibration_identity": "645478fbef28f40232d50a634585f6d5b0fdf27a01be90f6b2017ca7ffee4f34",
+          "map": {
+            "cost": 40.49458417222046,
+            "inliers": 33,
+            "cells": 4,
+            "eligible": true,
+            "reason": "accepted_support"
+          },
+          "independent": {
+            "cost": 28.330984722770406,
+            "inliers": 34,
+            "cells": 5,
+            "eligible": true,
+            "reason": "accepted_support"
+          },
+          "association_validation": {
+            "eligible": true,
+            "reason": "retained",
+            "candidate_landmarks": 195,
+            "retained_landmarks": 127,
+            "retained_ratio": 0.29398148148148145,
+            "final_solve_positions": 432,
+            "spatial_coverage": 3,
+            "median_left_residual_px": 0.621545546660947,
+            "median_right_residual_px": 0.54763907421966,
+            "rejected": {
+              "missing_landmark": 0,
+              "invalid_observation": 0,
+              "invalid_stereo_measurement": 10,
+              "behind_camera": 0,
+              "outside_image": 0,
+              "left_residual": 56,
+              "right_residual": 2
+            }
+          }
+        },
+        "full_retry_attempted": false,
+        "pre_full_score": null,
+        "full_fit": {},
+        "before_BA_holdout": {
+          "cost": 28.33098472277051,
+          "inliers": 34,
+          "cells": 5,
+          "eligible": true,
+          "reason": "accepted_support"
+        },
+        "after_BA_holdout": {
+          "cost": 28.33098472277051,
+          "inliers": 34,
+          "cells": 5,
+          "eligible": true,
+          "reason": "accepted_support"
+        },
+        "final_previous_vs_GT": {
+          "translation_m": 0.018381104766555374,
+          "rotation_deg": 0.055386006118456
+        },
+        "final_pose_held_previous": false,
+        "raw_edge": {
+          "source_frame": 343,
+          "raw_vs_GT": {
+            "translation_m": 0.018381102568639437,
+            "rotation_deg": 0.05538600584167399
+          },
+          "raw_vs_final": {
+            "translation_m": 3.874807731804131e-09,
+            "rotation_deg": 2.816495695241512e-10
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,463 @@
+{
+  "estimator_source_sha256": {
+    "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+    "config.py": "ed89040a1e1bac76d135e97ecdb86fa80b889893c6e000446199f955b4f6e13d",
+    "eval_kitti.py": "d5eeb3f2c36c45645d9be0a0ba5de55eda55554c3fe88b47556ed657a0b4320b",
+    "eval_pose_graph.py": "b0cbd50f2305a706805026f2c87c8298efcc165fd76c4c8b46d47a15bd68642f",
+    "image_sequence.py": "a4e63ed213d8007487e9ef7e021f43ffe7ff0a11e8be4f733b8275505e6b0e68",
+    "kitti.py": "876d452f638fcc2d0321d6997cc2900c90184e05debe57b33056c4c67a59c2f9",
+    "live_loops.py": "2f21fe4527908339e40e8afa31569cb7ae5044a4293b827d60968f7f4ac7c0c4",
+    "local_bundle.py": "bd1a866068a48798d6ab36e1fdda83365816511dd8884a40ec0a2fdc4acfd9c1",
+    "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "loop_geometry.py": "331525fdb9e21bf77b43dad6dfee2d2c8b882a76eef79ae2d3aed844423cda21",
+    "main.py": "f9324bc349f250d5dc920ce43befc3ae506bbde12f53a30cdff0216af773a969",
+    "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+    "mapping_geometry.py": "9d3364a25f3950b163f7acbf50594ee35fcb963e7c8280c44b33a027894dd9dd",
+    "metrics.py": "400e35601a8981ee5f7b9ad9dfad6156d0e7ad0a295b2be2a17476224da91b7b",
+    "pose_graph.py": "87f243f2e1e70684609b8c2b7a2fad6beef0cdd7cf35fe5fda19274f90f12e69",
+    "reconstruction.py": "f523130eb06577afacf54373195822be8bf4eeecaa3797bf657545156a348eb1",
+    "shared_slam.py": "af95984fcfeef9301b8a5721952691dc0ec70535357bad033a0af0afa1c8d297",
+    "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+    "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+    "slam_state.py": "efe8bc2e9fd12e6afb3dcb6664b91301ce74b7cb401bbdb45559ad264d8886db",
+    "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+    "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+    "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739",
+    "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478"
+  },
+  "backend_tests": {
+    "passed": 77
+  },
+  "acceptance": "Rejected as a default improvement: monocular KITTI 04 scale-drift regression; unresolved tracking in KITTI 01 and TUM room.",
+  "runtime_conditions": "Concurrent evaluations; wall time includes OneDrive hydration where applicable and is not isolated throughput.",
+  "runs": [
+    {
+      "sequence": "01",
+      "dataset": "kitti",
+      "frames": 1101,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 1068,
+        "lost": 30,
+        "relocalized": 3
+      },
+      "lost_frames": 30,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.39156009999715025,
+      "relocalized_frames": 3,
+      "lost_intervals": [
+        {
+          "first_frame": 275,
+          "last_frame": 276,
+          "recovered": true
+        },
+        {
+          "first_frame": 281,
+          "last_frame": 281,
+          "recovered": true
+        },
+        {
+          "first_frame": 1074,
+          "last_frame": 1100,
+          "recovered": false
+        }
+      ],
+      "keyframes": 527,
+      "landmarks": 261246,
+      "elapsed_s": 2228.8610144999984,
+      "processing_fps": 0.4939742733339467,
+      "peak_memory_mb": 1420.875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.7068201643837253,
+      "bundle_adjustments_applied": 325,
+      "metrics": {
+        "frames": 1101,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 89.69292917646436,
+        "raw_ate_rmse_m": 247.2722625923542,
+        "segment_count": 676,
+        "translation_percent": 10.994427633292558,
+        "rotation_deg_per_m": 0.012753159612975582
+      },
+      "status": "completed_with_tracking_loss",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 01",
+      "final_multiview_map_quality": {
+        "observations": 46134,
+        "median_reprojection_px": 0.41206146318238945,
+        "p90_reprojection_px": 1.1319651814033305,
+        "above_3px_percent": 1.7319113885637492,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "03",
+      "dataset": "kitti",
+      "frames": 801,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 801
+      },
+      "lost_frames": 0,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 1.850548800000979,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 84,
+      "landmarks": 86757,
+      "elapsed_s": 2258.2780637999967,
+      "processing_fps": 0.35469502752560067,
+      "peak_memory_mb": 500.5078125,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.7112957772998643,
+      "bundle_adjustments_applied": 82,
+      "metrics": {
+        "frames": 801,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 2.1537330396052656,
+        "raw_ate_rmse_m": 5.072830327852322,
+        "segment_count": 184,
+        "translation_percent": 1.39627388262478,
+        "rotation_deg_per_m": 0.002660688128186293
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 03",
+      "final_multiview_map_quality": {
+        "observations": 40044,
+        "median_reprojection_px": 0.39046756601112975,
+        "p90_reprojection_px": 1.4690665005577834,
+        "above_3px_percent": 1.8504644890620319,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "04",
+      "dataset": "kitti",
+      "frames": 271,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 271
+      },
+      "lost_frames": 0,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.4676307999980054,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 32,
+      "landmarks": 36416,
+      "elapsed_s": 284.5817112000004,
+      "processing_fps": 0.9522748277015758,
+      "peak_memory_mb": 340.8046875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.8480700651173956,
+      "bundle_adjustments_applied": 30,
+      "metrics": {
+        "frames": 271,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.8507206158270865,
+        "raw_ate_rmse_m": 2.1371652586822103,
+        "segment_count": 43,
+        "translation_percent": 0.8801499021600168,
+        "rotation_deg_per_m": 0.005911478430954702
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 04",
+      "final_multiview_map_quality": {
+        "observations": 8434,
+        "median_reprojection_px": 0.3861099714201166,
+        "p90_reprojection_px": 1.5904055912935298,
+        "above_3px_percent": 3.9483044818591417,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "04",
+      "dataset": "kitti",
+      "frames": 271,
+      "stereo": false,
+      "translation_scale": "arbitrary",
+      "states": {
+        "initializing": 3,
+        "tracking": 265,
+        "relocalized": 3
+      },
+      "lost_frames": 0,
+      "initializing_frames": 3,
+      "initialization_frame": 3,
+      "initialization_elapsed_s": 1.3170819000006304,
+      "relocalized_frames": 3,
+      "lost_intervals": [],
+      "keyframes": 63,
+      "landmarks": 6277,
+      "elapsed_s": 192.1537584999969,
+      "processing_fps": 1.4103289059527002,
+      "peak_memory_mb": 335.921875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.6037882424225819,
+      "bundle_adjustments_applied": 61,
+      "metrics": {
+        "frames": 271,
+        "ate_alignment": "sim3",
+        "alignment_scale": 4.586304700494715,
+        "ate_rmse_m": 14.938960838789496,
+        "raw_ate_rmse_m": null,
+        "segment_count": 0,
+        "translation_percent": null,
+        "rotation_deg_per_m": null
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 04",
+      "final_multiview_map_quality": {
+        "observations": 19498,
+        "median_reprojection_px": 0.31316513313984623,
+        "p90_reprojection_px": 1.3262416540116313,
+        "above_3px_percent": 4.836393476253975,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "07",
+      "dataset": "kitti",
+      "frames": 1101,
+      "stereo": true,
+      "translation_scale": "metric",
+      "states": {
+        "tracking": 1101
+      },
+      "lost_frames": 0,
+      "initializing_frames": 0,
+      "initialization_frame": 0,
+      "initialization_elapsed_s": 0.6768505000000005,
+      "relocalized_frames": 0,
+      "lost_intervals": [],
+      "keyframes": 116,
+      "landmarks": 125400,
+      "elapsed_s": 1307.9735795000015,
+      "processing_fps": 0.8417601221126185,
+      "peak_memory_mb": 763.921875,
+      "loops": 10,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.7373498085318941,
+      "bundle_adjustments_applied": 114,
+      "metrics": {
+        "frames": 1101,
+        "ate_alignment": "se3",
+        "alignment_scale": 1.0,
+        "ate_rmse_m": 0.6525903351942229,
+        "raw_ate_rmse_m": 1.1778777967850786,
+        "segment_count": 317,
+        "translation_percent": 0.8177919669831416,
+        "rotation_deg_per_m": 0.005508285066971613
+      },
+      "status": "completed",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "KITTI 07",
+      "final_multiview_map_quality": {
+        "observations": 66695,
+        "median_reprojection_px": 0.7711465611594229,
+        "p90_reprojection_px": 2.8030284137452752,
+        "above_3px_percent": 8.534372891521103,
+        "behind_camera": 0
+      },
+      "last_loop_correction": {
+        "before": {
+          "ate_rmse_m": 2.7130162864109826,
+          "translation_percent": 1.1618715509425115
+        },
+        "after": {
+          "ate_rmse_m": 0.6525903352259516,
+          "translation_percent": 0.8177919670735436
+        },
+        "comparison": "Immediately before and after the last applied correction; earlier live corrections are retained in before."
+      }
+    },
+    {
+      "sequence": "fr1-desk",
+      "dataset": "tum",
+      "frames": 613,
+      "stereo": false,
+      "translation_scale": "arbitrary",
+      "states": {
+        "initializing": 4,
+        "tracking": 467,
+        "lost": 141,
+        "relocalized": 1
+      },
+      "lost_frames": 141,
+      "initializing_frames": 4,
+      "initialization_frame": 4,
+      "initialization_elapsed_s": 1.074684300001536,
+      "relocalized_frames": 1,
+      "lost_intervals": [
+        {
+          "first_frame": 199,
+          "last_frame": 339,
+          "recovered": true
+        }
+      ],
+      "keyframes": 102,
+      "landmarks": 8444,
+      "elapsed_s": 1253.4510905999996,
+      "processing_fps": 0.48904979587721314,
+      "peak_memory_mb": 336.1171875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.7838819818958307,
+      "bundle_adjustments_applied": 100,
+      "metrics": {
+        "frames": 613,
+        "ate_alignment": "sim3",
+        "alignment_scale": 0.04893522503516465,
+        "ate_rmse_m": 0.19861253217071195,
+        "raw_ate_rmse_m": null,
+        "segment_count": 0,
+        "translation_percent": null,
+        "rotation_deg_per_m": null
+      },
+      "status": "completed_with_tracking_loss",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "TUM fr1 desk",
+      "final_multiview_map_quality": {
+        "observations": 30774,
+        "median_reprojection_px": 0.49430483400021663,
+        "p90_reprojection_px": 1.1868775679646941,
+        "above_3px_percent": 0.523168908819133,
+        "behind_camera": 0
+      }
+    },
+    {
+      "sequence": "fr1-room",
+      "dataset": "tum",
+      "frames": 1362,
+      "stereo": false,
+      "translation_scale": "arbitrary",
+      "states": {
+        "initializing": 6,
+        "tracking": 383,
+        "lost": 970,
+        "relocalized": 3
+      },
+      "lost_frames": 970,
+      "initializing_frames": 6,
+      "initialization_frame": 6,
+      "initialization_elapsed_s": 1.4454826000001049,
+      "relocalized_frames": 3,
+      "lost_intervals": [
+        {
+          "first_frame": 197,
+          "last_frame": 201,
+          "recovered": true
+        },
+        {
+          "first_frame": 204,
+          "last_frame": 205,
+          "recovered": true
+        },
+        {
+          "first_frame": 213,
+          "last_frame": 1002,
+          "recovered": true
+        },
+        {
+          "first_frame": 1189,
+          "last_frame": 1361,
+          "recovered": false
+        }
+      ],
+      "keyframes": 118,
+      "landmarks": 5519,
+      "elapsed_s": 2403.8432904,
+      "processing_fps": 0.5665926749215682,
+      "peak_memory_mb": 242.26171875,
+      "loops": 0,
+      "configuration": {
+        "features": 1500,
+        "min_inliers": 15,
+        "keyframe_interval": 10,
+        "max_landmarks": 2000,
+        "bundle_window": 5
+      },
+      "median_tracking_reprojection_px": 0.8142392671650951,
+      "bundle_adjustments_applied": 116,
+      "metrics": {
+        "frames": 1362,
+        "ate_alignment": "sim3",
+        "alignment_scale": 0.0836972334089434,
+        "ate_rmse_m": 0.803369046603848,
+        "raw_ate_rmse_m": null,
+        "segment_count": 0,
+        "translation_percent": null,
+        "rotation_deg_per_m": null
+      },
+      "status": "completed_with_tracking_loss",
+      "ground_truth_used_for_estimation": false,
+      "coverage": "full",
+      "case": "TUM fr1 room",
+      "final_multiview_map_quality": {
+        "observations": 21436,
+        "median_reprojection_px": 0.5168405532993657,
+        "p90_reprojection_px": 1.1725814444895886,
+        "above_3px_percent": 0.06997574174286247,
+        "behind_camera": 0
+      }
+    }
+  ]
+}

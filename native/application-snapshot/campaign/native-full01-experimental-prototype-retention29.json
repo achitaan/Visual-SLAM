@@ -1,0 +1,117 @@
+{
+  "status": "retained_tested_full01_online_application_experimental_not_main",
+  "utc": "2026-10-13T15:39:50.200776+00:00",
+  "independent_review": "native-fullapp-v10-independent-review29-result.json",
+  "reviewer_task": "/root/native_fullapp_postlive_review29",
+  "reviewer_payload_persisted_by_root": true,
+  "review_sha256": "edbcbaa0ffddae7fa3db6d88a94f208de25b0f8d7cc4c2baa515333c3e402dd5",
+  "findings_sha256": "64bdd1c922d7ab5b3f067fe6059ed3f430e784c2919b44f846c14d5e778769ca",
+  "native_source": "native-online-build/orbslam3-origin-serialized",
+  "prepared_entrypoints": [
+    {
+      "launcher": "native_application_launcher_release_v10.py",
+      "presets": [
+        [
+          "01",
+          1101,
+          0
+        ]
+      ],
+      "output_forecast_bytes": 2250000000,
+      "reserve_bytes": 1610612736,
+      "required_free_bytes": 3860612736
+    },
+    {
+      "launcher": "native_application_launcher_release_v7.py",
+      "presets": [
+        [
+          "04",
+          60,
+          2
+        ],
+        [
+          "04",
+          80,
+          0
+        ],
+        [
+          "01",
+          350,
+          0
+        ]
+      ],
+      "prior_retention": "native-restricted-prototype-candidate-retention.json",
+      "prior_scope_unchanged": true
+    }
+  ],
+  "source_sha256": {
+    "native_application_launcher_release_v10.py": "613353f791c598d3ddb22be59d2383f5c253d153cc5917b4e5f827dd530d93ba",
+    "native_application_launcher_release_v7.py": "9ff00f3c75155ffbf90cf69a20349a34eedb375689a8634cc7d9aace3b2d2c88",
+    "native_application_presets_v2.py": "c3620520cde8b6bc4ef3bc72cfe7a0101e07a014ec8e83461e7a7e78486a97ef",
+    "native_application_presets_v1.py": "443a216f65323093e59d2d05115e86e5e0f781446217f815657b333cb9866379",
+    "qualify_native_bounded_full_browser_v10_safe.py": "214047ec701d3350a41b4b046798c72671d8f844bb394f10e4b85ce92c111d06",
+    "verify_native_bounded_full_browser_v10_safe.py": "2da18b0d0e520b6778e66db7ccaa67e26e735eb848a6920a4e1c67bd9af86908",
+    "native_browser_receipt_sink.py": "a6ad6cf0993364d23a97451095f6d12a7246d747b310c4f466b6c4ca2bcaee39",
+    "native_saved_observation_stream.py": "ee1a32e5848228108636209aecd7ba403317a7a8f968f50ee3f0f4318f83d0c8",
+    "native_physical_disk_sample.py": "25da605debc51943a3c5735f09c9e00b7e2d21e39edfa8e3a0fb69b94d4f2005",
+    "native_application_follower_v4.py": "a1327150e46a48afa5fb45d212f400ac69a00f84e43dffe29b944adc11cff9f4",
+    "native_application_control_v4.py": "27d0591f97ef1b9b27b8e271cb81d803bb1bf9d090954c11fdf14bbf99676794",
+    "native_application_arm_owner_v6.py": "41515322d27bd761d5bdb0fb3ac9ad84bae2bc415bda296eb4bc20152b31da19"
+  },
+  "numerical_passing_pairs": 16,
+  "live_full01_normal": {
+    "run_id": "native_prototype_fullappv10_normal_01_1101_seed0_20261013c",
+    "emitted_frames": 1101,
+    "receipt_count": 1138,
+    "strict_maps": 37,
+    "unprocessed_original_ids": 0,
+    "maximum_receipt_bytes": 346194,
+    "physical_disk_samples": {
+      "minimum_sampled_physical_free_bytes": 5578964992,
+      "samples": 3522,
+      "period_s": 0.1,
+      "reserve_bytes": 1610612736,
+      "error": null,
+      "sampled_reserve_gate_pass": true,
+      "scope": "Whole physical C volume, sampled every0.1s; not attribution to one process or a proof of shorter transient minima"
+    },
+    "whole_owned_cleanup_confirmed": true,
+    "screenshot_visually_inspected": true,
+    "saved_verification": "native-fullapp-v10-normal-01-1101-seed0-20261013c-streaming-verification.json"
+  },
+  "live_full01_mapping_stop": {
+    "run_id": "native_prototype_fullappv10_mapping_01_1101_seed0_20261013c",
+    "emitted_frames": 37,
+    "receipt_count": 38,
+    "strict_maps": 1,
+    "unprocessed_original_ids": 1064,
+    "maximum_receipt_bytes": 185537,
+    "physical_disk_samples": {
+      "minimum_sampled_physical_free_bytes": 7440187392,
+      "samples": 445,
+      "period_s": 0.1,
+      "reserve_bytes": 1610612736,
+      "error": null,
+      "sampled_reserve_gate_pass": true,
+      "scope": "Whole physical C volume, sampled every0.1s; not attribution to one process or a proof of shorter transient minima"
+    },
+    "whole_owned_cleanup_confirmed": true,
+    "screenshot_visually_inspected": true,
+    "saved_verification": "native-fullapp-v10-mapping-01-1101-seed0-20261013c-streaming-verification.json"
+  },
+  "normal_emitted_history_immutable": true,
+  "stopped_prefix_incomplete_not_accuracy_acceptance": true,
+  "gt_evaluator_only": true,
+  "old_v8_failure_preserved": true,
+  "xz_successor_installed": false,
+  "main": "712c908787b29e89bca3d8eeccf93a5c64329931",
+  "main_changed": false,
+  "production_changed": false,
+  "main_release_cleared": false,
+  "arbitrary_inputs_cleared": false,
+  "native_rate_cleared": false,
+  "full_objective_complete": false,
+  "actual_runtime_model_identity": null,
+  "token_usage": null,
+  "next_work": "Remaining exact-source representative coverage, other long application scopes and usable distribution integration before broader independent release decision."
+}

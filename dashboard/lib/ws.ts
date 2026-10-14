@@ -1,10 +1,11 @@
-import { ControlMessage, TelemetryFrame } from './types';
+import { BenchmarkStatus, ControlMessage, TelemetryFrame } from './types';
 
 type TelemetryListener = (frame: TelemetryFrame) => void;
 
 export class TelemetrySocket {
   private ws?: WebSocket;
   private listeners = new Set<TelemetryListener>();
+  private benchmarkListeners = new Set<(status: BenchmarkStatus) => void>();
   private statusListeners = new Set<(connected: boolean) => void>();
   private retry?: ReturnType<typeof setTimeout>;
   private disposed = false;
@@ -23,7 +24,13 @@ export class TelemetrySocket {
     };
     socket.onmessage = (event) => {
       try {
-        const frame = JSON.parse(event.data) as TelemetryFrame;
+        const frame = JSON.parse(event.data);
+        if (frame?.kind === 'benchmark_status') {
+          if (frame.schema_version !== 1 || !Number.isInteger(frame.completed) || !Number.isInteger(frame.total) || frame.completed < 0 || frame.total < frame.completed || !Array.isArray(frame.rows) || typeof frame.running !== 'boolean' || typeof frame.stream_available !== 'boolean') return;
+          if (frame.active != null && (typeof frame.active.run_id !== 'string' || typeof frame.active.sequence !== 'string' || typeof frame.active.sensor !== 'string')) return;
+          this.benchmarkListeners.forEach(listener => listener(frame));
+          return;
+        }
         if (frame?.schema_version !== 1 || !Number.isInteger(frame.frame_index) || !Array.isArray(frame.pose_T_wc)) return;
         this.listeners.forEach((listener) => listener(frame));
       } catch { /* Ignore malformed payloads. */ }
@@ -42,6 +49,11 @@ export class TelemetrySocket {
   onFrame(listener: TelemetryListener) {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
+  }
+
+  onBenchmark(listener: (status: BenchmarkStatus) => void) {
+    this.benchmarkListeners.add(listener);
+    return () => { this.benchmarkListeners.delete(listener); };
   }
 
   sendControl(message: ControlMessage) {

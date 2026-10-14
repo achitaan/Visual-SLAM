@@ -1,10 +1,11 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ControlMessage, TelemetryFrame } from "@/lib/types";
+import { BenchmarkStatus, ControlMessage, TelemetryFrame } from "@/lib/types";
 import { TelemetrySocket } from "@/lib/ws";
 
 type TelemetryContextValue = {
+  benchmark?: BenchmarkStatus;
   latest?: TelemetryFrame;
   frames: TelemetryFrame[];
   connected: boolean;
@@ -18,6 +19,7 @@ const TelemetryContext = createContext<TelemetryContextValue | undefined>(undefi
 
 export function TelemetryProvider({ children }: { children: React.ReactNode }) {
   const [latest, setLatest] = useState<TelemetryFrame>();
+  const [benchmark, setBenchmark] = useState<BenchmarkStatus>();
   const [frames, setFrames] = useState<TelemetryFrame[]>([]);
   const [connected, setConnected] = useState(false);
   const [showExpected, setShowExpected] = useState(true);
@@ -30,6 +32,13 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
     socketRef.current = socket;
 
     const unsubStatus = socket.onStatus(setConnected);
+    const unsubBenchmark = socket.onBenchmark(status => {
+      setBenchmark(status);
+      if (status.active) {
+        setLatest(prev => prev?.run_id === status.active?.run_id ? prev : undefined);
+        setFrames(prev => prev.at(-1)?.run_id === status.active?.run_id ? prev : []);
+      }
+    });
 
     const unsub = socket.onFrame((frame) => {
       setLatest(frame);
@@ -38,7 +47,7 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
         // Control acknowledgements update latest without duplicating poses.
         if (prev.at(-1)?.frame_index === frame.frame_index) return prev;
         // Keep heavy image/map payloads only in latest, not trajectory history.
-        const compact = { ...frame, image: null, features: null, map_points: null,
+        const compact = { ...frame, image: null, features: null, map_points: null, trajectory: undefined,
           pose_graph: frame.pose_graph ? { ...frame.pose_graph, optimized_poses: undefined } : null };
         return [...prev.slice(-1999), compact];
       });
@@ -48,6 +57,7 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unsub();
       unsubStatus();
+      unsubBenchmark();
       socket.close();
       setConnected(false);
     };
@@ -60,13 +70,14 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
   const restart = useCallback(() => {
     setFrames([]);
     setLatest(undefined);
+    setBenchmark(undefined);
     socketRef.current?.close();
     setReconnectKey((k) => k + 1);
   }, []);
 
   const value = useMemo(
-    () => ({ latest, frames, connected, showExpected, setShowExpected, sendControl, restart }),
-    [latest, frames, connected, showExpected, restart]
+    () => ({ latest, benchmark, frames, connected, showExpected, setShowExpected, sendControl, restart }),
+    [latest, benchmark, frames, connected, showExpected, restart]
   );
 
   return <TelemetryContext.Provider value={value}>{children}</TelemetryContext.Provider>;

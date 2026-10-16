@@ -6,6 +6,23 @@ The project aims to build reliable visual SLAM across environments. KITTI is use
 
 ## Pipeline status
 
+The original Python shared mapper is restored on the development branch, with
+verified-reference recovery, validated descriptor associations, physical
+landmark ownership and precise sparse bundle adjustment. It uses this project's
+own tracking and mapping code with OpenCV and SciPy. The integration passes 363
+regression tests and a four-image real KITTI application check with exact
+frozen-reference poses, sparse map and configuration.
+
+- [Original Python benchmark table and verified run command](docs/benchmark/original-python-verified.md)
+- [Exact configuration, measured values and source hashes](docs/benchmark/original-python-verified.json)
+
+Those benchmark values are prior completed measurements, not new integration
+results. Seven full KITTI seed0 comparisons are recorded. Full01 raw error and
+runtime remain weaknesses; broader coverage is incomplete. Real-time execution
+is not a requirement for this implementation.
+
+### Legacy VO and offline graph results
+
 The stereo pipeline uses SIFT features, SGBM disparity and PnP motion estimation. Offline loop verification uses stereo geometry, followed by a SciPy pose graph optimizer and correction propagation to the full trajectory. Ground truth is used only for evaluation and display, never to initialize motion, recover scale or construct graph constraints.
 
 Full runs on KITTI 00–10 cover 23,201 frames and 61 verified loops. Segment-weighted translation drift is **2.287% before optimization and 1.773% afterward**. These are public training-set results, not hidden test-set leaderboard results.
@@ -14,8 +31,8 @@ Full runs on KITTI 00–10 cover 23,201 frames and 61 verified loops. Segment-we
 - [Machine-readable results](docs/benchmark/results.json)
 - [Development roadmap](docs/ROADMAP.md)
 
-The original pipeline lacks persistent mapping and optimized-pose feedback. The
-experimental shared pipeline below implements persistent landmarks, local bundle
+The legacy VO mode lacks persistent mapping and optimized-pose feedback. The
+shared pipeline implements persistent landmarks, local bundle
 adjustment, relocalization and live correction, but wider reliability validation
 remains incomplete. Monocular translation has arbitrary scale. In the original
 benchmark, sequence 01 has 23 tracking failures and sequence 09's translation

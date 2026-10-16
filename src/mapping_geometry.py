@@ -318,8 +318,38 @@ def _estimate_pose_hypothesis(
     return pose, ids, float(np.median(error))
 
 
+def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed):
+    """Fit image-supported seed inliers without a new RANSAC consensus switch.
+
+    The seed only selects a hypothesis. Reverse-camera 3D measurements supply
+    the independent fit, using the same pixel/support/coverage gates as PnP.
+    Each input row is counted once; callers supply physical correspondences.
+    """
+    if len(points) < min_inliers:
+        return None
+    predicted, depth = project(points, seed, matrix)
+    residual = np.linalg.norm(predicted - pixels, axis=1)
+    ids = np.flatnonzero(np.isfinite(residual) & (residual <= 2.) & (depth > 0))
+    if (len(ids) < min_inliers or len(ids) / len(points) < .25
+            or coverage(pixels[ids], size) < 3):
+        return None
+    camera = np.linalg.inv(seed)
+    rv, tv = cv.solvePnPRefineLM(
+        points[ids].astype(float), pixels[ids].astype(float), matrix, None,
+        cv.Rodrigues(camera[:3, :3])[0], camera[:3, 3].reshape(3, 1))
+    pose = np.eye(4)
+    pose[:3, :3] = cv.Rodrigues(rv)[0].T
+    pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
+    predicted, depth = project(points[ids], pose, matrix)
+    error = float(np.median(np.linalg.norm(predicted - pixels[ids], axis=1)))
+    if not np.isfinite(pose).all() or np.any(depth <= 0) or not np.isfinite(error) or error > 1.5:
+        return None
+    return pose, ids, error
+
+
 def estimate_stereo_reference(
-    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None
+    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
+    *, capture_rows=False,
 ):
     """Frame tracking with the map tracker's PnP checks, never a loop constraint.
 
@@ -361,17 +391,48 @@ def estimate_stereo_reference(
         reverse_rotation = float(
             np.degrees(np.linalg.norm(cv.Rodrigues(consistency[:3, :3])[0]))
         )
+        reverse_recovery = None
         if reverse_translation > 0.5 or reverse_rotation > 1.5:
-            return None
+            # RANSAC can switch to a different reverse consensus even when
+            # initialized with the forward inverse. Retry that image-supported
+            # hypothesis with an independent reverse LM fit, not an imposed
+            # inverse transform. Keep the original forward/reverse thresholds.
+            initial_translation, initial_rotation = reverse_translation, reverse_rotation
+            try:
+                supported_reverse = _refine_supported_pose_seed(
+                    target.points[b[reverse_available]], source.pixels[a[reverse_available]],
+                    matrix, source.image_size, min_inliers, np.linalg.inv(measurement))
+            except (cv.error, np.linalg.LinAlgError, ValueError):
+                supported_reverse = None
+            if supported_reverse is None:
+                return None
+            consistency = supported_reverse[0] @ measurement
+            reverse_translation = float(np.linalg.norm(consistency[:3, 3]))
+            reverse_rotation = float(np.degrees(np.linalg.norm(cv.Rodrigues(consistency[:3, :3])[0])))
+            if reverse_translation > 0.5 or reverse_rotation > 1.5:
+                return None
+            reverse = supported_reverse
+            reverse_recovery = {
+                "method": "image_supported_reverse_seed_refinement",
+                "initial_translation_error_m": initial_translation,
+                "initial_rotation_error_deg": initial_rotation,
+                "reverse_inliers": len(reverse[1]),
+                "reverse_available": int(reverse_available.sum()),
+                "reverse_median_reprojection_px": reverse[2],
+                "translation_error_m": reverse_translation,
+                "rotation_error_deg": reverse_rotation,
+            }
         reverse_a = a[reverse_available][reverse[1]]
         reverse_b = b[reverse_available][reverse[1]]
         measurement, refinement = refine_bidirectional_stereo(
             measurement, source.points[a_source[valid]], target.pixels[b_target[valid]],
             target.points[reverse_b], source.pixels[reverse_a], matrix,
         )
+        if reverse_recovery is not None:
+            refinement = {**(refinement or {}), "reverse_consensus_recovery": reverse_recovery}
         predicted, _ = project(source.points[a_source[valid]], measurement, matrix)
         error = float(np.median(np.linalg.norm(predicted-target.pixels[b_target[valid]], axis=1)))
-    return {
+    result = {
         "measurement": measurement,
         "matches": len(a_source),
         "inliers": len(valid),
@@ -382,6 +443,50 @@ def estimate_stereo_reference(
         "target_features": b_target[valid].tolist(),
         "bidirectional_refinement": refinement,
     }
+    if capture_rows:
+        # Keep the original matching-pool row numbers so downstream diagnostics
+        # can distinguish actual solver membership from reconstructed support.
+        # This branch is opt-in and does not participate in pose estimation.
+        forward_rows = np.flatnonzero(available)[valid]
+        reverse_rows = (
+            np.flatnonzero(reverse_available)[reverse[1]]
+            if reverse is not None else np.empty(0, dtype=np.int64)
+        )
+
+        def owned_pairs(rows):
+            owned = np.array(pairs[np.asarray(rows, dtype=np.int64)],
+                             dtype=np.int64, copy=True).reshape(-1, 2)
+            owned.setflags(write=False)
+            return owned
+
+        reverse_measurement = (
+            np.array(reverse[0], dtype=np.float64, copy=True)
+            if reverse is not None else None
+        )
+        if reverse_measurement is not None:
+            reverse_measurement.setflags(write=False)
+
+        result["training_rows"] = {
+            "schema": "stereo_reference_training_rows_v1",
+            "fit_pairs": owned_pairs(np.arange(len(pairs), dtype=np.int64)),
+            "forward_available_pairs": owned_pairs(np.flatnonzero(available)),
+            "forward_fit_row_indices": np.array(forward_rows, dtype=np.int64, copy=True),
+            "forward_inlier_pairs": owned_pairs(forward_rows),
+            "reverse_available_pairs": owned_pairs(np.flatnonzero(reverse_available)),
+            "reverse_fit_row_indices": np.array(reverse_rows, dtype=np.int64, copy=True),
+            "reverse_inlier_pairs": owned_pairs(reverse_rows),
+            "reverse_status": "verified" if reverse is not None else "unavailable",
+            # The independent reverse hypothesis is captured before the
+            # existing bidirectional pose-only refinement mutates the forward
+            # estimate.  Opt-in downstream diagnostics may compare against
+            # this proof pose without changing the default estimator path.
+            "reverse_measurement": reverse_measurement,
+            "refinement_attempted": bool(reverse is not None),
+            "refinement_applied": bool(refinement and refinement.get("applied")),
+        }
+        result["training_rows"]["forward_fit_row_indices"].setflags(write=False)
+        result["training_rows"]["reverse_fit_row_indices"].setflags(write=False)
+    return result
 
 
 def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):
@@ -427,3 +532,38 @@ def refine_bidirectional_stereo(pose, source_points, target_pixels, target_point
         return pose, report
     report['applied'] = True
     return candidate, report
+
+
+def estimate_stereo_reference_with_verified_retry(
+    source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
+    *, fallback_matcher=None, capture_rows=False,
+):
+    """Keep strong original geometry; retry only accepted one-way proposals.
+
+    Callers must supply a full physical match pool with no reserved holdout.
+    The retry is independent of the first pose/prior and must pass the existing
+    metric PnP and reverse-consistency gates. Failed retries preserve behavior.
+    """
+    original = estimate_stereo_reference(
+        source, target, matrix, min_inliers, initial_pose, matcher,
+        capture_rows=capture_rows)
+    if (fallback_matcher is None or original is None
+            or original.get('reverse_checked', False)):
+        return original
+    try:
+        candidate = estimate_stereo_reference(
+            source, target, matrix, min_inliers, initial_pose=None,
+            matcher=fallback_matcher, capture_rows=capture_rows)
+    except (cv.error, ValueError, np.linalg.LinAlgError):
+        candidate = None
+    if candidate is None or not candidate.get('reverse_checked', False):
+        return original
+    candidate = dict(candidate)
+    candidate['verified_appearance_retry'] = {
+        'applied': True, 'trigger': 'original_forward_only',
+        'original_reverse_checked': False,
+        'replacement_reverse_checked': True,
+        'initial_pose_reused': False,
+        'held_out_arbitration_claim': False,
+    }
+    return candidate

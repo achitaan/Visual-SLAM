@@ -23,7 +23,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared_slam import SharedSlam, StereoCamera, MappingConfig
+from shared_slam import SharedSlam, StereoCamera, MappingConfig, validate_feature_budget
 from StereoVisualOdometry import StereoVisualOdometry
 from VisualOdometry import VisualOdometry
 from kitti import load_poses_txt, validate_sequence
@@ -80,11 +80,38 @@ def export_reserve_bytes(state, minimum_mb):
     )
 
 
+def _mapping_config_from_args(args):
+    return MappingConfig(features=args.features, bundle_enabled=not args.disable_bundle,
+        loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
+        stereo_pose_arbitration=args.stereo_pose_arbitration,
+        stereo_verified_reference_retry=getattr(args, "stereo_verified_reference_retry", False),
+        stereo_descriptor_association_retry=getattr(
+            args, 'stereo_descriptor_association_retry', False),
+        stereo_physical_match_pool=args.stereo_physical_match_pool,
+        stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+        stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+        stereo_source_history_bundle=args.stereo_source_history_bundle,
+        stereo_retained_source_observations=args.stereo_retained_source_observations,
+        stereo_mapping_observation_retention=getattr(
+            args, 'stereo_mapping_observation_retention', False),
+        stereo_two_view_refinement=getattr(args, 'stereo_two_view_refinement', False),
+        stereo_two_view_solver=getattr(args, 'stereo_two_view_solver', 'sparse_lsmr'),
+        stereo_map_depth_policy=getattr(args, 'stereo_map_depth_policy', 'inherit'),
+        stereo_map_frontend_seed_fallback=getattr(
+            args, 'stereo_map_frontend_seed_fallback', False),
+        bundle_solver_accuracy=args.bundle_solver_accuracy,
+        bundle_landmark_policy=getattr(args, 'bundle_landmark_policy', 'bounded_fixed'),
+        stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'),
+        stereo_bundle_holdout_guard=getattr(args, 'stereo_bundle_holdout_guard', False))
+
+
 def main():
     invocation_started = time.perf_counter()
     evaluator_source = Path(__file__).read_bytes()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=["kitti", "tum"], default="kitti")
+    parser.add_argument("--dataset", choices=["kitti", "tum", "euroc"], default="kitti")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="OpenCV/NumPy random seed for paired reproducibility")
     parser.add_argument("--data-root", type=Path)
     parser.add_argument(
         "--remote",
@@ -95,20 +122,62 @@ def main():
     parser.add_argument("--sequence", default="04")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--features", type=int, default=1500,
+                        help="Requested SIFT feature budget (1â€“10000; default 1500)")
     parser.add_argument("--max-wall-seconds", type=float)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--disable-bundle", action="store_true")
     parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+                        help='Map geometry source only; verified uses full-range right-image correspondences')
+    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true',
+                        help='Use valid current-frame frontend XYZ as a left-only seed when verified map stereo abstains')
+    parser.add_argument('--stereo-verified-reference-retry', action='store_true',
+                        help='Retry only unverified one-way full-pool proposals with independently reverse-verified appearance geometry')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
+    parser.add_argument('--stereo-descriptor-association-retry', action='store_true',
+                        help='Experimentally retry map links from original descriptors at a selected reserved stereo pose')
+    parser.add_argument('--stereo-two-view-refinement', action='store_true',
+                        help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
+    parser.add_argument('--stereo-two-view-solver', choices=['sparse_lsmr', 'dense_exact'],
+                        default='sparse_lsmr',
+                        help='Linear solver for the opt-in two-view training refinement')
+    parser.add_argument('--stereo-physical-match-pool', action='store_true',
+                        help='Use strict physical stereo match groups for reserved fit and holdout pools')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+                        help='Opt in to factors from selected reserved stereo training observations')
+    parser.add_argument('--stereo-source-history-bundle', action='store_true',
+                        help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
+    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+                        help='Retain source-image constraints using the existing anchored camera model')
+    parser.add_argument('--stereo-mapping-observation-retention', action='store_true',
+                        help='Retain individually validated map observations after an independent stereo pose fails only spatial coverage')
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+                        help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
+    parser.add_argument('--bundle-landmark-policy', choices=['bounded_fixed', 'joint_tracks'],
+                        default='bounded_fixed',
+                        help='Experimental joint tracks optimize capped-out landmark XYZ using their existing image observations')
+    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
+                        help='Experimental finite gauge convention for certified two-bridge stereo graphs')
+    parser.add_argument('--stereo-bundle-holdout-guard', action='store_true',
+                        help='Experimentally validate original stereo bundle corrections on reserved image evidence')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path, help='Optional detailed stage timings; official timing replays should omit this')
+    parser.add_argument('--bundle-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for selected bundle adjustment snapshots')
+    parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
+                        help='Frame IDs to capture when bundle adjustment runs')
+    parser.add_argument('--tracking-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for bounded tracking evidence traces')
+    parser.add_argument('--tracking-diagnostics-frames', type=int, nargs='+',
+                        help='Distinct nonnegative frame IDs to trace (maximum seven)')
     parser.add_argument('--opencv-threads', type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -123,12 +192,81 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if not 0 <= args.seed < 2**31:
+        parser.error('--seed must be between 0 and 2147483647')
+    try:
+        args.features = validate_feature_budget(args.features)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.stereo_verified_reference_retry and not args.stereo:
+        parser.error('--stereo-verified-reference-retry requires --stereo')
     if not args.stereo and args.stereo_depth_policy != 'supported':
-        parser.error('--stereo-depth-policy verified_fallback requires --stereo')
+        parser.error('--stereo-depth-policy verification requires --stereo')
+    if not args.stereo and args.stereo_map_depth_policy != 'inherit':
+        parser.error('--stereo-map-depth-policy verified requires --stereo')
+    if args.stereo_map_frontend_seed_fallback and not (
+            args.stereo and args.stereo_map_depth_policy == 'verified'):
+        parser.error('--stereo-map-frontend-seed-fallback requires --stereo --stereo-map-depth-policy verified')
+    if args.stereo_bundle_holdout_guard and (
+            not args.stereo or not args.stereo_pose_arbitration or args.disable_bundle
+            or args.stereo_owned_image_bundle or args.stereo_source_history_bundle
+            or args.stereo_retained_source_observations or args.stereo_bundle_gauge_mode != 'veto'):
+        parser.error('--stereo-bundle-holdout-guard requires original enabled stereo bundle adjustment and pose arbitration')
+    if args.bundle_landmark_policy == 'joint_tracks' and (
+            not args.stereo or args.disable_bundle or args.stereo_owned_image_bundle
+            or args.stereo_source_history_bundle or args.stereo_retained_source_observations
+            or args.stereo_bundle_gauge_mode != 'veto'):
+        parser.error('--bundle-landmark-policy joint_tracks requires original enabled stereo image bundle and veto gauge mode')
     if args.stereo_pose_arbitration and not args.stereo:
         parser.error('--stereo-pose-arbitration requires --stereo')
+    if args.stereo_descriptor_association_retry and not (
+            args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-descriptor-association-retry requires --stereo --stereo-pose-arbitration')
+    if args.stereo_two_view_refinement and not (
+            args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-two-view-refinement requires --stereo --stereo-pose-arbitration')
+    if args.stereo_two_view_solver != 'sparse_lsmr' and not args.stereo_two_view_refinement:
+        parser.error('--stereo-two-view-solver dense_exact requires --stereo-two-view-refinement')
+    if args.stereo_physical_match_pool and not (args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-physical-match-pool requires --stereo --stereo-pose-arbitration')
     if args.stereo_raw_reference_retry and not args.stereo:
         parser.error('--stereo-raw-reference-retry requires --stereo')
+    if args.stereo_owned_image_bundle and not (args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-owned-image-bundle requires --stereo --stereo-pose-arbitration')
+    if args.stereo_source_history_bundle and not args.stereo_owned_image_bundle:
+        parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
+    if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
+        parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
+    if args.stereo_mapping_observation_retention and not (
+            args.stereo and (args.stereo_pose_arbitration or args.stereo_raw_reference_retry)):
+        parser.error('--stereo-mapping-observation-retention requires --stereo and an independent stereo reference path')
+    if args.stereo_bundle_gauge_mode != 'veto' and not args.stereo:
+        parser.error('--stereo-bundle-gauge-mode canonical_two_bridge requires --stereo')
+    if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
+        parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
+    if args.bundle_diagnostics_frames is not None:
+        if any(frame < 0 for frame in args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(args.bundle_diagnostics_frames)) != len(args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must not contain duplicates')
+        output_dir = args.output.resolve()
+        diagnostic_dir = args.bundle_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(output_dir):
+            parser.error('--bundle-diagnostics-dir must be inside the run output directory')
+    if (args.tracking_diagnostics_dir is None) != (args.tracking_diagnostics_frames is None):
+        parser.error('--tracking-diagnostics-dir and --tracking-diagnostics-frames must be supplied together')
+    if args.tracking_diagnostics_frames is not None:
+        frames = args.tracking_diagnostics_frames
+        if any(frame < 0 for frame in frames):
+            parser.error('--tracking-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(frames)) != len(frames):
+            parser.error('--tracking-diagnostics-frames must not contain duplicates')
+        if len(frames) > 7:
+            parser.error('--tracking-diagnostics-frames supports a max 7 selected frames')
+        output_dir = args.output.resolve()
+        diagnostic_dir = args.tracking_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(output_dir):
+            parser.error('--tracking-diagnostics-dir must be inside the run output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -141,9 +279,11 @@ def main():
     if args.max_frames is not None and args.max_frames < 2:
         parser.error("--max-frames must be at least 2")
     if args.remote and not re.fullmatch(r"(0[0-9]|1[0-9]|2[01])", args.sequence):
-        parser.error("KITTI sequence must be 00–21")
+        parser.error("KITTI sequence must be 00â€“21")
     if args.remote and args.dataset != "kitti":
         parser.error("--remote supports KITTI only")
+    if args.dataset == 'euroc' and not args.stereo:
+        parser.error('EuRoC evaluation currently requires calibrated stereo input')
     if not args.remote and args.data_root is None:
         parser.error("--data-root is required for local input")
     resources = ExitStack()
@@ -153,9 +293,11 @@ def main():
         raise OSError(
             "Insufficient space to start: free space must cover the export reserve"
         )
-    cv.setRNGSeed(0)
+    cv.setRNGSeed(args.seed)
+    np.random.seed(args.seed)
     times = None
-    if args.dataset == "kitti":
+    euroc_manifest = None
+    if args.dataset in ("kitti", "euroc"):
         sources = None
         if args.remote:
             from download_kitti_sequence import RangeFile, URL
@@ -198,9 +340,13 @@ def main():
                 for i in range(min(2, count)):
                     cv.imwrite(str(folder / f"{i:06d}.png"), source[i])
         else:
-            seq = validate_sequence(
-                args.data_root, args.sequence, args.stereo, args.max_frames
-            )
+            if args.dataset == 'euroc':
+                from euroc import load_prepared
+                seq, euroc_manifest = load_prepared(args.data_root,args.sequence,args.max_frames)
+            else:
+                seq = validate_sequence(
+                    args.data_root, args.sequence, args.stereo, args.max_frames
+                )
         if args.stereo:
             vo = StereoVisualOdometry(
                 str(seq / "image_"),
@@ -257,10 +403,27 @@ def main():
     camera = StereoCamera(vo.stereo, vo.Q, vo.baseline) if args.stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
-    slam = SharedSlam(matrix, stereo=camera, config=MappingConfig(bundle_enabled=not args.disable_bundle,
-                     loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
-                     stereo_pose_arbitration=args.stereo_pose_arbitration,
-                     stereo_raw_reference_retry=args.stereo_raw_reference_retry), performance=performance)
+    bundle_diagnostic_writer = None
+    if args.bundle_diagnostics_dir is not None:
+        from bundle_diagnostics import BundleDiagnosticsWriter
+        bundle_diagnostic_writer = BundleDiagnosticsWriter(
+            args.bundle_diagnostics_dir,
+            frames=tuple(args.bundle_diagnostics_frames),
+        )
+    tracking_diagnostics_writer = None
+    if args.tracking_diagnostics_dir is not None:
+        from tracking_diagnostics import TrackingDiagnosticsWriter
+        tracking_diagnostics_writer = TrackingDiagnosticsWriter(
+            args.tracking_diagnostics_dir,
+            frames=tuple(args.tracking_diagnostics_frames),
+        )
+    tracking_writer_kwargs = (
+        {"tracking_diagnostics_writer": tracking_diagnostics_writer}
+        if tracking_diagnostics_writer is not None else {}
+    )
+    slam = SharedSlam(matrix, stereo=camera, config=_mapping_config_from_args(args), performance=performance,
+                     bundle_diagnostic_writer=bundle_diagnostic_writer,
+                     **tracking_writer_kwargs)
     source_snapshot = {
         p.name: p.read_bytes()
         for p in (Path(__file__).resolve().parents[1] / "src").glob("*.py")
@@ -295,6 +458,7 @@ def main():
     interruption = None
     args.output.mkdir(parents=True, exist_ok=True)
     last_image = None
+    online_poses = []
     try:
         for i in range(len(paths)):
             if budget.remaining <= max(2, min(30, (args.max_wall_seconds or 0) * .1)):
@@ -320,9 +484,10 @@ def main():
             except (OSError, ValueError) as error:
                 interruption = {"reason": "interrupted_input_error", "next_frame": i, "error_type": type(error).__name__, "input_name": Path(paths[i]).name}
                 break
-            _, info = slam.process(
+            emitted_pose, info = slam.process(
                 i, left_image, right_image
             )
+            online_poses.append(np.array(emitted_pose,dtype=float,copy=True))
             last_image = left_image
             if observer:
                 observer.publish(slam, i, left_image, info)
@@ -341,9 +506,37 @@ def main():
     if observer and slam.map.poses:
         observer.publish(slam, len(slam.map.poses) - 1, left_image, info, force=True)
     elapsed = time.perf_counter() - started
+    if online_poses:
+        from kitti import save_poses_txt
+        save_poses_txt(args.output/'online-poses.txt',online_poses)
     processed_frames = len(slam.map.poses)
     paths = paths[:processed_frames]
-    export_run(slam, args.output, paths, image_loader=loader, include_images=not bool(interruption))
+    if bundle_diagnostic_writer is not None:
+        for frame in bundle_diagnostic_writer.frames:
+            if frame >= processed_frames:
+                slam._skip_bundle_diagnostic(frame, 'frame_not_processed')
+        bundle_diagnostic_manifest = slam.bundle_diagnostics_manifest()
+        bundle_diagnostic_errors = list(slam.bundle_diagnostic_errors)
+    else:
+        bundle_diagnostic_manifest = {"enabled": False, "selected_frames": []}
+        bundle_diagnostic_errors = []
+    if tracking_diagnostics_writer is not None:
+        for frame in tracking_diagnostics_writer.frames:
+            if frame >= processed_frames:
+                tracking_diagnostics_writer.mark_skipped(frame, 'frame_not_processed')
+        tracking_diagnostic_manifest = slam.tracking_diagnostics_manifest()
+        tracking_diagnostic_errors = list(slam.tracking_diagnostic_errors)
+    else:
+        tracking_diagnostic_manifest = {"enabled": False, "selected_frames": []}
+        tracking_diagnostic_errors = []
+    run_payload = export_run(slam, args.output, paths, image_loader=loader,
+                             include_images=not bool(interruption))
+    if bundle_diagnostic_writer is not None or tracking_diagnostics_writer is not None:
+        run_payload['bundle_diagnostics'] = bundle_diagnostic_manifest
+        run_payload['bundle_diagnostic_errors'] = list(slam.bundle_diagnostic_errors)
+        run_payload['tracking_diagnostics'] = tracking_diagnostic_manifest
+        run_payload['tracking_diagnostic_errors'] = tracking_diagnostic_errors
+        write_json(args.output / 'run.json', run_payload)
     source_folder = args.output / "source"
     source_folder.mkdir(exist_ok=True)
     for name, data in source_snapshot.items():
@@ -371,6 +564,15 @@ def main():
         "loops": len(slam.loop_worker.verified),
         "loop_events": slam.loop_worker.events,
         "configuration": slam.config.__dict__,
+        "features": getattr(slam.config, "features", 1500),
+        "bundle_solver_accuracy": getattr(slam.config, "bundle_solver_accuracy", "default"),
+        "stereo_owned_image_bundle": bool(getattr(slam.config, "stereo_owned_image_bundle", False)),
+        "stereo_source_history_bundle": bool(getattr(slam.config, "stereo_source_history_bundle", False)),
+        "stereo_retained_source_observations": bool(getattr(slam.config, "stereo_retained_source_observations", False)),
+        "stereo_mapping_observation_retention": bool(getattr(slam.config, "stereo_mapping_observation_retention", False)),
+        "stereo_descriptor_association_retry": bool(getattr(
+            slam.config, "stereo_descriptor_association_retry", False)),
+        "stereo_physical_match_pool": bool(getattr(slam.config, "stereo_physical_match_pool", False)),
         "coverage": "partial" if args.max_frames or storage_interruption or interruption else "full",
         "ground_truth_used_for_estimation": False,
     }
@@ -379,6 +581,7 @@ def main():
     report["stage_timings"] = slam.profile.report()
     report["stage_timing_semantics"] = "Inclusive timings; nested stages overlap"
     report['performance_configuration'] = performance.__dict__
+    report['random_seed'] = args.seed
     report['matching_backend'] = slam.matcher.metadata()
     report['opencv_threads'] = cv.getNumThreads()
     if args.profile:
@@ -389,6 +592,10 @@ def main():
     report["diagnostic_overrides"] = {"disable_bundle": args.disable_bundle, "loop_mode": args.loop_mode if args.loop_mode != "live" else None}
     report["wall_budget_seconds"] = args.max_wall_seconds
     report["feature_cache"] = cache.metadata() if cache else {"enabled": False}
+    report['bundle_diagnostics'] = bundle_diagnostic_manifest
+    report['bundle_diagnostic_errors'] = bundle_diagnostic_errors
+    report['tracking_diagnostics'] = tracking_diagnostic_manifest
+    report['tracking_diagnostic_errors'] = tracking_diagnostic_errors
     report["interruption"] = interruption
     (args.output / "evaluator.py").write_bytes(evaluator_source)
     report["telemetry"] = observer.metadata() if observer else {"enabled": False}
@@ -435,18 +642,34 @@ def main():
         r["applied"] for r in slam.bundle_reports
     )
     # Evaluation owns reference I/O. Estimator and reconstruction only received images/calibration.
-    if args.poses_root is not None:
+    report['trajectory_exports'] = {'online':'online-poses.txt','corrected':'poses.txt'}
+    report['online_trajectory_definition'] = 'Pose emitted after each process call, before later-frame or shutdown corrections; held frames included'
+    if euroc_manifest is not None:
+        report['euroc_preparation'] = {
+            'manifest_sha256':hashlib.sha256((seq/'euroc.json').read_bytes()).hexdigest(),
+            'coordinate_frame':'rectified_left_camera','imu_observations_used':False,
+            'timestamps_ns':euroc_manifest['timestamps_ns'][:processed_frames]}
+    if args.poses_root is not None and args.dataset == 'euroc':
+        from euroc_metrics import reference_camera_poses, evaluate_euroc
+        timestamps = np.asarray(euroc_manifest['timestamps_ns'][:processed_frames],np.int64)
+        indices, truth = reference_camera_poses(args.poses_root,timestamps,
+            np.asarray(euroc_manifest['body_from_rectified_left'],float))
+        report['metrics'] = evaluate_euroc(truth,slam.map.poses,timestamps,indices,slam.map.statuses)
+        report['online_metrics'] = evaluate_euroc(truth,online_poses,timestamps,indices,slam.map.statuses)
+    elif args.poses_root is not None:
         if args.dataset == "kitti":
             truth = load_poses_txt(args.poses_root / f"{args.sequence}.txt")[
                 : len(paths)
             ]
             estimates = slam.map.poses
+            online_estimates = online_poses
         else:
             gt = np.loadtxt(args.poses_root / "groundtruth.txt")
             truth = []
             estimates = []
+            online_estimates = []
             used = set()
-            for timestamp, p in zip(times, slam.map.poses):
+            for frame,(timestamp, p) in enumerate(zip(times, slam.map.poses)):
                 index = int(np.argmin(abs(gt[:, 0] - timestamp)))
                 if abs(gt[index, 0] - timestamp) > 0.02 or index in used:
                     continue
@@ -456,27 +679,22 @@ def main():
                 g[:3, 3] = gt[index, 1:4]
                 truth.append(g)
                 estimates.append(p)
+                online_estimates.append(online_poses[frame])
         if len(truth) >= 2:
-            try:
-                metrics = evaluate_trajectory(
-                    truth, estimates, "se3" if args.stereo else "sim3"
-                )
-            except ValueError as error:
-                report["evaluation_error"] = str(error)
-                metrics = {}
-            if not args.stereo:
-                for key in [
-                    "raw_ate_rmse_m",
-                    "translation_percent",
-                    "rotation_deg_per_m",
-                ]:
-                    metrics[key] = None
-                metrics["segments"] = []
-                metrics["segment_count"] = 0
-            report["metrics"] = {k: v for k, v in metrics.items() if k != "segments"}
-    (args.output / "evaluation.json").write_text(
-        json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
-    )
+            for label,trajectory in (('metrics',estimates),('online_metrics',online_estimates)):
+                try:
+                    metrics = evaluate_trajectory(
+                        truth, trajectory, "se3" if args.stereo else "sim3"
+                    )
+                except ValueError as error:
+                    report['evaluation_error' if label == 'metrics' else 'online_evaluation_error'] = str(error)
+                    metrics = {}
+                if not args.stereo:
+                    for key in ["raw_ate_rmse_m", "translation_percent", "rotation_deg_per_m"]:
+                        metrics[key] = None
+                    metrics["segments"] = []
+                    metrics["segment_count"] = 0
+                report[label] = {k: v for k, v in metrics.items() if k != "segments"}
     report["total_wall_seconds"] = time.perf_counter() - invocation_started
     write_json(args.output / "evaluation.json", report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("loop_events", "source_sha256")}, indent=2), flush=True)

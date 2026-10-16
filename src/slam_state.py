@@ -45,6 +45,10 @@ class MapState:
         self.relative_poses = []
         self.statuses = []
         self.stereo_motion = {}
+        # Actual non-keyframe image observations retained for a later local BA.
+        # This registry is separate from Landmark.observations, whose keys are
+        # exclusively persistent keyframe IDs.
+        self.retained_source_observations = {}
         self.revision = 0
         self.geometry_revision = 0
         self.next_landmark = 0
@@ -87,7 +91,7 @@ class MapState:
                 else pose.copy()
             )
 
-    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True, landmark_updates=None):
+    def apply_corrections(self, expected_revision, corrected, scales=None, *, propagate_landmarks=True, landmark_updates=None, frame_updates=None, retained_source_updates=None, retained_source_limits=None):
         """Commit a complete correction atomically; reject stale snapshots and moved origin."""
         with self.lock:
             if self.revision != expected_revision or set(corrected) != set(
@@ -108,6 +112,28 @@ class MapState:
                 or abs(scales[0] - 1) > 1e-8
             ):
                 raise ValueError("Origin must remain fixed")
+            # Joint local solves may optimize an accepted intermediate camera.
+            # Validate all overrides before changing any landmark or pose. A
+            # keyframe has one authoritative pose in `corrected`, never two.
+            intermediate = {}
+            keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
+            if frame_updates is not None:
+                if not (len(self.poses) == len(self.statuses) == len(self.pose_anchors)
+                        == len(self.relative_poses)):
+                    raise ValueError('Inconsistent intermediate frame state')
+                for frame, pose in frame_updates.items():
+                    if (not isinstance(frame, (int, np.integer))
+                            or isinstance(frame, (bool, np.bool_))
+                            or not 0 < frame < min(len(self.poses), len(self.statuses), len(self.pose_anchors))
+                            or frame in keyframe_frames
+                            or self.statuses[frame] not in ('tracking', 'relocalized', 'accepted')
+                            or self.pose_anchors[frame] not in corrected):
+                        raise ValueError("Invalid intermediate frame correction")
+                    raw = np.asarray(pose)
+                    if np.iscomplexobj(raw):
+                        raise ValueError("Intermediate frame correction must be real")
+                    validate_pose(raw)
+                    intermediate[int(frame)] = np.asarray(raw, float).copy()
             corrections = {}
             for ident, keyframe in self.keyframes.items():
                 old = keyframe.pose
@@ -129,14 +155,125 @@ class MapState:
                 if not np.isfinite(positions[ident]).all():
                     raise ValueError("Nonfinite corrected landmark")
             poses = []
-            for pose, anchor in zip(self.poses, self.pose_anchors):
+            for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
                 updated = pose.copy()
                 if anchor is not None:
                     rotation, scale, translation = corrections[anchor]
                     updated[:3, :3] = rotation @ pose[:3, :3]
                     updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                if frame in intermediate:
+                    updated = intermediate[frame].copy()
                 validate_pose(updated)
                 poses.append(updated)
+            retained_registry = None
+            if retained_source_updates is not None:
+                if not isinstance(retained_source_updates, dict):
+                    raise ValueError("Retained source observations must be a complete mapping")
+                if (not isinstance(retained_source_limits, dict)
+                        or set(retained_source_limits) != {"max_frames", "max_rows_per_frame"}):
+                    raise ValueError("Retained source observation limits are required")
+                max_retained_frames = retained_source_limits.get("max_frames")
+                max_retained_rows = retained_source_limits.get("max_rows_per_frame")
+                if any(not isinstance(value, (int, np.integer))
+                       or isinstance(value, (bool, np.bool_)) or int(value) <= 0
+                       for value in (max_retained_frames, max_retained_rows)):
+                    raise ValueError("Invalid retained source observation limits")
+                max_retained_frames = int(max_retained_frames)
+                max_retained_rows = int(max_retained_rows)
+                if len(retained_source_updates) > max_retained_frames:
+                    raise ValueError("Retained source frame limit exceeded")
+                retained_registry = {}
+                physical_owners = set()
+                for raw_frame, raw_record in retained_source_updates.items():
+                    if (not isinstance(raw_frame, (int, np.integer))
+                            or isinstance(raw_frame, (bool, np.bool_))):
+                        raise ValueError("Invalid retained source frame ID")
+                    frame = int(raw_frame)
+                    if (not isinstance(raw_record, dict)
+                            or not isinstance(raw_record.get("frame_id"), (int, np.integer))
+                            or isinstance(raw_record.get("frame_id"), (bool, np.bool_))
+                            or int(raw_record.get("frame_id")) != frame
+                            or not isinstance(raw_record.get("calibration_identity"), str)
+                            or not raw_record.get("calibration_identity")
+                            or raw_record.get("measurement_role") != "tracking_fit_consumed"):
+                        raise ValueError("Invalid retained source record metadata")
+                    for revision_field, maximum in (
+                        ("accepted_revision", self.revision + 1),
+                        ("accepted_geometry_revision", self.geometry_revision + 1),
+                    ):
+                        value = raw_record.get(revision_field)
+                        if (not isinstance(value, (int, np.integer))
+                                or isinstance(value, (bool, np.bool_))
+                                or value < 0 or value > maximum):
+                            raise ValueError("Invalid retained source record epoch")
+                    if (frame < 0 or frame >= len(poses) or frame >= len(self.statuses)
+                            or frame >= len(self.pose_anchors)
+                            or self.statuses[frame] not in ("tracking", "relocalized", "accepted")):
+                        raise ValueError("Retained source frame is unavailable")
+                    anchor = raw_record.get("anchor_keyframe_id")
+                    if (not isinstance(anchor, (int, np.integer))
+                            or isinstance(anchor, (bool, np.bool_))
+                            or int(anchor) not in corrected
+                            or self.pose_anchors[frame] != int(anchor)):
+                        raise ValueError("Invalid retained source anchor")
+                    raw_relative = np.asarray(raw_record.get("relative_pose"))
+                    if (np.iscomplexobj(raw_relative)
+                            or not np.issubdtype(raw_relative.dtype, np.number)):
+                        raise ValueError("Retained source relative pose must be real numeric data")
+                    try:
+                        validate_pose(raw_relative)
+                    except (TypeError, ValueError):
+                        raise ValueError("Invalid retained source relative pose")
+                    relative = np.asarray(raw_relative, dtype=float).copy()
+                    candidate_source = corrected[int(anchor)] @ relative
+                    if not np.allclose(candidate_source, poses[frame], rtol=0., atol=1e-7):
+                        raise ValueError("Retained source pose disagrees with propagated frame")
+                    rows = raw_record.get("rows")
+                    if (not isinstance(rows, (list, tuple))
+                            or len(rows) > max_retained_rows):
+                        raise ValueError("Invalid retained source rows")
+                    copied_rows = []
+                    seen_landmarks = set()
+                    for raw_row in rows:
+                        if not isinstance(raw_row, dict):
+                            raise ValueError("Invalid retained source row")
+                        ident = raw_row.get("landmark_id")
+                        if (not isinstance(ident, (int, np.integer))
+                                or isinstance(ident, (bool, np.bool_))):
+                            raise ValueError("Invalid retained source landmark ID")
+                        ident = int(ident)
+                        if ident not in self.landmarks or ident in seen_landmarks:
+                            raise ValueError("Unknown or duplicate retained source landmark")
+                        raw_pixel = np.asarray(raw_row.get("pixel_float32"))
+                        if (np.iscomplexobj(raw_pixel)
+                                or not np.issubdtype(raw_pixel.dtype, np.number)
+                                or raw_pixel.shape != (2,)
+                                or not np.isfinite(raw_pixel).all()):
+                            raise ValueError("Invalid retained source pixel")
+                        pixel = np.asarray(raw_pixel, dtype=np.float32)
+                        if not np.isfinite(pixel).all():
+                            raise ValueError("Invalid retained source pixel")
+                        pixel_key = tuple(0.0 if float(x) == 0.0 else float(x)
+                                          for x in pixel)
+                        physical_key = (frame, pixel_key)
+                        if physical_key in physical_owners:
+                            raise ValueError("Duplicate retained source physical pixel")
+                        physical_owners.add(physical_key)
+                        seen_landmarks.add(ident)
+                        copied_rows.append({"landmark_id": ident,
+                                            "pixel_float32": pixel.copy()})
+                    retained_registry[frame] = {
+                        "frame_id": frame,
+                        "calibration_identity": raw_record["calibration_identity"],
+                        "measurement_role": "tracking_fit_consumed",
+                        "accepted_revision": int(raw_record["accepted_revision"]),
+                        "accepted_geometry_revision": int(
+                            raw_record["accepted_geometry_revision"]
+                        ),
+                        "anchor_keyframe_id": int(anchor),
+                        "relative_pose": relative,
+                        "rows": copied_rows,
+                    }
             for ident, position in positions.items():
                 self.landmarks[ident].position = position
             for ident, pose in corrected.items():
@@ -148,6 +285,8 @@ class MapState:
                 np.linalg.inv(self.keyframes[a].pose) @ p if a is not None else p.copy()
                 for p, a in zip(poses, self.pose_anchors)
             ]
+            if retained_registry is not None:
+                self.retained_source_observations = retained_registry
             self.revision += 1
             self.geometry_revision += 1
             return True

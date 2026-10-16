@@ -1,0 +1,7 @@
+# Keep the exact source bytes identified by the scientific validation manifests.
+# Python accepts these recorded line endings on both supported CI platforms.
+src/*.py -text
+scripts/*.py -text
+tests/fixtures/owned_observation_control.py -text
+docs/benchmark/original-python-verified.json -text
+docs/benchmark/owned-observation-value-evidence/** -text

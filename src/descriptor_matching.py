@@ -198,3 +198,24 @@ class DescriptorMatcher:
     def report(self):
         """Alias used by callers that collect component reports uniformly."""
         return self.metadata()
+
+
+def match_vo_forward(first, second, ratio=0.7):
+    """Preserved VO forward FLANN ratio matches; callers deduplicate geometry.
+
+    This supplies appearance proposals only. Physical conflicts, metric pose,
+    reverse geometry and held-out acceptance remain the caller's responsibility.
+    """
+    if first is None or second is None or len(first) == 0 or len(second) < 2:
+        return np.empty((0, 2), int)
+    first, second = np.asarray(first), np.asarray(second)
+    if (first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]
+            or first.shape[1] != 128 or not np.isfinite(first).all()
+            or not np.isfinite(second).all()):
+        raise ValueError("VO reference matching requires finite SIFT descriptor rows")
+    matcher = cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
+    matches = matcher.knnMatch(np.asarray(first, np.float32),
+                               np.asarray(second, np.float32), k=2)
+    return np.asarray([(row[0].queryIdx, row[0].trainIdx) for row in matches
+                       if len(row) == 2 and row[0].distance < ratio * row[1].distance],
+                      dtype=int).reshape(-1, 2)

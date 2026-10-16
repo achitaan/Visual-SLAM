@@ -76,7 +76,8 @@ def test_low_space_exports_only_processed_frames(tmp_path, monkeypatch):
         def process(self, index, image, right):
             self.map.poses.append(np.eye(4))
             self.map.statuses.append("tracking")
-            return None, {"tracking_ok": True, "state": "tracking"}
+            # The evaluator now also exports the actual emitted pose ledger.
+            return np.eye(4), {"tracking_ok": True, "state": "tracking"}
 
         def close(self, finish=True):
             self.closed = True

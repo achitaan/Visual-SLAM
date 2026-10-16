@@ -1,0 +1,434 @@
+{
+  "schema_version": 1,
+  "engine": "Original repository Python SharedSlam; OpenCV feature/stereo/PnP frontend and own mapping/SciPy bundle adjustment. No external SLAM engine.",
+  "status": "Historical completed verified measurements; restoration/integration validation in progress. No new benchmark gain claimed.",
+  "configuration": {
+    "features": 1500,
+    "min_inliers": 15,
+    "keyframe_interval": 10,
+    "max_landmarks": 2000,
+    "bundle_window": 5,
+    "bundle_enabled": true,
+    "loop_mode": "off",
+    "retrieval_candidates": 8,
+    "stereo_feature_contrast_threshold": 0.02,
+    "stereo_depth_policy": "verified_fallback",
+    "stereo_map_depth_policy": "verified",
+    "stereo_map_frontend_seed_fallback": false,
+    "stereo_pose_arbitration": true,
+    "stereo_descriptor_association_retry": true,
+    "stereo_raw_reference_retry": true,
+    "stereo_owned_image_bundle": false,
+    "stereo_source_history_bundle": false,
+    "stereo_retained_source_observations": false,
+    "stereo_mapping_observation_retention": false,
+    "stereo_two_view_refinement": false,
+    "stereo_two_view_solver": "sparse_lsmr",
+    "stereo_physical_match_pool": false,
+    "bundle_solver_accuracy": "precise",
+    "bundle_landmark_policy": "bounded_fixed",
+    "stereo_bundle_gauge_mode": "veto",
+    "stereo_bundle_holdout_guard": false,
+    "stereo_verified_reference_retry": true
+  },
+  "performance_configuration": {
+    "retrieval": "current",
+    "matching_backend": "cuda",
+    "cpu_optimizations": true,
+    "profile": false
+  },
+  "matching_backend": {
+    "requested": "cuda",
+    "cuda_available": true,
+    "fallback_reason": null,
+    "python_version": "3.12.14",
+    "pytorch_version": "2.7.1+cu126",
+    "cuda_runtime_version": "12.6",
+    "cuda_device_index": 0,
+    "cuda_device_name": "NVIDIA GeForce GTX 1660 SUPER",
+    "cuda_device_capability": [
+      7,
+      5
+    ],
+    "cuda_calls": 767,
+    "cpu_calls": 0,
+    "ambiguous_rows_on_cpu": 36567,
+    "auto_decisions": {},
+    "peak_cuda_allocated_mb": 23.88427734375,
+    "peak_cuda_reserved_mb": 44.0
+  },
+  "verified_source_sha256": {
+    "__init__.py": "408f77bfe9253dd4f17ec413680c67fdbb0009c40b3c874acb2f9b4ac0965478",
+    "bundle_diagnostics.py": "d83cda819356ad57b3e4db6d03425e8648a5b0f3b7afac66d692b44ce392329b",
+    "bundle_gauge.py": "1baee03cafaa68b3c41a8e773467e79a83d4586547d0092d286e31d1b8ed6885",
+    "bundle_solver.py": "6a979caf2c72b27a5ace449c915d977c9643998b6becbd292a8581422ff63738",
+    "CameraCalib.py": "708a3f97895f7ff9371866d0fa217e717e7b049695229941202a7b5d5c07dd70",
+    "config.py": "0c363b09e433fb361c575bd70dc7a71e53cf06b3ed34bdc85f431778ae01f2e3",
+    "descriptor_matching.py": "f6c7fa93d91c43f11bad86c0a414e01d0e0e17dd44966300fcc3edc1963e12ec",
+    "euroc.py": "aa63bfa8ab58be1fe779172e9f518141789030360cb56641310e802bfb2d04f9",
+    "euroc_metrics.py": "81207aaeb00531d13b5a92be78c72db1cd1d8f34147fce0dfc4b0a4c298448c3",
+    "eval_kitti.py": "c1a1f9cd191e23823b29a84f8986520d128d63aa1455093cf20f7da93edb1b24",
+    "eval_pose_graph.py": "dbc7fee233a34e4ac26b5444b6dc33b961e454350806a7b1998fc5cf8729e10d",
+    "feature_cache.py": "0a31107a4c6192c2a352637cd9631da2f51fcdd708d1b746e3859f4344ec10ae",
+    "image_sequence.py": "e22fc1df133a9582679f852f098180fb9db7817593ff891fc39765e413504527",
+    "keyframe_index.py": "4af8e0a254f8a36f0d32a2f8d2a4272fd3390526abbf5c44b1c0a504055adf63",
+    "keyframe_retrieval.py": "b307ac24d2a6a429726a5913eba94321f656008f4a5af55673f12867c80554e8",
+    "kitti.py": "7079d1d68d11820e2404008e4787e724149ee1e4b80c20f4ef781810296a6917",
+    "live_loops.py": "34eee7d85cfd1e68db75592a7575989e6e1d5f58551e52fd1cc7d0dcde32e194",
+    "local_bundle.py": "5680bb3cb4f7d83d44dbecfe4fd88f6322178481744fea82e2ed2bbe6897d9a5",
+    "loop_geometry.py": "a35d29df709dc401c54ddb236c0042bbb96efec55b77c909a0ea1972fdceceb6",
+    "LoopClosure.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "main.py": "21e49c095116a781e0bc7c6af3311047663fe150b12452fa1443709914c87c9d",
+    "map.py": "b18e602f50958dd18b05d2ad7d1957010a691490fe16bb30b537bcafbe683b5a",
+    "mapping_geometry.py": "7206f1474cc995d04990ca7a62f7c6f21d4016db9d8a0944d7e0b6d750ed5413",
+    "metrics.py": "bbe036ecaf6f7639156c4095e3e8a256374a3c9c555b3207c062bcb57b02f71b",
+    "performance.py": "490c9c58e9c16d6c499436b8d60c8de4ad9f0f50968f7bf8664e023e1c53284a",
+    "pose_graph.py": "868e106c61dbcc3d46b891a49475871abc485204a172363b6df3eb2726871b8c",
+    "pose_observability.py": "ed3f1240c6a05b33d57d95e1ff71034796bea5945b9a64cc21d2f187b566e052",
+    "reconstruction.py": "93926241c60f2c78fcc638fe2f01dc836e1ac7c73bc3f1b092827ff841ea53f3",
+    "shared_slam.py": "33681801b7075605ffc0e28c1e2fcf7e1237d589965aa86b0c91d1b1b7f97048",
+    "SLAM.py": "7ff290fa4d6317ab1c29658a4ac0cc313fa4a6973e06bb956d95645ef35e5bb6",
+    "slam_backend.py": "f438ba11ec7f081d4f33ea0040169116f4d2c10df97e0415c1694c72e60f08a0",
+    "slam_state.py": "3f46300f48b6a8e590192a799657fad3ac2d2ebe84e433b4397264fb8d1ac471",
+    "stage_profile.py": "36f4afc274396ed3d9fc1985fb15e0d9ac8e6fa3951620e82ecfc70668e8b6e2",
+    "stereo_bundle_validation.py": "4cf7ccc12e6c39709beb13f280e2edfca2b5e5e099ccb7b73136234f7bdffb00",
+    "stereo_depth.py": "ea91b05a94a22d37a3f61fe269a6e274bf9d1774d2393cefee9d4fb2fcf64f92",
+    "stereo_pose_arbitration.py": "ac88c2d1acadb3219a08e906a0a72f4db40d2448ccd3eab578eb0f1fdc347a75",
+    "stereo_training_factors.py": "a84c5cfaad2600b0e39d283f66742544a87475b4388e6795af8e0dd11bd3ca98",
+    "stereo_two_view_bundle.py": "839d1569b129eade5da4d403c452f6715dcee09e848ef438db00fb2e6176924c",
+    "StereoVisualOdometry.py": "60fcf475d952af8a6d2e575ac916c9f8665feef5d9d4789e71f0538ab0387988",
+    "telemetry.py": "438a4c8d14f293b3e9591c08bb1e61477b30a72ec3c49d660fa7f2f17d255328",
+    "tracking_diagnostics.py": "ef7063efe1a2211d3c544e2fe012d5c4795439ef8d4df7465842dbc647cdfeea",
+    "VisualOdometry.py": "bfb9b2b9b85569b521589d8c8a7e42b17247454effb4728fa41e8fbe6d599739"
+  },
+  "integration_scope": "Estimator modules restored byte-for-byte. main.py only adds CLI passthrough for confirmed recovery flags and loop policy; app integration checks remain required.",
+  "short01_seed0": {
+    "frames": 350,
+    "metrics": {
+      "frames": 350,
+      "ate_alignment": "se3",
+      "alignment_scale": 1.0,
+      "ate_rmse_m": 7.226751736106373,
+      "raw_ate_rmse_m": 23.139133569194378,
+      "segment_count": 140,
+      "translation_percent": 4.368836721600409,
+      "rotation_deg_per_m": 0.009795564408481295
+    },
+    "lost_frames": 0,
+    "elapsed_s": 360.1588170999894,
+    "total_wall_seconds": 366.2632550999988
+  },
+  "full_seed0_cases": [
+    {
+      "sequence": "00",
+      "seed": 0,
+      "frames": 4541,
+      "coverage": "full",
+      "candidate_case": "fixed00_slam_seed0",
+      "VO_case": "fixed00_vo_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 4541,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.422161453219388,
+          "raw_ate_rmse_m": 21.113370403320946,
+          "segment_count": 3283,
+          "translation_percent": 1.2914287026810187,
+          "rotation_deg_per_m": 0.004468540601897117
+        },
+        "lost_frames": 0,
+        "elapsed_s": 8167.101812499983,
+        "total_wall_seconds": 8211.558664100012,
+        "peak_memory_mb": 1575.28515625
+      },
+      "VO": {
+        "metrics": {
+          "frames": 4541,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 20.609743125801053,
+          "raw_ate_rmse_m": 50.20013105840909,
+          "segment_count": 3283,
+          "translation_percent": 2.1473253528334677,
+          "rotation_deg_per_m": 0.00937810892963607
+        },
+        "lost_frames": 0,
+        "elapsed_s": 2092.1916020000353,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 256.65625
+      },
+      "candidate_evaluation_sha256": "00b2f70018545e99b22cb918214a1867bed5eb2800a9ee572168c84ad9ea0f4d",
+      "VO_evaluation_sha256": "d7bea39183e690fbb6bb268bad1071bdaf1dbb166b8c13b73fdab6ba9200c4de"
+    },
+    {
+      "sequence": "01",
+      "seed": 0,
+      "frames": 1101,
+      "coverage": "full",
+      "candidate_case": "bundle_operator_full_candidate_01_seed0",
+      "VO_case": "bundle_operator_full_vo_01_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 1101,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 71.97167904637233,
+          "raw_ate_rmse_m": 292.7543272774271,
+          "segment_count": 676,
+          "translation_percent": 7.814447346393622,
+          "rotation_deg_per_m": 0.012368590457945456
+        },
+        "lost_frames": 1,
+        "elapsed_s": 1838.5285764000146,
+        "total_wall_seconds": 1860.9365996000124,
+        "peak_memory_mb": 2037.7578125
+      },
+      "VO": {
+        "metrics": {
+          "frames": 1101,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 72.29280661192507,
+          "raw_ate_rmse_m": 170.98243840677026,
+          "segment_count": 676,
+          "translation_percent": 9.573847327352288,
+          "rotation_deg_per_m": 0.013374516828778767
+        },
+        "lost_frames": 23,
+        "elapsed_s": 432.35830449999776,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 242.04296875
+      },
+      "candidate_evaluation_sha256": "5943f504b0d71be74624e98f91f565accc7ba5925817dac7f716ee6aea33373f",
+      "VO_evaluation_sha256": "fced41e62b755f074113de44a697cc8b4420b76b312b5cd828c8d41e387f99f2"
+    },
+    {
+      "sequence": "03",
+      "seed": 0,
+      "frames": 801,
+      "coverage": "full",
+      "candidate_case": "fixed03_slam_seed0",
+      "VO_case": "fixed03_vo_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.6792708541655146,
+          "raw_ate_rmse_m": 2.924822786509996,
+          "segment_count": 184,
+          "translation_percent": 1.1145526344232979,
+          "rotation_deg_per_m": 0.00311964518517755
+        },
+        "lost_frames": 0,
+        "elapsed_s": 723.7819527999964,
+        "total_wall_seconds": 736.8302635999862,
+        "peak_memory_mb": 1126.34375
+      },
+      "VO": {
+        "metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 2.3271327269016315,
+          "raw_ate_rmse_m": 5.395227392053867,
+          "segment_count": 184,
+          "translation_percent": 1.70486136444341,
+          "rotation_deg_per_m": 0.007540841765527477
+        },
+        "lost_frames": 0,
+        "elapsed_s": 480.002161399927,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 243.4453125
+      },
+      "candidate_evaluation_sha256": "7637cc0100d71e5281346fd87a06b62729f4195da4f8cb75aede9dac9bb514dd",
+      "VO_evaluation_sha256": "b21afc4d8e2d9175cc5ea433f4d9a8942d1c73e7353b11c79b5413e5af56fc66"
+    },
+    {
+      "sequence": "04",
+      "seed": 0,
+      "frames": 271,
+      "coverage": "full",
+      "candidate_case": "bundle_operator_full_candidate_04_seed0",
+      "VO_case": "bundle_operator_full_vo_04_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 271,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.5358732626142878,
+          "raw_ate_rmse_m": 1.2936011632388047,
+          "segment_count": 43,
+          "translation_percent": 0.6337835865620793,
+          "rotation_deg_per_m": 0.0036224740849010203
+        },
+        "lost_frames": 0,
+        "elapsed_s": 218.73439900000812,
+        "total_wall_seconds": 222.66281889996026,
+        "peak_memory_mb": 1027.54296875
+      },
+      "VO": {
+        "metrics": {
+          "frames": 271,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.7631744593410004,
+          "raw_ate_rmse_m": 4.895579172678844,
+          "segment_count": 43,
+          "translation_percent": 1.6825951118731992,
+          "rotation_deg_per_m": 0.011001293389169107
+        },
+        "lost_frames": 0,
+        "elapsed_s": 134.6972108000191,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 235.3125
+      },
+      "candidate_evaluation_sha256": "db102c9a2cd3cc565914cb3b7ad117213679a2a4a30857ce02bd301c291520bf",
+      "VO_evaluation_sha256": "732a5d6ea6744572bf242c0446b0903ebbfbbe8188e9c092aea35a28b6a03d36"
+    },
+    {
+      "sequence": "07",
+      "seed": 0,
+      "frames": 1101,
+      "coverage": "full",
+      "candidate_case": "bundle_operator_full_candidate_07_seed0",
+      "VO_case": "bundle_operator_full_vo_07_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 1101,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 2.40284399759628,
+          "raw_ate_rmse_m": 5.974173786579355,
+          "segment_count": 317,
+          "translation_percent": 1.3797564997454703,
+          "rotation_deg_per_m": 0.00779882731554204
+        },
+        "lost_frames": 0,
+        "elapsed_s": 1116.1702340000193,
+        "total_wall_seconds": 1126.2293301000027,
+        "peak_memory_mb": 1048.203125
+      },
+      "VO": {
+        "metrics": {
+          "frames": 1101,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.9133939259294364,
+          "raw_ate_rmse_m": 8.070614385214514,
+          "segment_count": 317,
+          "translation_percent": 1.9764894870179426,
+          "rotation_deg_per_m": 0.01347465905812949
+        },
+        "lost_frames": 0,
+        "elapsed_s": 518.6335644999635,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 240.3203125
+      },
+      "candidate_evaluation_sha256": "532c6348e29f4ac248f02a58a552eb5af33fe0f6182d7b985963dc0e72011b2f",
+      "VO_evaluation_sha256": "6c830de304eb1344a0846dc7cbbc34481cb906c6c141215b776ef64943b7e561"
+    },
+    {
+      "sequence": "09",
+      "seed": 0,
+      "frames": 1591,
+      "coverage": "full",
+      "candidate_case": "fixed09_slam_seed0",
+      "VO_case": "fixed09_vo_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.95794122684149,
+          "raw_ate_rmse_m": 10.915196825628035,
+          "segment_count": 958,
+          "translation_percent": 1.1315687345326604,
+          "rotation_deg_per_m": 0.0028588631520400265
+        },
+        "lost_frames": 0,
+        "elapsed_s": 1817.2667034000042,
+        "total_wall_seconds": 1832.3080348000512,
+        "peak_memory_mb": 1265.86328125
+      },
+      "VO": {
+        "metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 5.133404472784762,
+          "raw_ate_rmse_m": 17.329685440189152,
+          "segment_count": 958,
+          "translation_percent": 1.7052226094853769,
+          "rotation_deg_per_m": 0.007053135879335132
+        },
+        "lost_frames": 0,
+        "elapsed_s": 794.5478172000148,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 244.73046875
+      },
+      "candidate_evaluation_sha256": "0efed517656fba39d5007e914a2bc9fc09e55d8a938c86ab1ed57cef3a910a6c",
+      "VO_evaluation_sha256": "65e593e3ec432b187a90ca16a681b1e771b721cba532979a4ce1a8b33ee30428"
+    },
+    {
+      "sequence": "10",
+      "seed": 0,
+      "frames": 1201,
+      "coverage": "full",
+      "candidate_case": "fixed10_slam_seed0",
+      "VO_case": "fixed10_vo_seed0",
+      "candidate": {
+        "metrics": {
+          "frames": 1201,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.601658187955988,
+          "raw_ate_rmse_m": 5.95814347666281,
+          "segment_count": 464,
+          "translation_percent": 0.6877904042725875,
+          "rotation_deg_per_m": 0.004266477152220485
+        },
+        "lost_frames": 0,
+        "elapsed_s": 1361.5297823,
+        "total_wall_seconds": 1379.6521761999466,
+        "peak_memory_mb": 1226.93359375
+      },
+      "VO": {
+        "metrics": {
+          "frames": 1201,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 2.563906837167062,
+          "raw_ate_rmse_m": 18.69549192126818,
+          "segment_count": 464,
+          "translation_percent": 1.3676591126060085,
+          "rotation_deg_per_m": 0.007470858416718795
+        },
+        "lost_frames": 0,
+        "elapsed_s": 655.9141913999338,
+        "total_wall_seconds": null,
+        "peak_memory_mb": 244.453125
+      },
+      "candidate_evaluation_sha256": "cf2cc61026860e8e93f167fcb92aeecbde5f13b072cd19b2c625d3b6f9c98dd9",
+      "VO_evaluation_sha256": "bccc3abc3f4fe2757e85498e559de9f51b0ba6421bbdedbf855f340d1fef4a2e"
+    }
+  ],
+  "limits": [
+    "Full01 raw error remains worse than VO; aligned ATE must not hide it.",
+    "Runtime remains substantially slower than VO on several sequences.",
+    "Full01 has additional completed seeds, but this table deliberately reports paired seed0 cases only.",
+    "Full02/05/06/08 and real EuRoC coverage remain pending.",
+    "No native-rate/real-time acceptance is claimed or required for the current implementation.",
+    "Ground truth was evaluator-only; all original frame IDs are included."
+  ],
+  "evidence_root": "results/recovery-campaign/20261006T003837Z",
+  "evidence_records": [
+    "bundle-operator-confirmation.json",
+    "bundle-operator-retention.json",
+    "fixed00-completion-verification.json",
+    "fixed03-completion-verification.json",
+    "fixed09-completion-verification.json",
+    "fixed10-completion-verification.json"
+  ]
+}

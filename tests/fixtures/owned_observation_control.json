@@ -1,0 +1,7 @@
+{
+  "original_source_sha256": "33681801b7075605ffc0e28c1e2fcf7e1237d589965aa86b0c91d1b1b7f97048",
+  "original_source": "owned-observation-control-source/src/shared_slam.py",
+  "method": "_landmark_pixel_identity_conflicts",
+  "fixture_sha256": "a3fe208f16ee62c4a75de0d14094f73d1f83b43502a8c0379bbe25cb6a9285d4",
+  "purpose": "Independent original-control numerical oracle; no dataset, GT or results directory required"
+}

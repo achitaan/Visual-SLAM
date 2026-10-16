@@ -2,6 +2,7 @@ import argparse
 import os
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
+import json
 import time
 import uuid
 from pathlib import Path
@@ -31,7 +32,7 @@ from config import (
 )
 from slam_backend import SlamBackend
 from telemetry import TelemetryServer, TelemetryState, encode_image, make_frame_message, now
-from shared_slam import SharedSlam, StereoCamera, MappingConfig
+from shared_slam import SharedSlam, StereoCamera, MappingConfig, validate_feature_budget
 from performance import PerformanceConfig
 from reconstruction import export_run
 
@@ -89,37 +90,156 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     ax.grid(True)
     plt.show()
 
+
+def _mapping_config_from_args(args):
+    return MappingConfig(features=args.features,
+                         loop_mode=getattr(args, 'loop_mode', 'live'),
+                         stereo_depth_policy=args.stereo_depth_policy,
+                         stereo_pose_arbitration=args.stereo_pose_arbitration,
+                         stereo_raw_reference_retry=args.stereo_raw_reference_retry,
+                         stereo_descriptor_association_retry=getattr(
+                             args, 'stereo_descriptor_association_retry', False),
+                         stereo_verified_reference_retry=getattr(
+                             args, 'stereo_verified_reference_retry', False),
+                         stereo_owned_image_bundle=args.stereo_owned_image_bundle,
+                         stereo_source_history_bundle=args.stereo_source_history_bundle,
+                         stereo_retained_source_observations=args.stereo_retained_source_observations,
+                         stereo_mapping_observation_retention=getattr(
+                             args, 'stereo_mapping_observation_retention', False),
+                         stereo_two_view_refinement=getattr(
+                             args, 'stereo_two_view_refinement', False),
+                         stereo_two_view_solver=getattr(
+                             args, 'stereo_two_view_solver', 'sparse_lsmr'),
+                          stereo_map_depth_policy=getattr(
+                              args, 'stereo_map_depth_policy', 'inherit'),
+                         stereo_map_frontend_seed_fallback=getattr(
+                             args, 'stereo_map_frontend_seed_fallback', False),
+                         bundle_solver_accuracy=args.bundle_solver_accuracy,
+                         bundle_landmark_policy=getattr(args, 'bundle_landmark_policy', 'bounded_fixed'),
+                         stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, help="KITTI root containing sequences/")
     parser.add_argument("--poses-root", type=Path, help="Ground-truth poses for display only")
     parser.add_argument("--sequence", default="00")
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--features", type=int, default=1500,
+                        help="Requested SharedSlam SIFT feature budget (1–10000; default 1500)")
+    parser.add_argument('--loop-mode', choices=['off', 'live', 'offline'], default='live',
+                        help='Loop processing policy; the confirmed benchmark profile uses off')
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback'], default='supported')
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+                        help='Map geometry source only; verified uses full-range right-image correspondences')
+    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true',
+                        help='Use valid current-frame frontend XYZ as a left-only seed when verified map stereo abstains')
     parser.add_argument('--stereo-pose-arbitration', action='store_true',
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
+    parser.add_argument('--stereo-two-view-refinement', action='store_true',
+                        help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
+    parser.add_argument('--stereo-two-view-solver', choices=['sparse_lsmr', 'dense_exact'],
+                        default='sparse_lsmr',
+                        help='Linear solver for the opt-in two-view training refinement')
     parser.add_argument('--stereo-raw-reference-retry', action='store_true',
                         help='Retry a failed configured stereo reference with guarded raw-supported geometry')
+    parser.add_argument('--stereo-descriptor-association-retry', action='store_true',
+                        help='Reconnect verified stereo poses using validated descriptor associations')
+    parser.add_argument('--stereo-verified-reference-retry', action='store_true',
+                        help='Use the verified raw-reference recovery path from the confirmed Python profile')
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+                        help='Opt in to bounded image factors from the selected reserved stereo training rows')
+    parser.add_argument('--stereo-source-history-bundle', action='store_true',
+                        help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
+    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+                        help='Retain source-image constraints using the existing anchored camera model')
+    parser.add_argument('--stereo-mapping-observation-retention', action='store_true',
+                        help='Retain individually validated old landmark observations after an independently accepted stereo pose fails only spatial coverage')
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+                        help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
+    parser.add_argument('--bundle-landmark-policy', choices=['bounded_fixed', 'joint_tracks'],
+                        default='bounded_fixed',
+                        help='Experimental joint tracks optimize capped-out landmark XYZ using their existing image observations')
+    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
+                        help='Experimental finite gauge convention for certified two-bridge stereo graphs')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
     parser.add_argument('--profile', type=Path)
+    parser.add_argument('--bundle-diagnostics-dir', type=Path,
+                        help='Owned run-output folder for selected bundle adjustment snapshots')
+    parser.add_argument('--bundle-diagnostics-frames', type=int, nargs='+',
+                        help='Frame IDs to capture when bundle adjustment runs')
     parser.add_argument("--no-telemetry", action="store_true")
     parser.add_argument("--telemetry-port", type=int, default=TELEMETRY.port)
     parser.add_argument("--frame-delay-ms", type=float, default=TELEMETRY.frame_delay_ms)
     parser.add_argument("--output", type=Path, default=Path("results/poses.txt"))
     parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
+    try:
+        args.features = validate_feature_budget(args.features)
+    except ValueError as error:
+        parser.error(str(error))
+    if not args.slam and args.features != 1500:
+        parser.error('--features other than the default requires --slam')
     if args.stereo_depth_policy != 'supported' and not (args.slam and args.stereo):
-        parser.error('--stereo-depth-policy verified_fallback requires --slam --stereo')
+        parser.error('--stereo-depth-policy verification requires --slam --stereo')
+    if args.stereo_map_depth_policy != 'inherit' and not (args.slam and args.stereo):
+        parser.error('--stereo-map-depth-policy verified requires --slam --stereo')
+    if args.stereo_map_frontend_seed_fallback and not (
+            args.slam and args.stereo and args.stereo_map_depth_policy == 'verified'):
+        parser.error('--stereo-map-frontend-seed-fallback requires --slam --stereo --stereo-map-depth-policy verified')
     if args.stereo_pose_arbitration and not (args.slam and args.stereo):
         parser.error('--stereo-pose-arbitration requires --slam --stereo')
+    if args.stereo_two_view_refinement and not (
+            args.slam and args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-two-view-refinement requires --slam --stereo --stereo-pose-arbitration')
+    if args.stereo_two_view_solver != 'sparse_lsmr' and not args.stereo_two_view_refinement:
+        parser.error('--stereo-two-view-solver dense_exact requires --stereo-two-view-refinement')
     if args.stereo_raw_reference_retry and not (args.slam and args.stereo):
         parser.error('--stereo-raw-reference-retry requires --slam --stereo')
+    if args.stereo_descriptor_association_retry and not (
+            args.slam and args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-descriptor-association-retry requires --slam --stereo --stereo-pose-arbitration')
+    if args.stereo_verified_reference_retry and not (args.slam and args.stereo):
+        parser.error('--stereo-verified-reference-retry requires --slam --stereo')
+    if args.stereo_owned_image_bundle and not (
+            args.slam and args.stereo and args.stereo_pose_arbitration):
+        parser.error('--stereo-owned-image-bundle requires --slam --stereo --stereo-pose-arbitration')
+    if args.stereo_source_history_bundle and not args.stereo_owned_image_bundle:
+        parser.error('--stereo-source-history-bundle requires --stereo-owned-image-bundle')
+    if args.stereo_retained_source_observations and not args.stereo_source_history_bundle:
+        parser.error('--stereo-retained-source-observations requires --stereo-source-history-bundle')
+    if args.stereo_mapping_observation_retention and not (
+            args.slam and args.stereo
+            and (args.stereo_pose_arbitration or args.stereo_raw_reference_retry)):
+        parser.error('--stereo-mapping-observation-retention requires --slam --stereo and an independent stereo reference path')
+    if args.bundle_solver_accuracy != 'default' and not args.slam:
+        parser.error('--bundle-solver-accuracy precise requires --slam')
+    if args.bundle_landmark_policy == 'joint_tracks' and not (args.slam and args.stereo):
+        parser.error('--bundle-landmark-policy joint_tracks requires --slam --stereo')
+    if args.bundle_landmark_policy == 'joint_tracks' and (
+            args.stereo_owned_image_bundle or args.stereo_source_history_bundle
+            or args.stereo_retained_source_observations or args.stereo_bundle_gauge_mode != 'veto'):
+        parser.error('--bundle-landmark-policy joint_tracks requires the original image bundle and veto gauge mode')
+    if args.stereo_bundle_gauge_mode != 'veto' and not (args.slam and args.stereo):
+        parser.error('--stereo-bundle-gauge-mode canonical_two_bridge requires --slam --stereo')
+    if (args.bundle_diagnostics_dir is None) != (args.bundle_diagnostics_frames is None):
+        parser.error('--bundle-diagnostics-dir and --bundle-diagnostics-frames must be supplied together')
+    if args.bundle_diagnostics_frames is not None:
+        if not (args.slam and args.stereo):
+            parser.error('--bundle-diagnostics requires --slam --stereo')
+        if any(frame < 0 for frame in args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must contain nonnegative frame IDs')
+        if len(set(args.bundle_diagnostics_frames)) != len(args.bundle_diagnostics_frames):
+            parser.error('--bundle-diagnostics-frames must not contain duplicates')
+        map_output = (args.output.parent / (args.output.stem + '-map')).resolve()
+        diagnostic_dir = args.bundle_diagnostics_dir.resolve()
+        if not diagnostic_dir.is_relative_to(map_output):
+            parser.error('--bundle-diagnostics-dir must be inside the map output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
     cv.setNumThreads(args.opencv_threads)
@@ -192,11 +312,17 @@ def main() -> None:
     stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
+    bundle_diagnostic_writer = None
+    if args.bundle_diagnostics_dir is not None:
+        from bundle_diagnostics import BundleDiagnosticsWriter
+        bundle_diagnostic_writer = BundleDiagnosticsWriter(
+            args.bundle_diagnostics_dir,
+            frames=tuple(args.bundle_diagnostics_frames),
+        )
     shared = SharedSlam(vo.K1 if use_stereo else vo.K, stereo=stereo_camera,
-                        config=MappingConfig(stereo_depth_policy=args.stereo_depth_policy,
-                                             stereo_pose_arbitration=args.stereo_pose_arbitration,
-                                             stereo_raw_reference_retry=args.stereo_raw_reference_retry),
-                        performance=performance) if args.slam else None
+                        config=_mapping_config_from_args(args),
+                        performance=performance,
+                        bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
     if shared is not None:
         shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
         vo.poses = shared.map.poses
@@ -379,9 +505,19 @@ def main() -> None:
     save_poses_txt(args.output, vo.poses)
     if shared is not None:
         inputs = vo.Images_1.paths if use_stereo else vo.Images.paths
-        export_run(shared, args.output.parent / (args.output.stem + '-map'), inputs)
+        run_output = args.output.parent / (args.output.stem + '-map')
+        if bundle_diagnostic_writer is not None:
+            for frame in bundle_diagnostic_writer.frames:
+                if frame >= len(shared.map.poses):
+                    shared._skip_bundle_diagnostic(frame, 'frame_not_processed')
+            diagnostic_manifest = shared.bundle_diagnostics_manifest()
+        payload = export_run(shared, run_output, inputs)
+        if bundle_diagnostic_writer is not None:
+            payload['bundle_diagnostics'] = diagnostic_manifest
+            payload['bundle_diagnostic_errors'] = list(shared.bundle_diagnostic_errors)
+            (run_output / 'run.json').write_text(
+                json.dumps(payload, indent=2, allow_nan=False), encoding='utf-8')
         if args.profile:
-            import json
             args.profile.parent.mkdir(parents=True, exist_ok=True)
             args.profile.write_text(json.dumps(shared.profile.detailed_report(), indent=2), encoding='utf-8')
     print(f"Saved {len(vo.poses)} KITTI poses to {args.output}")

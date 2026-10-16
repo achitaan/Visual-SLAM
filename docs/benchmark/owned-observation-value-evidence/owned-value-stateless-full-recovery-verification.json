@@ -1,0 +1,297 @@
+{
+  "status": "verified_terminal_full_evidence_not_retention",
+  "protocol_status": "completed_full_confirmation_not_retention",
+  "records": [
+    {
+      "case": "owned_value_commit_full_candidate_09_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.9579412268984653,
+          "raw_ate_rmse_m": 10.915196825614077,
+          "segment_count": 958,
+          "translation_percent": 1.1315687344548422,
+          "rotation_deg_per_m": 0.0028588631551129916
+        },
+        "online_metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.956746053212317,
+          "raw_ate_rmse_m": 10.914104807841703,
+          "segment_count": 958,
+          "translation_percent": 1.1297143436776471,
+          "rotation_deg_per_m": 0.0028780065485637875
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 1736.827999999994,
+      "peak_memory_mb": 1279.8203125,
+      "export_sha256": {
+        "poses.txt": "23d53ea18fadca1b35ab13077d0e267e6fc09ed1a2dee2958005b52031171613",
+        "online-poses.txt": "1cb82f15ef143e38858662aa6094037fb9cf879427d6555f1081258b6ded04cb",
+        "sparse.ply": "81f14db82e79d0f90f732b76d8dd5a52ab47111fda7ba3321a80046ccb9598fc",
+        "evaluation.json": "bfc2301e1d494d38355a17b36956b60eb1ff070afbeab36169823d459756fde1",
+        "run.json": "0576faa38d6802c8f0c8f280ed72c7df34451927b3f5e170f2c7ac612127ad06"
+      }
+    },
+    {
+      "case": "owned_value_remaining_full_control_09_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.9579412268984653,
+          "raw_ate_rmse_m": 10.915196825614077,
+          "segment_count": 958,
+          "translation_percent": 1.1315687344548422,
+          "rotation_deg_per_m": 0.0028588631551129916
+        },
+        "online_metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 3.956746053212317,
+          "raw_ate_rmse_m": 10.914104807841703,
+          "segment_count": 958,
+          "translation_percent": 1.1297143436776471,
+          "rotation_deg_per_m": 0.0028780065485637875
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 1995.0939999999973,
+      "peak_memory_mb": 1635.13671875,
+      "export_sha256": {
+        "poses.txt": "23d53ea18fadca1b35ab13077d0e267e6fc09ed1a2dee2958005b52031171613",
+        "online-poses.txt": "1cb82f15ef143e38858662aa6094037fb9cf879427d6555f1081258b6ded04cb",
+        "sparse.ply": "81f14db82e79d0f90f732b76d8dd5a52ab47111fda7ba3321a80046ccb9598fc",
+        "evaluation.json": "5407e4adc68dea1e76730334763103d465657090fef71271e578a6def7472dc0",
+        "run.json": "8556a4c8abcf711c2ae3432775c2f92c791a7c80e12858ef3b16f4b633f87698"
+      }
+    },
+    {
+      "case": "owned_value_stateless_full_vo_09_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 5.133404472802529,
+          "raw_ate_rmse_m": 17.329685440193103,
+          "segment_count": 958,
+          "translation_percent": 1.705222609476966,
+          "rotation_deg_per_m": 0.007053135881351604
+        },
+        "online_metrics": {
+          "frames": 1591,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 5.133404472802529,
+          "raw_ate_rmse_m": 17.329685440193103,
+          "segment_count": 958,
+          "translation_percent": 1.705222609476966,
+          "rotation_deg_per_m": 0.007053135881351604
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 804.8910000000033,
+      "peak_memory_mb": 248.50390625,
+      "export_sha256": {
+        "poses.txt": "d87f7ea5a4bf1a3609e900664eceed90faf4917a10fb6dbad798d00c084baf10",
+        "evaluation.json": "52909bfcffd2dd00a1f9de46ad7250b613a27758a990c2f660ef0b3047000001"
+      }
+    },
+    {
+      "case": "owned_value_stateless_full_control_03_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.6792708540641197,
+          "raw_ate_rmse_m": 2.924822786474236,
+          "segment_count": 184,
+          "translation_percent": 1.1145526344035248,
+          "rotation_deg_per_m": 0.003119645157640493
+        },
+        "online_metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.6769037331841579,
+          "raw_ate_rmse_m": 2.9295505030453195,
+          "segment_count": 184,
+          "translation_percent": 1.1138649321856797,
+          "rotation_deg_per_m": 0.003123200115235624
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 717.5470000000059,
+      "peak_memory_mb": 1160.0859375,
+      "export_sha256": {
+        "poses.txt": "9dda0f1a7c7f9b5bd3391ebbada5f771f633d6c9c7207bb72397eadcd5071dcc",
+        "online-poses.txt": "8270dca19eee30956f146cfa9a69c6ac3950588dd83bd17ac94d07972ba88a17",
+        "sparse.ply": "d28969496b1877c9f0f8078b9bb488161b31b6749a32dd192c5a835c5db5b0e7",
+        "evaluation.json": "0de450b64061c5d65935b0e560745f69838381688729ef78f146cb541c4e982c",
+        "run.json": "3a90bd9522600885644f028374d7b1463d72c106ad04ffad5e5b8a93808c3a63"
+      }
+    },
+    {
+      "case": "owned_value_stateless_full_vo_03_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 2.3271327269247837,
+          "raw_ate_rmse_m": 5.395227392078128,
+          "segment_count": 184,
+          "translation_percent": 1.704861364488081,
+          "rotation_deg_per_m": 0.007540841762900646
+        },
+        "online_metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 2.3271327269247837,
+          "raw_ate_rmse_m": 5.395227392078128,
+          "segment_count": 184,
+          "translation_percent": 1.704861364488081,
+          "rotation_deg_per_m": 0.007540841762900646
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 444.2189999999973,
+      "peak_memory_mb": 245.47265625,
+      "export_sha256": {
+        "poses.txt": "9bcc6b760e4b9b83e739c2ec1904087f4c147426c0ab77ce6fde7e4df547fb72",
+        "evaluation.json": "ca9fb8f02c182163c940d1ff2e2101137b189f65ded2d745866d86168aefe51d"
+      }
+    },
+    {
+      "case": "owned_value_stateless_full_candidate_03_seed0",
+      "recomputed": {
+        "metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.6792708540641197,
+          "raw_ate_rmse_m": 2.924822786474236,
+          "segment_count": 184,
+          "translation_percent": 1.1145526344035248,
+          "rotation_deg_per_m": 0.003119645157640493
+        },
+        "online_metrics": {
+          "frames": 801,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 1.6769037331841579,
+          "raw_ate_rmse_m": 2.9295505030453195,
+          "segment_count": 184,
+          "translation_percent": 1.1138649321856797,
+          "rotation_deg_per_m": 0.003123200115235624
+        }
+      },
+      "losses": 0,
+      "whole_wall_s": 678.625,
+      "peak_memory_mb": 1076.44140625,
+      "export_sha256": {
+        "poses.txt": "9dda0f1a7c7f9b5bd3391ebbada5f771f633d6c9c7207bb72397eadcd5071dcc",
+        "online-poses.txt": "8270dca19eee30956f146cfa9a69c6ac3950588dd83bd17ac94d07972ba88a17",
+        "sparse.ply": "d28969496b1877c9f0f8078b9bb488161b31b6749a32dd192c5a835c5db5b0e7",
+        "evaluation.json": "d40722218e6f039a070e8509cffb15d51877e652d1185f463209ed862f96134c",
+        "run.json": "aade909e42b484733b496decce424f6af861bb615dec823663b4c4a8cfbac8c5"
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "sequence": "09",
+      "frames": 1591,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.12945054217996932,
+      "passed": true
+    },
+    {
+      "sequence": "03",
+      "frames": 801,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.054243136686524474,
+      "passed": true
+    }
+  ],
+  "all_full_gates_pass": true,
+  "review_scope": "Same-agent source/export/metric recomputation, not independent review",
+  "reused_case_verification_sha256": "16ce22ebb45f3cb8add7885b3841bc6bdb7cb84cf774db4c347d7a8d0147c523",
+  "carryover_verified_pairs": [
+    {
+      "sequence": "00",
+      "frames": 4541,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.26324418631975977,
+      "passed": true
+    }
+  ],
+  "carryover_verification_sha256": "85eec2fe73c567bb059171b47dc43ec0f640455fc15b6521258b591637faf24c",
+  "previous_verified_pairs": [
+    {
+      "sequence": "01",
+      "frames": 1101,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.1874233981161988,
+      "passed": true
+    },
+    {
+      "sequence": "04",
+      "frames": 271,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.03527084567328953,
+      "passed": true
+    },
+    {
+      "sequence": "07",
+      "frames": 1101,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "whole_wall_gain_fraction": 0.12890195304989327,
+      "passed": true
+    }
+  ],
+  "previous_verification_sha256": "6b86105cca430ff4a3489623614ec4e437e98a9a0477c22f1894e9031f13b8e4",
+  "retained": false,
+  "installed": false,
+  "protocol_sha256": "9d8c0448a011ffcc1436fe00d43aeaa55b3d06900b73e7b089336603782b82d0",
+  "verifier_sha256": "769bd1fbefdd696a93c43b3e84efcc35f17b913157a329c6d79336e7ebea7e48"
+}

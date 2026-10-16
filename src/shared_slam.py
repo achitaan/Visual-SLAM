@@ -6,6 +6,7 @@ from types import MappingProxyType
 import cv2 as cv
 import numpy as np
 from slam_state import MapState, MappingKeyframe, Observation
+from owned_observation import OwnedObservation
 from mapping_geometry import (
     match_descriptors,
     initialize_monocular,
@@ -955,7 +956,7 @@ class SharedSlam:
                 else:
                     _, measured = self._measure_stereo_pixels(observed_pixel[None])
                 measured_right = float(measured[0]) if np.isfinite(measured[0]) else None
-            self.map.landmarks[lid].observations[ident] = Observation(
+            self.map.landmarks[lid].observations[ident] = OwnedObservation(
                 observed_pixel.copy(), measured_right
             )
         if self.stereo is not None:
@@ -1010,7 +1011,7 @@ class SharedSlam:
                     desc[feature],
                     ident,
                     {
-                        ident: Observation(
+                        ident: OwnedObservation(
                             pixels[feature].copy(), seed_right
                         )
                     },
@@ -1070,8 +1071,8 @@ class SharedSlam:
                         desc[ib],
                         previous.id,
                         {
-                            previous.id: Observation(previous.pixels[ia].copy()),
-                            ident: Observation(pixels[ib].copy()),
+                            previous.id: OwnedObservation(previous.pixels[ia].copy()),
+                            ident: OwnedObservation(pixels[ib].copy()),
                         },
                     )
                     previous.landmark_ids[ia] = lid
@@ -2374,6 +2375,12 @@ class SharedSlam:
                 # Synthetic map-only clients can provide observations without
                 # keyframes; there is no detector-row identity to disambiguate.
                 if keyframe_id not in self.map.keyframes:
+                    continue
+                if (type(observation) is OwnedObservation and observation._identity_owned
+                        and self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY):
+                    key = observation._identity_key
+                    if key is not None:
+                        claims.setdefault((int(keyframe_id), key), set()).add(int(landmark.id))
                     continue
                 pixel = np.asarray(observation.pixel, np.float32).reshape(-1)
                 if pixel.shape == (2,) and np.isfinite(pixel).all():
@@ -5917,8 +5924,8 @@ class SharedSlam:
                             desc[b],
                             0,
                             {
-                                0: Observation(initial_pixels[a].copy()),
-                                1: Observation(pixels[b].copy()),
+                                0: OwnedObservation(initial_pixels[a].copy()),
+                                1: OwnedObservation(pixels[b].copy()),
                             },
                         )
                         first_rows = initial_groups[initial_group_ids[a]]
@@ -7058,3 +7065,6 @@ class SharedSlam:
     def map_points_sample(self, max_points=1000):
         points = [l.position.tolist() for l in self.map.landmarks.values()]
         return points[:: max(1, len(points) // max(1, max_points))][:max_points]
+
+
+_ORIGINAL_PHYSICAL_PIXEL_KEY = SharedSlam._physical_pixel_key

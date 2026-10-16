@@ -1,0 +1,447 @@
+{
+  "status": "verified_terminal_short_evidence_not_retention",
+  "protocol_status": "completed_short_confirmation_not_retention",
+  "records": [
+    {
+      "case": "owned_value_confirm_vo_04_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.41552677185634074,
+          "raw_ate_rmse_m": 0.9791074421677707,
+          "segment_count": 1,
+          "translation_percent": 1.6311521003440086,
+          "rotation_deg_per_m": 0.012972810762911447
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.41552677185634074,
+          "raw_ate_rmse_m": 0.9791074421677707,
+          "segment_count": 1,
+          "translation_percent": 1.6311521003440086,
+          "rotation_deg_per_m": 0.012972810762911447
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "3bdd9ef9f090ee6c1af19da17353f5a49366bc2b951c61a5530c120b646171c3",
+        "evaluation.json": "c1bf3004b7bbcd26da3ea000977d6334f32c53da0ec9e66d2a9a1f9fecdd27f6"
+      }
+    },
+    {
+      "case": "owned_value_confirm_control_04_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07889698132966695,
+          "raw_ate_rmse_m": 0.29670585582267395,
+          "segment_count": 1,
+          "translation_percent": 0.4115093430120649,
+          "rotation_deg_per_m": 0.0040790789366673885
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07695280286493872,
+          "raw_ate_rmse_m": 0.319809091081307,
+          "segment_count": 1,
+          "translation_percent": 0.4309215541380938,
+          "rotation_deg_per_m": 0.00413898627786448
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "81434b1734123d3ef53257ffc5690f673f09899a6e540e53085ff8268d555760",
+        "online-poses.txt": "a8b40c5652ea3cbc152478c20f5b0e6e372f2881149e832b8f006a2b85af5022",
+        "sparse.ply": "29f46dbb243551abfea6ab1a9166f59f7bd96771be73ef5dd916d162346ac950",
+        "evaluation.json": "17a029a6fcc14bca64d898a36d77dfb4006582867e612c76bd7bad0be6f522f1",
+        "run.json": "fd4ee85710f33cb383c9849fd162411f68521975cfc72b6b00d1a681273f89a5"
+      }
+    },
+    {
+      "case": "owned_value_confirm_candidate_04_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07889698132966695,
+          "raw_ate_rmse_m": 0.29670585582267395,
+          "segment_count": 1,
+          "translation_percent": 0.4115093430120649,
+          "rotation_deg_per_m": 0.0040790789366673885
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07695280286493872,
+          "raw_ate_rmse_m": 0.319809091081307,
+          "segment_count": 1,
+          "translation_percent": 0.4309215541380938,
+          "rotation_deg_per_m": 0.00413898627786448
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "81434b1734123d3ef53257ffc5690f673f09899a6e540e53085ff8268d555760",
+        "online-poses.txt": "a8b40c5652ea3cbc152478c20f5b0e6e372f2881149e832b8f006a2b85af5022",
+        "sparse.ply": "29f46dbb243551abfea6ab1a9166f59f7bd96771be73ef5dd916d162346ac950",
+        "evaluation.json": "33f6284e1ad68a26ee33683d575db96b180f78b6ca474f39669a547e9dec7abc",
+        "run.json": "044baf0f2944dd5b60bd490e73e7302fd11f8e8963a2699ae4a38a918351661d"
+      }
+    },
+    {
+      "case": "owned_value_confirm_control_04_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07889698132966695,
+          "raw_ate_rmse_m": 0.29670585582267395,
+          "segment_count": 1,
+          "translation_percent": 0.4115093430120649,
+          "rotation_deg_per_m": 0.0040790789366673885
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07695280286493872,
+          "raw_ate_rmse_m": 0.319809091081307,
+          "segment_count": 1,
+          "translation_percent": 0.4309215541380938,
+          "rotation_deg_per_m": 0.00413898627786448
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "81434b1734123d3ef53257ffc5690f673f09899a6e540e53085ff8268d555760",
+        "online-poses.txt": "a8b40c5652ea3cbc152478c20f5b0e6e372f2881149e832b8f006a2b85af5022",
+        "sparse.ply": "29f46dbb243551abfea6ab1a9166f59f7bd96771be73ef5dd916d162346ac950",
+        "evaluation.json": "f4e26c5d62bba675817533de661166ce8330193c2295185e868020d158fc466c",
+        "run.json": "8856627e7efc0572c6adb9f0500141b4c1bb3dd802bd6af2bb707e5cee9edaa1"
+      }
+    },
+    {
+      "case": "owned_value_confirm_vo_04_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.43615840872829087,
+          "raw_ate_rmse_m": 0.9744526012748247,
+          "segment_count": 1,
+          "translation_percent": 1.629031266808025,
+          "rotation_deg_per_m": 0.012346393137884907
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.43615840872829087,
+          "raw_ate_rmse_m": 0.9744526012748247,
+          "segment_count": 1,
+          "translation_percent": 1.629031266808025,
+          "rotation_deg_per_m": 0.012346393137884907
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "b1d7f2e00551722fe95e0498dc08253fedcc14c5e12c340f753ac19f72fb9503",
+        "evaluation.json": "6c5db014b130b5fa35d1bb274cfb1384207e33ae2fa031271cd39900a7e1c07f"
+      }
+    },
+    {
+      "case": "owned_value_confirm_candidate_04_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07889698132966695,
+          "raw_ate_rmse_m": 0.29670585582267395,
+          "segment_count": 1,
+          "translation_percent": 0.4115093430120649,
+          "rotation_deg_per_m": 0.0040790789366673885
+        },
+        "online_metrics": {
+          "frames": 80,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 0.07695280286493872,
+          "raw_ate_rmse_m": 0.319809091081307,
+          "segment_count": 1,
+          "translation_percent": 0.4309215541380938,
+          "rotation_deg_per_m": 0.00413898627786448
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "81434b1734123d3ef53257ffc5690f673f09899a6e540e53085ff8268d555760",
+        "online-poses.txt": "a8b40c5652ea3cbc152478c20f5b0e6e372f2881149e832b8f006a2b85af5022",
+        "sparse.ply": "29f46dbb243551abfea6ab1a9166f59f7bd96771be73ef5dd916d162346ac950",
+        "evaluation.json": "9b65f8f2c04c3b6a41df55fa799ce3503795afd9e21ccaadf22942ba17c1cce9",
+        "run.json": "eddc16fd7b690d0b944dd353cc4d3888bd5c804d85e5e49c7a4c7252e453f6a1"
+      }
+    },
+    {
+      "case": "owned_value_confirm_candidate_01_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.22714702329977,
+          "raw_ate_rmse_m": 23.139353499939677,
+          "segment_count": 140,
+          "translation_percent": 4.368294554424852,
+          "rotation_deg_per_m": 0.00979884044676717
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.240449717051817,
+          "raw_ate_rmse_m": 23.140733652578895,
+          "segment_count": 140,
+          "translation_percent": 4.361036482381566,
+          "rotation_deg_per_m": 0.009770303570855935
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "17ae1b402b480a1aac29801b3e4f425792e33bad1626bf4b19544fcbd1cda32c",
+        "online-poses.txt": "63f51827a1b95221c9f7ad5f385f27ce1a8a41dabb6f2edc2a90bef83a8e3d97",
+        "sparse.ply": "b55e92b202844b7b043867607ac9b51203b012b058f659548df886415c62ad4e",
+        "evaluation.json": "975168e57dea51cda9bac7bdbb67656e933755f35522f86607b7238725f2f395",
+        "run.json": "a4f3ac8ebafc3c6e6acb6f2423142ba065fbedd52ccd0d64e3465835037223dd"
+      }
+    },
+    {
+      "case": "owned_value_confirm_control_01_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.22714702329977,
+          "raw_ate_rmse_m": 23.139353499939677,
+          "segment_count": 140,
+          "translation_percent": 4.368294554424852,
+          "rotation_deg_per_m": 0.00979884044676717
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.240449717051817,
+          "raw_ate_rmse_m": 23.140733652578895,
+          "segment_count": 140,
+          "translation_percent": 4.361036482381566,
+          "rotation_deg_per_m": 0.009770303570855935
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "17ae1b402b480a1aac29801b3e4f425792e33bad1626bf4b19544fcbd1cda32c",
+        "online-poses.txt": "63f51827a1b95221c9f7ad5f385f27ce1a8a41dabb6f2edc2a90bef83a8e3d97",
+        "sparse.ply": "b55e92b202844b7b043867607ac9b51203b012b058f659548df886415c62ad4e",
+        "evaluation.json": "b625e08b611a20312216a0f6c40c455aaab61bda4465eff1edb39b2fee9e19db",
+        "run.json": "630d9f5f4b4acc9ba397801e30fb6a40f9b126415fa6bdc92dd9380ab8176646"
+      }
+    },
+    {
+      "case": "owned_value_confirm_vo_01_seed1",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 26.906672146230303,
+          "raw_ate_rmse_m": 35.77459142376962,
+          "segment_count": 140,
+          "translation_percent": 10.043199531280635,
+          "rotation_deg_per_m": 0.010893916230863101
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 26.906672146230303,
+          "raw_ate_rmse_m": 35.77459142376962,
+          "segment_count": 140,
+          "translation_percent": 10.043199531280635,
+          "rotation_deg_per_m": 0.010893916230863101
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "b3fad88bec19769b0e184c64638f8276302153490cca446df1b2e7607486faa5",
+        "evaluation.json": "40cbe9807344f283585b73152e21d4d47c8653d1aaa82ac79f26f2e4d8ff4b21"
+      }
+    },
+    {
+      "case": "owned_value_confirm_vo_01_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 24.185788080162894,
+          "raw_ate_rmse_m": 34.53735496938859,
+          "segment_count": 140,
+          "translation_percent": 9.30130839766326,
+          "rotation_deg_per_m": 0.0132953682711202
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 24.185788080162894,
+          "raw_ate_rmse_m": 34.53735496938859,
+          "segment_count": 140,
+          "translation_percent": 9.30130839766326,
+          "rotation_deg_per_m": 0.0132953682711202
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "579cfb3f4e022763d92f4a7cd6c915bd1a1a3d56567aa74d1cda099068100652",
+        "evaluation.json": "8aa6c6961c26c148a27081e151165cd2a15daff650b0cb7c82db5249a5ab7d20"
+      }
+    },
+    {
+      "case": "owned_value_confirm_control_01_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.228315074337426,
+          "raw_ate_rmse_m": 23.14233023670877,
+          "segment_count": 140,
+          "translation_percent": 4.368200562884934,
+          "rotation_deg_per_m": 0.009794330250117084
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.241619590439743,
+          "raw_ate_rmse_m": 23.14371021183319,
+          "segment_count": 140,
+          "translation_percent": 4.3609445137738945,
+          "rotation_deg_per_m": 0.009765788883740047
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "296e6d59b070ba852af591b45b8aff1d9ab52c3f8fc0f2bfc846c109c20714fd",
+        "online-poses.txt": "a8735410b0e1d424374bca6462f775d14cbbdc0f60d20814ebbd6e57aa06c5b8",
+        "sparse.ply": "2d42ce6f13c9892ffff1f7c1e561f9f7fd0f7cfcaacdc2ca2c0a64cbfaf6a43d",
+        "evaluation.json": "819766de8a064f6b2195a4bb9b5fd422b73d6e3579df23b3958cb8b3b7a42ced",
+        "run.json": "66eb875e4b6be060d719b4ae787d8c6d95e112a94bffcb9ef90f6bf7076d7e9f"
+      }
+    },
+    {
+      "case": "owned_value_confirm_candidate_01_seed2",
+      "recomputed": {
+        "metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.228315074337426,
+          "raw_ate_rmse_m": 23.14233023670877,
+          "segment_count": 140,
+          "translation_percent": 4.368200562884934,
+          "rotation_deg_per_m": 0.009794330250117084
+        },
+        "online_metrics": {
+          "frames": 350,
+          "ate_alignment": "se3",
+          "alignment_scale": 1.0,
+          "ate_rmse_m": 7.241619590439743,
+          "raw_ate_rmse_m": 23.14371021183319,
+          "segment_count": 140,
+          "translation_percent": 4.3609445137738945,
+          "rotation_deg_per_m": 0.009765788883740047
+        }
+      },
+      "export_sha256": {
+        "poses.txt": "296e6d59b070ba852af591b45b8aff1d9ab52c3f8fc0f2bfc846c109c20714fd",
+        "online-poses.txt": "a8735410b0e1d424374bca6462f775d14cbbdc0f60d20814ebbd6e57aa06c5b8",
+        "sparse.ply": "2d42ce6f13c9892ffff1f7c1e561f9f7fd0f7cfcaacdc2ca2c0a64cbfaf6a43d",
+        "evaluation.json": "8e71715ca63b77e1d98a1fa86ee34ce5c5f6e861ef56985f53fcba245fe5d597",
+        "run.json": "cdf1fdc3b9232aacd606f0b6e0361349ae69505b650a393e80cee347dc9575a1"
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "sequence": "04",
+      "seed": 1,
+      "gain_fraction": 0.036069922953928746,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "passed": true
+    },
+    {
+      "sequence": "04",
+      "seed": 2,
+      "gain_fraction": 0.02428073083968174,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "passed": true
+    },
+    {
+      "sequence": "01",
+      "seed": 1,
+      "gain_fraction": 0.0766964348284197,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "passed": true
+    },
+    {
+      "sequence": "01",
+      "seed": 2,
+      "gain_fraction": 0.19711844089919217,
+      "exact_exports": {
+        "poses.txt": true,
+        "online-poses.txt": true,
+        "sparse.ply": true
+      },
+      "VO_violations": [],
+      "passed": true
+    }
+  ],
+  "groups": [
+    {
+      "sequence": "04",
+      "pairs": 3,
+      "median_gain_fraction": 0.035238684325522684,
+      "passed": true
+    },
+    {
+      "sequence": "01",
+      "pairs": 3,
+      "median_gain_fraction": 0.09262528735631359,
+      "passed": true
+    }
+  ],
+  "all_short_gates_pass": true,
+  "review_scope": "Same-agent export/source/metric recomputation, not independent review",
+  "retained": false,
+  "protocol_sha256": "2deda7f25ddb1a3eec47b739c4ba6ed240df897d6d902993bd97a521d2f3d0f5",
+  "verifier_sha256": "4d051b2858ed931be2fd19cb49d805e6f16c28e035b3724132f61e8da6b07140"
+}

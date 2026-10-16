@@ -1,0 +1,38 @@
+
+> dashboard@1.0.0 test
+> tsc lib/ws.ts lib/types.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck && node --test tests/ws.test.cjs
+
+TAP version 13
+# Subtest: batch progress is routed separately and never creates trajectory frames
+ok 1 - batch progress is routed separately and never creates trajectory frames
+  ---
+  duration_ms: 1.1135
+  type: 'test'
+  ...
+# Subtest: connection state follows events and controls require an open socket
+ok 2 - connection state follows events and controls require an open socket
+  ---
+  duration_ms: 2.1274
+  type: 'test'
+  ...
+# Subtest: malformed and unrelated messages do not reach frame listeners
+ok 3 - malformed and unrelated messages do not reach frame listeners
+  ---
+  duration_ms: 0.6324
+  type: 'test'
+  ...
+# Subtest: disconnect reconnects and explicit close cancels retries
+ok 4 - disconnect reconnects and explicit close cancels retries
+  ---
+  duration_ms: 0.2583
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 108.5768

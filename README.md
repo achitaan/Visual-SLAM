@@ -9,9 +9,10 @@ The project aims to build reliable visual SLAM across environments. KITTI is use
 The original Python shared mapper is restored on the development branch, with
 verified-reference recovery, validated descriptor associations, physical
 landmark ownership and precise sparse bundle adjustment. It uses this project's
-own tracking and mapping code with OpenCV and SciPy. The integration passes 363
-regression tests and a four-image real KITTI application check with exact
-frozen-reference poses, sparse map and configuration.
+own tracking and mapping code with OpenCV and SciPy. The current branch passes
+384 Python tests, including launcher smoke checks, plus dashboard tests and a
+production dashboard build. The earlier four-image real KITTI application check
+preserves exact frozen-reference poses, sparse map and configuration.
 
 - [Original Python benchmark table and verified run command](docs/benchmark/original-python-verified.md)
 - [Exact configuration, measured values and source hashes](docs/benchmark/original-python-verified.json)
@@ -20,6 +21,20 @@ Those benchmark values are prior completed measurements, not new integration
 results. Seven full KITTI seed0 comparisons are recorded. Full01 raw error and
 runtime remain weaknesses; broader coverage is incomplete. Real-time execution
 is not a requirement for this implementation.
+
+### Owned observation value optimization
+
+The original Python mapper now uses immutable internal observation values to
+avoid repeated physical-identity work. Six short seed comparisons and six full
+seed0 comparisons preserve the control trajectories, maps, states and accuracy,
+with observed full whole-case wall reductions of **3.53–26.32%**. Full09 timing
+spans resource stops; the report preserves that comparability caveat. Candidate
+runtime remains above VO and full01 raw trajectory error remains worse than VO.
+
+- [Measured benchmarks, exact scope and reproduction](docs/benchmark/owned-observation-value.md)
+- [Machine-readable measurements and source identity](docs/benchmark/owned-observation-value.json)
+- [Installation/review scope and release notes](docs/benchmark/owned-observation-value-release-notes.md)
+- [Branch verification and launcher checks](docs/benchmark/owned-observation-value-branch-checks.md)
 
 ### Legacy VO and offline graph results
 
@@ -151,20 +166,24 @@ runtime regressions and remaining release blockers. CPU matching and current
 retrieval remain the defaults; optional CUDA matching and indexed retrieval need
 separate validation. The original benchmark above is retained historical evidence.
 
-This development branch is an experimental snapshot, not a validated replacement for the original pipeline. Full paired validation is paused for stereo reliability rework; retained failures and coverage are documented in [the sensor comparison](docs/benchmark/SENSOR_COMPARISON.md).
+The source-specific experiments below are historical development records. Their
+paused or failed gates apply to those snapshots; the current original Python
+results and installed optimization are documented above. Broader reliability
+validation remains incomplete. Earlier failures and coverage remain documented
+in [the sensor comparison](docs/benchmark/SENSOR_COMPARISON.md).
 
 The [stereo reliability workflow](docs/STEREO_REWORK.md) provides bounded quick,
 focused and release profiles, controlled ablations and exact-fingerprint resume
 checks. Full validation and a release review remain pending.
 
-[Reserved stereo validation](docs/benchmark/reserved-stereo-validation.md) includes
+[Historical reserved stereo validation](docs/benchmark/reserved-stereo-validation.md) includes
 fresh VO comparisons, trajectories and sparse maps for 04/80 and 01/350. The
-latest diagnostic removes the lost frame on 01 but fails the rotation regression
+then-current diagnostic removes the lost frame on 01 but fails the rotation regression
 gate; full-sequence testing remains paused.
 
 [Same-source bundle adjustment ablation](docs/benchmark/same-source-bundle-ablation.md) isolates the position and rotation trade-off without changing inputs or acceptance thresholds.
 
-[Physical landmark identity validation](docs/benchmark/physical-identity-validation.md) reports the latest correctness repair, improved 04 accuracy, and the retained 01 accuracy and runtime regressions.
+[Historical physical landmark identity validation](docs/benchmark/physical-identity-validation.md) reports that snapshot's correctness repair, improved 04 accuracy, and retained 01 accuracy and runtime regressions.
 
 [Raw stereo reference retry](docs/benchmark/raw-stereo-reference-retry.md) describes
 an opt-in experiment for configured-reference failures. It restores two KITTI 01

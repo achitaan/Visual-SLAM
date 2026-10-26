@@ -184,9 +184,24 @@ class MappingConfig:
     stereo_bundle_gauge_mode: str = "veto"
     stereo_bundle_holdout_guard: bool = False
     stereo_verified_reference_retry: bool = False
+    # Research candidates, independently selectable for a later controlled run.
+    monocular_refined_consensus: bool = False
+    monocular_recovery_fallback: bool = False
+    monocular_covisible_triangulation: bool = False
+    # Additional local numerical prerequisite, not in the supplied overlay.
+    monocular_scale_safe_triangulation: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
+        for name in ('monocular_refined_consensus', 'monocular_recovery_fallback',
+                     'monocular_covisible_triangulation', 'monocular_scale_safe_triangulation'):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f'{name} must be boolean')
+        if self.monocular_covisible_triangulation and (
+                isinstance(self.bundle_window, (bool, np.bool_))
+                or not isinstance(self.bundle_window, (int, np.integer))
+                or self.bundle_window < 1):
+            raise ValueError('Covisible triangulation requires a positive integer bundle_window')
         if self.stereo_bundle_holdout_guard and (
                 not self.stereo_pose_arbitration or not self.bundle_enabled
                 or self.stereo_owned_image_bundle or self.stereo_source_history_bundle
@@ -261,6 +276,7 @@ class SharedSlam:
         self._process_frame_token = None
         self._descriptor_association_retry_snapshot = None
         self._active_frontend_seed_payload = None
+        self._monocular_mapping_report = None
         self.K = np.asarray(matrix, float).copy()
         if (
             self.K.shape != (3, 3)
@@ -277,6 +293,10 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        if stereo is not None and any(getattr(self.config, name, False) for name in (
+                'monocular_refined_consensus', 'monocular_recovery_fallback',
+                'monocular_covisible_triangulation', 'monocular_scale_safe_triangulation')):
+            raise ValueError('Monocular research options require monocular input')
         if stereo is None and self.config.bundle_landmark_policy == "joint_tracks":
             raise ValueError("Joint landmark tracks currently require calibrated stereo")
         if stereo is None and getattr(self.config, "stereo_bundle_holdout_guard", False):
@@ -1027,7 +1047,8 @@ class SharedSlam:
             if len(measured_pairs):
                 a, b = measured_pairs.T
                 geometry, valid = triangulate(
-                    previous.pixels[a], pixels[b], previous.pose, pose, self.K
+                    previous.pixels[a], pixels[b], previous.pose, pose, self.K,
+                    **({'scale_safe_angles': True} if self.config.monocular_scale_safe_triangulation else {})
                 )
                 # Independent two-view geometry also covers already tracked features.
                 # Reusing global landmark coordinates here would create circular loops.
@@ -1038,11 +1059,22 @@ class SharedSlam:
                             position - previous.pose[:3, 3]
                         )
                     frame.depth_points[ib] = pose[:3, :3].T @ (position - pose[:3, 3])
-            # Try older co-visible views as well as the latest keyframe. Small
-            # successive baselines often provide no reliable triangulation.
-            for previous_id in reversed(
-                list(self.map.keyframes)[:-1][-self.config.bundle_window :]
-            ):
+            # Preserve the recent-view order. An optional second group reaches
+            # older observation-linked views when recent baselines are short.
+            reference_ids = list(reversed(
+                list(self.map.keyframes)[:-1][-self.config.bundle_window :]))
+            mapping_report = None
+            if getattr(self.config, 'monocular_covisible_triangulation', False):
+                extra_ids = self._older_covisible_mapping_references(frame, reference_ids)
+                mapping_report = {
+                    'frame': int(index),
+                    'recent_reference_ids': list(map(int, reference_ids)),
+                    'extra_reference_ids': list(map(int, extra_ids)),
+                    'attempts': [],
+                }
+                reference_ids.extend(extra_ids)
+                self._monocular_mapping_report = mapping_report
+            for previous_id in reference_ids:
                 previous = self.map.keyframes[previous_id]
                 pairs = self._match(previous.descriptors, desc)
                 pairs = self._collapse_physical_matches(
@@ -1058,12 +1090,21 @@ class SharedSlam:
                     and all(frame.landmark_ids[row] < 0
                             for row in current_groups[current_group_ids[b]])
                 ], int).reshape(-1, 2)
+                attempt = None
+                if mapping_report is not None:
+                    attempt = {'keyframe': int(previous_id),
+                               'unowned_correspondences': len(pairs),
+                               'triangulated_landmarks': 0}
+                    mapping_report['attempts'].append(attempt)
                 if not len(pairs):
                     continue
                 a, b = pairs.T
                 positions, valid = triangulate(
-                    previous.pixels[a], pixels[b], previous.pose, pose, self.K
+                    previous.pixels[a], pixels[b], previous.pose, pose, self.K,
+                    **({'scale_safe_angles': True} if self.config.monocular_scale_safe_triangulation else {})
                 )
+                if attempt is not None:
+                    attempt['triangulated_landmarks'] = len(valid)
                 for position, j in zip(positions, valid):
                     ia, ib = a[j], b[j]
                     lid = self.map.add_landmark(
@@ -1090,6 +1131,39 @@ class SharedSlam:
         self.last_keyframe = ident
         self.map.revision += 1
         return ident
+
+    def _older_covisible_mapping_references(self, current, recent_ids):
+        """Propose older views sharing actual landmark observations.
+
+        Time adjacency is not covisibility. Frequent keyframe insertion can
+        make the chronological window cover almost no translation. Preserve
+        that window, then add at most bundle_window older covisible views.
+        Similarity-invariant baseline ordering only breaks shared-count ties;
+        the existing triangulate() still decides which points are admissible.
+        """
+        excluded = set(recent_ids) | {current.id}
+        shared = {}
+        for lid in set(map(int, current.landmark_ids)) - {-1}:
+            landmark = self.map.landmarks.get(lid)
+            if landmark is None or current.id not in landmark.observations:
+                continue
+            for keyframe_id in landmark.observations:
+                previous = self.map.keyframes.get(keyframe_id)
+                if (keyframe_id in excluded or previous is None
+                        or previous.frame >= current.frame):
+                    continue
+                # Require both sides of the stored association to agree.
+                if np.any(previous.landmark_ids == lid):
+                    shared[keyframe_id] = shared.get(keyframe_id, 0) + 1
+        ranked = []
+        for keyframe_id, count in shared.items():
+            previous = self.map.keyframes[keyframe_id]
+            baseline = float(np.linalg.norm(
+                previous.pose[:3, 3] - current.pose[:3, 3]))
+            if np.isfinite(baseline) and baseline > 0:
+                ranked.append((count, baseline, keyframe_id))
+        return [ident for _, _, ident in sorted(ranked, reverse=True)
+                [:self.config.bundle_window]]
 
     def _motion_prediction(self):
         predicted = self.map.poses[-1].copy()
@@ -1705,6 +1779,9 @@ class SharedSlam:
             positions = np.array([self.map.landmarks[i].position for i in identifiers])
             observations = np.array([measurements[i][0] for i in identifiers], float)
             diagnostics = {}
+            pose_options = {}
+            if self.stereo is None and getattr(self.config, 'monocular_refined_consensus', False):
+                pose_options['revalidate_inliers'] = True
             solution = estimate_pose(
                 positions,
                 observations,
@@ -1713,6 +1790,7 @@ class SharedSlam:
                 self.config.min_inliers if not relocalize else 20,
                 initial_pose=seed,
                 diagnostics=diagnostics,
+                **pose_options,
             )
             measured_right = None
             if solution is not None and self.stereo is not None:
@@ -1889,6 +1967,8 @@ class SharedSlam:
         return best, stats
 
     def _relocalize(self, pixels, desc, size, points=None):
+        if self.stereo is None and getattr(self.config, 'monocular_recovery_fallback', False):
+            return self._relocalize_monocular(pixels, desc, size)
         # Retrieval proposes views; only image-to-landmark PnP can recover tracking.
         eligible = list(self.map.keyframes)
         if self.performance.retrieval == 'current':
@@ -1920,7 +2000,129 @@ class SharedSlam:
             return self._recover_ranked(pixels, desc, size, points, ranked)
         return result, stats
 
-    def _recover_ranked(self, pixels, desc, size, points, ranked):
+    def _rank_monocular_recovery(
+        self, pixels, desc, size, candidate_ids, *, excluded_keyframes=(),
+    ):
+        """Rank usable 3D-to-2D support, rather than unmapped appearance rows.
+
+        Called under map.lock. Use the same descriptor bank, conflict removal
+        and physical observation deduplication as a descriptor-only _track.
+        A ranking score is a proposal; _track must still solve and verify PnP.
+        """
+        ranked = []
+        live = set(self.map.landmarks)
+        # _track first checks the configured input count, then recovery PnP
+        # requires at least 20 inliers. A proposal must clear both prerequisites.
+        minimum_matches = max(20, self.config.min_inliers)
+
+        def support_set(ident):
+            keyframe = self.map.keyframes.get(ident)
+            if keyframe is None:
+                return frozenset()
+            raw_ids = frozenset(map(int, keyframe.landmark_ids)) & live
+            landmarks = [landmark for lid, landmark in self.map.landmarks.items()
+                         if lid in raw_ids]
+            conflicts = self._landmark_pixel_identity_conflicts(landmarks)
+            return raw_ids - conflicts
+
+        seen_support = {support_set(ident) for ident in excluded_keyframes}
+        # Equivalent landmark pools give _track the same bank and solve rows.
+        # Spend the probe budget on distinct pools; retain the newest alias.
+        for ident in sorted(set(candidate_ids), reverse=True):
+            keyframe = self.map.keyframes.get(ident)
+            if keyframe is None:
+                continue
+            live_ids = support_set(ident)
+            if live_ids in seen_support:
+                continue
+            seen_support.add(live_ids)
+            landmarks = [landmark for lid, landmark in self.map.landmarks.items()
+                         if lid in live_ids]
+            if len(landmarks) < minimum_matches:
+                continue
+            bank, landmark_ids = self._landmark_descriptor_bank(landmarks)
+            pairs = self._collapse_landmark_matches(
+                self._match(bank, desc), landmark_ids, pixels)
+            if len(pairs) < minimum_matches or coverage(pixels[pairs[:, 1]], size) < 3:
+                continue
+            ranked.append((len(pairs), ident))
+        return sorted(ranked, reverse=True)
+
+    def _relocalize_monocular(self, pixels, desc, size):
+        """Try a shortlist, then at most five previously unprobed keyframes.
+
+        A failed approximate retrieval must not make the rest of the map
+        permanently unreachable. Descriptor ranking can visit all keyframes;
+        the expensive PnP budget is at most five per pass, ten per frame.
+        No pose is accepted from appearance alone; ground truth is never read.
+        """
+        with self.map.lock:
+            eligible = list(self.map.keyframes)
+            if self.performance.retrieval == 'current':
+                self.retrieval.update(self.map.keyframes)
+                proposed = (self.retrieval.query(desc, self.config.retrieval_candidates)
+                            if self.config.retrieval_candidates > 0 else eligible)
+            elif self.retrieval_index is not None:
+                for ident, frame in self.map.keyframes.items():
+                    appearance = getattr(frame, 'retrieval_descriptors', frame.descriptors)
+                    self.retrieval_index.upsert(ident, frame.frame, appearance)
+                proposed = self.retrieval_index.query(desc, eligible, limit=20)
+                if proposed is None:
+                    proposed = eligible
+            else:
+                proposed = eligible
+            attempts = []
+            primary = self._rank_monocular_recovery(pixels, desc, size, proposed)
+            result, stats = self._recover_ranked(
+                pixels, desc, size, None, primary, probe_report=attempts)
+            for attempt in attempts:
+                attempt['phase'] = 'primary'
+            fallback_count = 0
+            if result is None:
+                tried = {entry['keyframe'] for entry in attempts}
+                remaining = [ident for ident in eligible if ident not in tried]
+                fallback = self._rank_monocular_recovery(
+                    pixels, desc, size, remaining, excluded_keyframes=tried)
+                fallback_count = len(fallback)
+                if fallback:
+                    self.profile.count('monocular_recovery_fallbacks')
+                    primary_attempt_count = len(attempts)
+                    result, stats = self._recover_ranked(
+                        pixels, desc, size, None, fallback, probe_report=attempts)
+                    for attempt in attempts[primary_attempt_count:]:
+                        attempt['phase'] = 'fallback'
+            stats = dict(stats)
+            selected = stats.get('relocalization_keyframe') if result is not None else None
+            for attempt in attempts:
+                attempt['selected'] = bool(attempt['keyframe'] == selected)
+            fallback_probes = sum(attempt['phase'] == 'fallback' for attempt in attempts)
+            unprobed_fallback_pools = max(0, fallback_count - fallback_probes)
+            if result is not None:
+                outcome = 'recovered'
+            elif not eligible:
+                outcome = 'empty_map'
+            elif unprobed_fallback_pools:
+                outcome = 'probe_budget_exhausted'
+            elif attempts:
+                outcome = 'geometry_rejected_all_probed_pools'
+            else:
+                outcome = 'no_viable_3d_pool'
+            stats['monocular_recovery'] = {
+                'retrieval': self.performance.retrieval,
+                'eligible_keyframes': len(eligible),
+                'proposed_keyframes': len(set(proposed)),
+                'primary_viable_keyframes': len(primary),
+                'fallback_viable_keyframes': fallback_count,
+                'minimum_input_matches': int(max(20, self.config.min_inliers)),
+                'pnp_probe_limit': 10,
+                'unprobed_fallback_pools': unprobed_fallback_pools,
+                'outcome': outcome,
+                'attempts': attempts,
+                'accepted': result is not None,
+            }
+            return result, stats
+
+    def _recover_ranked(self, pixels, desc, size, points, ranked, *, probe_report=None):
         if self.stereo is not None and points is not None:
             verified, stats = self._keyframe_stereo_reference(
                 pixels, desc, points, size, ranked
@@ -1963,6 +2165,16 @@ class SharedSlam:
                     result, stats = self._track(
                         pixels, desc, size, relocalize=True, candidate_ids=ids
                     )
+                    if probe_report is not None:
+                        probe_report.append({
+                            'keyframe': int(ident),
+                            'ranked_3d_matches': int(support),
+                            'num_matches': int(stats.get('num_matches', 0)),
+                            'num_inliers': int(stats.get('num_inliers', 0)),
+                            'geometry_passed': result is not None,
+                            'reason': (None if result is not None else stats.get(
+                                'pose_rejection_reason', 'insufficient_correspondences')),
+                        })
                     if result is not None and stats["num_inliers"] > best_stats.get(
                         "num_inliers", 0
                     ):
@@ -5888,7 +6100,8 @@ class SharedSlam:
                 info["num_matches"] = len(pairs)
                 result = (
                     initialize_monocular(
-                        initial_pixels[pairs[:, 0]], pixels[pairs[:, 1]], self.K, size
+                        initial_pixels[pairs[:, 0]], pixels[pairs[:, 1]], self.K, size,
+                        **({'scale_safe_angles': True} if self.config.monocular_scale_safe_triangulation else {})
                     )
                     if len(pairs)
                     else None
@@ -6565,6 +6778,10 @@ class SharedSlam:
                     stereo_reference = True
             if result is None:
                 result, stats = self._relocalize(pixels, desc, size, points)
+                if 'monocular_recovery' in stats:
+                    # Keep recovery failures visible without overwriting the
+                    # direct track's rejection reason or measured support.
+                    info['monocular_recovery'] = stats['monocular_recovery']
                 if result is not None:
                     info.update(stats)
                     recovered = True
@@ -7024,6 +7241,9 @@ class SharedSlam:
             feature_points=pixels.tolist(),
             inlier_mask=[j in inlier_features for j in range(len(pixels))],
         )
+        if (self.stereo is None and getattr(self, '_monocular_mapping_report', None) is not None
+                and self._monocular_mapping_report['frame'] == index):
+            info['monocular_mapping'] = self._monocular_mapping_report
         if self.config.stereo_depth_policy in ('verified_fallback', 'verified_all'):
             info['stereo_depth_verification'] = dict(self.stereo_depth_verification)
         if getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified':

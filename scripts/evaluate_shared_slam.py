@@ -82,6 +82,10 @@ def export_reserve_bytes(state, minimum_mb):
 
 def _mapping_config_from_args(args):
     return MappingConfig(features=args.features, bundle_enabled=not args.disable_bundle,
+        monocular_refined_consensus=getattr(args, 'monocular_refined_consensus', False),
+        monocular_recovery_fallback=getattr(args, 'monocular_recovery_fallback', False),
+        monocular_covisible_triangulation=getattr(args, 'monocular_covisible_triangulation', False),
+        monocular_scale_safe_triangulation=getattr(args, 'monocular_scale_safe_triangulation', False),
         loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
         stereo_pose_arbitration=args.stereo_pose_arbitration,
         stereo_verified_reference_retry=getattr(args, "stereo_verified_reference_retry", False),
@@ -127,6 +131,14 @@ def main():
     parser.add_argument("--max-wall-seconds", type=float)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--disable-bundle", action="store_true")
+    parser.add_argument('--monocular-refined-consensus', action='store_true',
+                        help='Experimental: revalidate each PnP inlier after refinement')
+    parser.add_argument('--monocular-recovery-fallback', action='store_true',
+                        help='Experimental: rank live 3D support and retry omitted recovery views')
+    parser.add_argument('--monocular-covisible-triangulation', action='store_true',
+                        help='Experimental: extend triangulation to older observation-linked views')
+    parser.add_argument('--monocular-scale-safe-triangulation', action='store_true',
+                        help='Additional local experiment: robust ray normalization for monocular parallax gates')
     parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
@@ -192,6 +204,11 @@ def main():
         help="Keep this much free space in addition to estimated export size",
     )
     args = parser.parse_args()
+    if args.stereo and (args.monocular_refined_consensus
+                        or args.monocular_recovery_fallback
+                        or args.monocular_covisible_triangulation
+                        or args.monocular_scale_safe_triangulation):
+        parser.error('Monocular research options require monocular input; remove --stereo')
     if not 0 <= args.seed < 2**31:
         parser.error('--seed must be between 0 and 2147483647')
     try:

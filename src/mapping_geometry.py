@@ -28,6 +28,27 @@ def match_descriptors(first, second, ratio=0.7):
     ).reshape(-1, 2)
 
 
+def ray_angles_degrees(first, second):
+    """Scale-safe angles; invalid or zero rays return NaN and cannot pass gates.
+
+    Scale by each ray's largest component before taking norms, avoiding both
+    overflow and a fixed world-length floor. This does not repair cancellation
+    already incurred when subtracting large, nearly equal world coordinates.
+    """
+    def normalized(rays):
+        rays = np.asarray(rays, dtype=np.float64)
+        scale = np.max(np.abs(rays), axis=1)
+        valid = np.isfinite(rays).all(axis=1) & (scale > 0)
+        result = np.full_like(rays, np.nan)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            scaled = rays[valid] / scale[valid, None]
+            result[valid] = scaled / np.linalg.norm(scaled, axis=1)[:, None]
+        return result
+
+    a, b = normalized(first), normalized(second)
+    return np.degrees(np.arccos(np.clip(np.sum(a * b, axis=1), -1., 1.)))
+
+
 def triangulate(
     first_pixels,
     second_pixels,
@@ -36,6 +57,8 @@ def triangulate(
     matrix,
     min_angle=1.0,
     max_error=2.0,
+    *,
+    scale_safe_angles=False,
 ):
     first_pixels = np.asarray(first_pixels, np.float64)
     second_pixels = np.asarray(second_pixels, np.float64)
@@ -51,18 +74,21 @@ def triangulate(
     pred1, z1 = project(points, first_pose, matrix)
     pred2, z2 = project(points, second_pose, matrix)
     ray1, ray2 = points - first_pose[:3, 3], points - second_pose[:3, 3]
-    angles = np.degrees(
-        np.arccos(
-            np.clip(
-                np.sum(ray1 * ray2, axis=1)
-                / np.maximum(
-                    np.linalg.norm(ray1, axis=1) * np.linalg.norm(ray2, axis=1), 1e-12
-                ),
-                -1,
-                1,
+    if scale_safe_angles:
+        angles = ray_angles_degrees(ray1, ray2)
+    else:
+        angles = np.degrees(
+            np.arccos(
+                np.clip(
+                    np.sum(ray1 * ray2, axis=1)
+                    / np.maximum(
+                        np.linalg.norm(ray1, axis=1) * np.linalg.norm(ray2, axis=1), 1e-12
+                    ),
+                    -1,
+                    1,
+                )
             )
         )
-    )
     valid = (
         np.isfinite(points).all(axis=1)
         & (z1 > 0)
@@ -150,7 +176,8 @@ def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, bas
         **report, "stereo_verification": "current_right_reprojection"}
 
 
-def initialize_monocular(first, second, matrix, size):
+def initialize_monocular(first, second, matrix, size, *, scale_safe_angles=False):
+    triangulation_options = {'scale_safe_angles': True} if scale_safe_angles else {}
     if len(first) < 50:
         return None
     essential, mask = cv.findEssentialMat(
@@ -169,10 +196,12 @@ def initialize_monocular(first, second, matrix, size):
     pose = np.eye(4)
     pose[:3, :3] = r.T
     pose[:3, 3] = (-r.T @ t).ravel()
-    points, ids = triangulate(first, second, np.eye(4), pose, matrix, min_angle=1.5)
+    points, ids = triangulate(first, second, np.eye(4), pose, matrix, min_angle=1.5,
+                              **triangulation_options)
     ids = ids[mask.ravel()[ids] != 0]
     points, _ = triangulate(
-        first[ids], second[ids], np.eye(4), pose, matrix, min_angle=1.5
+        first[ids], second[ids], np.eye(4), pose, matrix, min_angle=1.5,
+        **triangulation_options
     )
     # Enough well-conditioned depth must explain the original matched support,
     # rather than accepting a tiny near-point subset of predominantly weak geometry.
@@ -186,7 +215,8 @@ def initialize_monocular(first, second, matrix, size):
 
 
 def estimate_pose(
-    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None
+    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None,
+    *, revalidate_inliers=False,
 ):
     """Keep a geometrically validated seeded pose; retry independently on failure.
 
@@ -196,6 +226,9 @@ def estimate_pose(
     in complete sequence tests, so valid seeded estimates are preserved.
     """
     diagnostics = diagnostics if diagnostics is not None else {}
+    # Preserve the original private-solver call shape when the option is off,
+    # including existing adapters or instrumentation around that solver.
+    hypothesis_options = {'revalidate_inliers': True} if revalidate_inliers else {}
     seeded_diagnostics = {}
     if initial_pose is not None:
         seeded = None
@@ -211,6 +244,7 @@ def estimate_pose(
                     min_inliers,
                     initial_pose,
                     seeded_diagnostics,
+                    **hypothesis_options,
                 )
             except (cv.error, np.linalg.LinAlgError):
                 seeded_diagnostics["pose_rejection_reason"] = "seeded_solver_failed"
@@ -227,6 +261,7 @@ def estimate_pose(
             size,
             min_inliers,
             diagnostics=independent_diagnostics,
+            **hypothesis_options,
         )
     except cv.error:
         independent = None
@@ -242,7 +277,8 @@ def estimate_pose(
 
 
 def _estimate_pose_hypothesis(
-    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None
+    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None,
+    *, revalidate_inliers=False,
 ):
     diagnostics = diagnostics if diagnostics is not None else {}
     if len(points) < min_inliers:
@@ -284,6 +320,10 @@ def _estimate_pose_hypothesis(
     rv, tv = cv.solvePnPRefineLM(
         points[ids].astype(float), pixels[ids].astype(float), matrix, None, rv, tv
     )
+    if revalidate_inliers:
+        return _validated_refined_consensus(
+            points, pixels, matrix, size, min_inliers, ids, rv, tv, diagnostics
+        )
     pose = np.eye(4)
     pose[:3, :3] = cv.Rodrigues(rv)[0].T
     pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
@@ -316,6 +356,81 @@ def _estimate_pose_hypothesis(
         )
         return None
     return pose, ids, float(np.median(error))
+
+
+def _validated_refined_consensus(
+    points, pixels, matrix, size, min_inliers, ids, rv, tv, diagnostics
+):
+    """Return only rows that satisfy the pixel gate at the returned pose.
+
+    RANSAC's mask belongs to its pre-LM hypothesis. Least-squares refinement
+    can move some of those rows outside the 2-pixel gate, even while the median
+    remains small. Keep a monotonically shrinking subset of that original
+    consensus; do not count newly explained rows as independent evidence.
+
+    At most one additional LM solve is allowed after pruning. Count, fraction,
+    image coverage and median gates are evaluated again on the final subset.
+    The 2px / 1.5px / 25% / three-cell thresholds are inherited from this file,
+    not tuned to the room trajectory or reference poses.
+    """
+    original_count = len(ids)
+    ids = np.asarray(ids, dtype=int).copy()
+    diagnostics['ransac_inliers_before_refinement'] = original_count
+    diagnostics['refinement_consensus_revalidated'] = True
+    diagnostics['consensus_refits'] = 0
+    for stage in range(2):
+        if not np.isfinite(rv).all() or not np.isfinite(tv).all():
+            diagnostics['pose_rejection_reason'] = 'nonfinite_refined_pose'
+            return None
+        pose = np.eye(4)
+        pose[:3, :3] = cv.Rodrigues(rv)[0].T
+        pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
+        if not np.isfinite(pose).all():
+            diagnostics['pose_rejection_reason'] = 'nonfinite_refined_pose'
+            return None
+        # Monocular map scale is arbitrary. A fixed positive depth floor can
+        # change the projected pixel after a harmless global rescaling. Divide
+        # by the actual homogeneous coordinate and reject nonfinite outcomes.
+        with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+            camera = (points[ids] - pose[:3, 3]) @ pose[:3, :3]
+            homogeneous = camera @ matrix.T
+            predicted = homogeneous[:, :2] / homogeneous[:, 2:]
+            depth = camera[:, 2]
+            errors = np.linalg.norm(predicted - pixels[ids], axis=1)
+        keep = (np.isfinite(errors) & np.isfinite(depth)
+                & (depth > 0) & (errors <= 2.0))
+        rejected = bool(np.any(~keep))
+        ids, errors = ids[keep], errors[keep]
+        count = len(ids)
+        fraction = count / len(points)
+        cells = coverage(pixels[ids], size) if count else 0
+        median = float(np.median(errors)) if count else None
+        diagnostics.update(
+            candidate_inliers=count,
+            candidate_inlier_ratio=fraction,
+            candidate_median_reprojection_px=median,
+            candidate_feature_cells=cells,
+            refined_consensus_rejected=original_count-count,
+        )
+        if count < min_inliers or fraction < .25:
+            diagnostics['pose_rejection_reason'] = 'insufficient_refined_inlier_support'
+            return None
+        if cells < 3:
+            diagnostics['pose_rejection_reason'] = 'insufficient_refined_spatial_support'
+            return None
+        if stage == 0 and rejected:
+            rv, tv = cv.solvePnPRefineLM(
+                points[ids].astype(float), pixels[ids].astype(float),
+                matrix, None, rv, tv,
+            )
+            diagnostics['consensus_refits'] = 1
+            continue
+        if median > 1.5:
+            diagnostics['pose_rejection_reason'] = 'refined_reprojection_error'
+            return None
+        diagnostics.pop('pose_rejection_reason', None)
+        return pose, ids, median
+    raise AssertionError('bounded consensus refinement did not terminate')
 
 
 def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed):

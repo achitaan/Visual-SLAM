@@ -126,8 +126,7 @@ def test_room_is_not_started_after_desk_consumes_its_allowance(runner, tmp_path,
     def child(command, **kwargs):
         calls.append(command)
         out = Path(command[command.index('--output')+1])
-        (out / 'evaluation.json').write_text(json.dumps({
-            'frames': 613, 'states': {'accepted': 613}, 'peak_memory_mb': 1.}))
+        (out / 'evaluation.json').write_text(json.dumps(complete_evaluation()))
         clock[0] = 840.
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(runner.subprocess, 'run', child)
@@ -145,8 +144,7 @@ def test_disk_is_rechecked_before_second_scene(runner, tmp_path, monkeypatch):
     def child(command, **kwargs):
         calls.append(command)
         out = Path(command[command.index('--output')+1])
-        (out / 'evaluation.json').write_text(json.dumps({
-            'frames': 613, 'states': {'accepted': 613}, 'peak_memory_mb': 1.}))
+        (out / 'evaluation.json').write_text(json.dumps(complete_evaluation()))
         free[0] = 5*1024**3 - 1
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(runner.subprocess, 'run', child)
@@ -265,3 +263,90 @@ def test_final_command_metadata_io_cannot_extend_the_child_deadline(runner, tmp_
     records = run_mocked(runner, tmp_path, grant)
     assert len(records) == 1 and events == ['child', 'final_metadata']
     assert records[0]['launch_wall_seconds'] == 0.
+
+
+def complete_evaluation(scene='desk'):
+    frames = {'desk': 613, 'room': 1362}[scene]
+    return {
+        'dataset': 'tum', 'sequence': 'freiburg1_' + scene, 'frames': frames,
+        'states': {'initializing': 4, 'tracking': frames - 5, 'lost': 1},
+        'peak_memory_mb': 1., 'coverage': 'full',
+        'status': 'completed_with_tracking_loss', 'interruption': None,
+        'storage_guard': {'interruption': None},
+    }
+
+
+@pytest.mark.parametrize('field,value', [
+    ('frames', 613.0), ('coverage', 'partial'), ('status', 'wall_budget_exceeded'),
+    ('dataset', 'kitti'), ('sequence', 'freiburg1_room'),
+    ('interruption', {'reason': 'wall_budget_exceeded'}),
+    ('storage_guard', {'interruption': {'reason': 'low_disk_space'}}),
+    ('states', {'tracking': 612}), ('states', {'tracking': 614, 'lost': -1}),
+    ('states', {'tracking': 612, 'lost': True}), ('states', {'tracking': 613.0}),
+    ('states', {'unknown': 613}), ('states', []),
+    ('peak_memory_mb', float('nan')), ('peak_memory_mb', float('inf')),
+    ('peak_memory_mb', -1), ('peak_memory_mb', True),
+    pytest.param('peak_memory_mb', 10**400, id='overflowing-memory-integer'),
+])
+def test_invalid_completion_export_stops_before_room(runner, tmp_path, monkeypatch, field, value):
+    grant, _ = prepared(runner, tmp_path, monkeypatch)
+    calls = []
+    def child(command, **kwargs):
+        calls.append(command)
+        out = Path(command[command.index('--output') + 1])
+        evaluation = complete_evaluation()
+        evaluation[field] = value
+        (out / 'evaluation.json').write_text(json.dumps(evaluation))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(runner.subprocess, 'run', child)
+    records = run_mocked(runner, tmp_path, grant)
+    assert len(calls) == len(records) == 1
+    assert records[0]['full_range'] is False
+    assert records[0]['evaluation_error']
+    assert records[0]['owned_child_wait_observed'] is True
+    assert not (tmp_path / 'results/consensus-room-full-seed0').exists()
+    assert json.loads((tmp_path / 'results/consensus-batch-seed0-result.json').read_text())['runs'] == records
+
+
+def test_complete_exports_can_advance_and_finish_both_scenes(runner, tmp_path, monkeypatch):
+    grant, _ = prepared(runner, tmp_path, monkeypatch)
+    calls = []
+    def child(command, **kwargs):
+        scene = ('desk', 'room')[len(calls)]
+        calls.append(command)
+        out = Path(command[command.index('--output') + 1])
+        (out / 'evaluation.json').write_text(json.dumps(complete_evaluation(scene)))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(runner.subprocess, 'run', child)
+    records = run_mocked(runner, tmp_path, grant)
+    assert len(calls) == len(records) == 2
+    assert all(row['full_range'] is True for row in records)
+
+
+@pytest.mark.parametrize('status,states', [
+    ('completed', {'initializing': 4, 'tracking': 608, 'relocalized': 1}),
+    ('completed_with_tracking_loss', {'initializing': 4, 'tracking': 608, 'lost': 1}),
+    ('initialization_failed', {'initializing': 613}),
+])
+def test_full_range_outcomes_are_not_quality_claims(runner, status, states):
+    evaluation = complete_evaluation()
+    evaluation.update(status=status, states=states)
+    summary = runner.completion_summary(evaluation, 'desk', 613)
+    assert summary['full_range'] is True
+    assert summary['evaluation_status'] == status
+    assert summary['states'] == states
+
+
+@pytest.mark.parametrize('field', ['dataset', 'sequence', 'frames', 'coverage', 'status',
+                                  'interruption', 'storage_guard', 'states', 'peak_memory_mb'])
+def test_missing_completion_evidence_is_not_assumed(runner, field):
+    evaluation = complete_evaluation()
+    del evaluation[field]
+    with pytest.raises(ValueError):
+        runner.completion_summary(evaluation, 'desk', 613)
+
+
+@pytest.mark.parametrize('evaluation', [None, [], 613, 'full'])
+def test_nonobject_evaluation_is_rejected(runner, evaluation):
+    with pytest.raises(ValueError, match='must be an object'):
+        runner.completion_summary(evaluation, 'desk', 613)

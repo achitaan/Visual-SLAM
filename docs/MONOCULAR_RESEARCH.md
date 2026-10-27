@@ -64,7 +64,13 @@ the evaluator's **5.25 GiB startup floor**: 5 GiB plus its existing 256 MiB expo
 reserve. Preparation/log/disk I/O finishes before final child-budget allocation;
 the exact launched command is recorded after terminal acknowledgement. Failed,
 timed-out, incomplete or malformed output stops the batch without starting the
-next scene. Existing results are never overwritten.
+next scene. Completion requires matching dataset/sequence, an integer full frame
+count, explicit full coverage with no processing/storage interruption, exhaustive
+nonnegative integer state counts, and finite nonnegative peak memory. Complete
+initialization failures and tracking-loss outcomes remain valid processing
+results, not quality passes. Malformed exports remain on disk while terminal
+receipts record rejection without copying unsafe values. Existing results are
+never overwritten.
 
 Neither mocked timeout tests nor the owned-child wait establish an upper bound
 for platform transport loss, uninterruptible I/O or shutdown. Those remain

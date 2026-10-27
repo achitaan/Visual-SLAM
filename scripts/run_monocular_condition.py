@@ -99,6 +99,49 @@ def _write_json(path, value):
     temporary.replace(path)
 
 
+def completion_summary(evaluation, scene, expected):
+    """Validate complete processing, not trajectory quality or scientific gates.
+
+    Keep raw exports unchanged. Validate before copying fields into strict JSON
+    terminal receipts so malformed/nonfinite data cannot erase terminal evidence.
+    Initialization failure and tracking loss are legitimate full-range outcomes.
+    """
+    if not isinstance(evaluation, dict):
+        raise ValueError('evaluation must be an object')
+    if evaluation.get('dataset') != 'tum' or evaluation.get('sequence') != 'freiburg1_' + scene:
+        raise ValueError('evaluation dataset/sequence does not match launched scene')
+    frames = evaluation.get('frames')
+    if type(frames) is not int or frames != expected:
+        raise ValueError('evaluation must account for the complete integer frame range')
+    if evaluation.get('coverage') != 'full':
+        raise ValueError('evaluation coverage is not full')
+    if evaluation.get('status') not in (
+            'completed', 'completed_with_tracking_loss', 'initialization_failed'):
+        raise ValueError('evaluation status is not a terminal full-range outcome')
+    if 'interruption' not in evaluation or evaluation['interruption'] is not None:
+        raise ValueError('evaluation has missing or nonempty interruption evidence')
+    storage = evaluation.get('storage_guard')
+    if not isinstance(storage, dict) or 'interruption' not in storage or storage['interruption'] is not None:
+        raise ValueError('evaluation has missing or nonempty storage interruption evidence')
+    states = evaluation.get('states')
+    if (not isinstance(states, dict) or not states
+            or not set(states) <= {'initializing', 'tracking', 'lost', 'relocalized'}
+            or any(type(count) is not int or count < 0 for count in states.values())
+            or sum(states.values()) != expected):
+        raise ValueError('evaluation states must exhaustively account for every frame')
+    memory = evaluation.get('peak_memory_mb')
+    try:
+        finite_memory = math.isfinite(memory)
+    except (TypeError, OverflowError):
+        finite_memory = False
+    if (isinstance(memory, bool) or not isinstance(memory, (int, float))
+            or not finite_memory or memory < 0):
+        raise ValueError('evaluation peak_memory_mb must be finite and nonnegative')
+    return {'frames': frames, 'states': states, 'full_range': True,
+            'peak_memory_mb': memory, 'coverage': evaluation['coverage'],
+            'evaluation_status': evaluation['status']}
+
+
 def run_condition(base, root, condition, seed, grant, wall_deadline):
     require_cpu_release()
     started = time.monotonic()
@@ -205,9 +248,7 @@ def run_condition(base, root, condition, seed, grant, wall_deadline):
             if (out / 'evaluation.json').exists():
                 try:
                     evaluation = json.loads((out / 'evaluation.json').read_text())
-                    record.update(frames=evaluation['frames'], states=evaluation['states'],
-                                  full_range=evaluation['frames'] == expected,
-                                  peak_memory_mb=evaluation['peak_memory_mb'])
+                    record.update(completion_summary(evaluation, scene, expected))
                 except (ValueError, KeyError, TypeError) as error:
                     record.update(full_range=False, evaluation_error=str(error))
             _write_json(out / 'launch-result.json', record)

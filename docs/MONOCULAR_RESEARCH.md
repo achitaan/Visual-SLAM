@@ -77,3 +77,30 @@ for platform transport loss, uninterruptible I/O or shutdown. Those remain
 external admission concerns. Harness-v2 batch bookkeeping differs from earlier
 local runs, so historical aggregate timing is not automatically a compatible
 speed control. No enabled full-sequence benefit is claimed by this checkpoint.
+
+## Offline scoring supplement
+
+`scripts/supplement_monocular_scores.py` adds versioned diagnostics to a saved
+full-fit scoring report without loading an estimator or refitting any trajectory:
+
+```sh
+python scripts/supplement_monocular_scores.py --scores /path/to/scores.json \
+  --runs /path/to/control /path/to/candidate --output /path/to/new-supplement.json
+```
+
+Run directories must match the report's folder identities and order. The caller
+must independently verify matched dataset/frame identities, original full-fit
+alignment provenance and terminal processing before interpreting a comparison.
+The supplement hashes its score and tracking inputs and refuses to overwrite an
+existing output. It does not replace historical reports or make a gate verdict.
+
+For each online/corrected export, every run uses the same intersection of accepted
+**and associated** input frames. RMSE and p95 reuse saved residuals; p95 uses NumPy's
+linear percentile (`index = (n-1)*0.95`). Empty intersections or unavailable fits
+are unassessable, never zero-error passes. Malformed residuals are rejected.
+
+For each lost-to-accepted transition, the persistence diagnostic counts accepted
+states in event+1 through event+30, excluding the recovery frame. Fewer than 27 of
+30 flags unstable continuation, not a false recovery. Short terminal windows are
+censored, with no stable/unstable verdict. This does not supply missing per-row
+geometric recovery audits, rotation/RPE measurements or real-data benefit evidence.

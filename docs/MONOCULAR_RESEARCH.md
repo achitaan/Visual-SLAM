@@ -104,3 +104,31 @@ states in event+1 through event+30, excluding the recovery frame. Fewer than 27 
 30 flags unstable continuation, not a false recovery. Short terminal windows are
 censored, with no stable/unstable verdict. This does not supply missing per-row
 geometric recovery audits, rotation/RPE measurements or real-data benefit evidence.
+
+### Orientation and corrected relative-pose audits
+
+`audit_monocular_rotations.py` and `audit_monocular_rpe.py` accept the same
+`--scores`, ordered `--runs` and fresh `--output`, plus `--dataset` (the TUM
+folder) and `--sequence` (for example `freiburg1_room`). Both validate sequence
+labels, reconstruct the historical nearest-within-20-ms unique ground-truth
+association, require agreement with saved associated frame IDs, hash inputs and
+refuse output replacement. Caller review of the original fit/dataset provenance
+remains necessary; matching labels alone are not proof of that provenance.
+
+The orientation audit left-multiplies camera-to-world orientations by the saved
+full-fit alignment rotation. It reports angular errors for all, accepted and
+common-accepted frames, plus recovery events; no orientation/subset refit is
+performed. Quaternions and proper rotation matrices are validated.
+
+The relative-pose audit is **corrected-export only**. Its prospective endpoint
+rule selects the nearest full-input timestamp to start+1.0 seconds, within 20 ms,
+with ties going to the earlier frame. Missing associated endpoints are excluded,
+not replaced by a different pair. No interpolation is performed. It reuses the
+saved full-fit Sim(3) scale; global rotation/translation cancel in the relative
+transform. Errors are metres/degrees, not distance-normalized KITTI drift.
+Common-accepted comparisons use identical associated pair IDs with both endpoints
+accepted in every run. Empty/missing comparisons are unassessable.
+
+Online poses lack common correction-epoch transforms, so online RPE is explicitly
+unassessable. These audits neither establish completion/physical correctness nor
+supply a false-recovery threshold, promotion verdict or candidate benefit claim.

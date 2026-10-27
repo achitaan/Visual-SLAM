@@ -132,3 +132,18 @@ accepted in every run. Empty/missing comparisons are unassessable.
 Online poses lack common correction-epoch transforms, so online RPE is explicitly
 unassessable. These audits neither establish completion/physical correctness nor
 supply a false-recovery threshold, promotion verdict or candidate benefit claim.
+
+### Recorded process-latency strata
+
+`summarize_monocular_latency.py --runs /path/to/run [...] --output /path/to/new.json`
+joins recorded process timings to tracking rows by exact integer frame ID. It
+reports count/median/p95/maximum for each state and recovery/nonrecovery strata,
+plus unmatched IDs and input hashes. Timing gaps do not change recovery detection:
+the prior **input frame's** tracking state is required; a missing predecessor is
+unassessable. Exact joins do not prove full dataset completion. Empty strata have
+null metrics, and existing output files cannot be overwritten.
+
+These are `SharedSlam.process` wall times, including synchronous waits and worker
+contention but excluding load/export/shutdown—not end-to-end or stage timings.
+Process-time map size and lock costs remain unavailable; neither `map_revision`
+nor matched `tracked_landmarks` is a substitute. No speed benefit is inferred.

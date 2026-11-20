@@ -158,17 +158,55 @@ def optimize_similarities(poses, edges, max_evaluations=200):
     return output, scales
 
 
+def fuse_loop_landmarks(
+    map_state,
+    query_kf_id: int,
+    match_kf_id: int,
+    T_match_query: np.ndarray,
+    K: np.ndarray,
+    radius_px: float = 4.0,
+) -> int:
+    """Fuse duplicate landmarks across a verified loop pair (match_kf_id, query_kf_id)."""
+    from local_map_tracker import fuse_neighbor_landmarks
+
+    _ = T_match_query
+    if query_kf_id not in map_state.keyframes or match_kf_id not in map_state.keyframes:
+        return 0
+    query_kf = map_state.keyframes[query_kf_id]
+    # Project landmarks from match_kf (and its immediate neighbors) into query_kf after pose correction
+    neighbors = [k for k in range(max(0, match_kf_id - 2), match_kf_id + 3) if k in map_state.keyframes]
+    return fuse_neighbor_landmarks(
+        map_state, query_kf, neighbors, K, radius_px=radius_px
+    )
+
+
 class LiveLoopWorker:
-    def __init__(self, matrix, metric, mode="live", performance=None, profiler=None, matcher=None):
+    def __init__(
+        self,
+        matrix,
+        metric,
+        mode="live",
+        performance=None,
+        profiler=None,
+        matcher=None,
+        max_keyframes=300,
+        use_weighted_pgo=False,
+        use_vlad_retrieval=False,
+    ):
         if mode not in ("off", "live", "offline"):
             raise ValueError("Loop mode must be off, live or offline")
         retrieval = getattr(performance, "retrieval", "current")
+        if use_vlad_retrieval:
+            retrieval = "indexed"
         if retrieval not in ("current", "indexed", "exhaustive"):
             raise ValueError("Retrieval must be current, indexed or exhaustive")
         self.mode = mode
         self.finalizing = False
         self.performance = performance
         self.retrieval_mode = retrieval
+        self.max_keyframes = int(max_keyframes)
+        self.use_weighted_pgo = bool(use_weighted_pgo)
+        self.use_vlad_retrieval = bool(use_vlad_retrieval)
         self.retrieval = KeyframeRetrieval() if retrieval == "current" else None
         self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
         self.cpu_optimizations = bool(getattr(performance, "cpu_optimizations", False))
@@ -219,14 +257,14 @@ class LiveLoopWorker:
         if self.future is not None or len(state.keyframes) < 3:
             return
         with state.lock:
-            if len(state.keyframes) > 300:
+            if self.max_keyframes > 0 and len(state.keyframes) > self.max_keyframes:
                 self.events.append({"type": "loop_skipped", "reason": "graph_size_not_validated"})
                 return
             latest = state.keyframes[max(state.keyframes)]
             first = state.keyframes[min(state.keyframes)]
             if latest.frame - first.frame < 150:
                 return
-            if self.cpu_optimizations:
+            if self.cpu_optimizations or self.use_vlad_retrieval:
                 snapshot = {
                     ident: self._snapshot_keyframe(frame)
                     for ident, frame in state.keyframes.items()
@@ -277,7 +315,9 @@ class LiveLoopWorker:
                         ident, frame.frame, appearance_descriptors(frame)
                     )
                 shortlisted = self.retrieval_index.query(
-                    appearance_descriptors(last), eligible, limit=20
+                    appearance_descriptors(last),
+                    eligible,
+                    limit=8 if self.use_vlad_retrieval else 20,
                 )
             # Vocabulary startup signals a bounded exhaustive fallback.
             if shortlisted is None:
@@ -299,8 +339,11 @@ class LiveLoopWorker:
         candidates = sorted(candidates, reverse=True)[:8]
         newly_verified = []
         attempts = []
+        min_support = 20 if self.use_vlad_retrieval else 0
         pairs = [
-            (support, i, current) for support, i in candidates[:3]
+            (support, i, current)
+            for support, i in candidates[:3]
+            if support >= min_support
         ]
         pairs.extend(
             (0, i, j)
@@ -354,31 +397,52 @@ class LiveLoopWorker:
             }
         poses = [k.pose for k in keyframes.values()]
         if self.metric:
-            edges = []
-            for i in range(len(poses) - 1):
-                edges.append(
-                    (
-                        i,
-                        i + 1,
-                        np.linalg.inv(poses[i]) @ poses[i + 1],
-                        np.diag([1000.0] * 3 + [10.0] * 3),
-                        "odometry",
-                    )
+            if self.use_weighted_pgo:
+                from pose_graph import optimize_weighted_pose_graph
+
+                odom_edges = [
+                    (i, i + 1, np.linalg.inv(poses[i]) @ poses[i + 1])
+                    for i in range(len(poses) - 1)
+                ]
+                loop_edges = [
+                    (i, j, result["measurement"], result)
+                    for (i, j), result in loops.items()
+                ]
+                opt_dict = self.profiler.call(
+                    "graph_optimization",
+                    optimize_weighted_pose_graph,
+                    poses,
+                    odom_edges,
+                    loop_edges,
                 )
-            for (i, j), result in loops.items():
-                edges.append(
-                    (
-                        i,
-                        j,
-                        result["measurement"],
-                        np.diag([2000.0] * 3 + [20.0] * 3),
-                        "loop",
+                corrected = [opt_dict[i] for i in range(len(poses))]
+                scales = np.ones(len(poses))
+            else:
+                edges = []
+                for i in range(len(poses) - 1):
+                    edges.append(
+                        (
+                            i,
+                            i + 1,
+                            np.linalg.inv(poses[i]) @ poses[i + 1],
+                            np.diag([1000.0] * 3 + [10.0] * 3),
+                            "odometry",
+                        )
                     )
+                for (i, j), result in loops.items():
+                    edges.append(
+                        (
+                            i,
+                            j,
+                            result["measurement"],
+                            np.diag([2000.0] * 3 + [20.0] * 3),
+                            "loop",
+                        )
+                    )
+                corrected = self.profiler.call(
+                    "graph_optimization", optimize, poses, edges, max_evaluations=500
                 )
-            corrected = self.profiler.call(
-                "graph_optimization", optimize, poses, edges, max_evaluations=500
-            )
-            scales = np.ones(len(poses))
+                scales = np.ones(len(poses))
         else:
             edges = []
             for i in range(len(poses) - 1):
@@ -445,6 +509,13 @@ class LiveLoopWorker:
                     measurement["translation"] = (
                         measurement["translation"] * result["scales"][i]
                     )
+            elif self.use_weighted_pgo:
+                for (match_kf, query_kf) in result.get("new_loops", ()):
+                    loop_rec = result["loops"].get((match_kf, query_kf))
+                    if loop_rec is not None and "measurement" in loop_rec:
+                        fuse_loop_landmarks(
+                            state, query_kf, match_kf, loop_rec["measurement"], self.matrix
+                        )
             self.verified = result["loops"]
             self.last_correction_before = before
             self.last_correction_after = [pose.copy() for pose in state.poses]

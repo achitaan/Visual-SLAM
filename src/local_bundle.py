@@ -196,6 +196,8 @@ def local_bundle_adjustment(
     use_analytic_jacobian=False,
     use_map_index=False,
     selected_keyframes=None,
+    cull_outliers_chi2=False,
+    use_heteroscedastic_weights=False,
 ):
     if landmark_policy not in ("bounded_fixed", "joint_tracks"):
         raise ValueError(
@@ -420,7 +422,26 @@ def local_bundle_adjustment(
             reverse=True,
         )
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
-        landmarks = landmarks[:max_landmarks]
+        if state.metric and use_heteroscedastic_weights and len(landmarks) > max_landmarks:
+            stereo_lms = [
+                l for l in landmarks
+                if any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
+            ]
+            bearing_lms = [
+                l for l in landmarks
+                if not any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
+            ]
+            max_bearing = max(10, int(0.25 * max_landmarks))
+            stereo_quota = max_landmarks - min(len(bearing_lms), max_bearing)
+            chosen = stereo_lms[:stereo_quota]
+            remaining = max_landmarks - len(chosen)
+            if remaining > 0:
+                chosen.extend(bearing_lms[:remaining])
+            if len(chosen) < max_landmarks:
+                chosen.extend(stereo_lms[stereo_quota:stereo_quota + (max_landmarks - len(chosen))])
+            landmarks = chosen[:max_landmarks]
+        else:
+            landmarks = landmarks[:max_landmarks]
         if len(landmarks) < 15:
             return {"applied": False, "reason": "insufficient_observations",
                     **solver_metadata("not_run")}
@@ -976,12 +997,15 @@ def local_bundle_adjustment(
         values[z <= 0] = 1e4
         return values[mask]
 
+    ba_obs_weights = None
+    ba_obs_weights_active = None
+
     def optimized_residual(x, cameras=None, points=None):
         if points is None:
             points = x[point_offset:point_limit].reshape(-1, 3)
         if cameras is None:
             cameras = camera_poses_for(x)
-        return observation_residual(
+        vals = observation_residual(
             points[record_points],
             cameras,
             record_cameras,
@@ -989,6 +1013,9 @@ def local_bundle_adjustment(
             measured_right,
             dimension_mask,
         )
+        if ba_obs_weights_active is not None:
+            return vals * ba_obs_weights_active
+        return vals
 
     def objective(r):
         a = np.abs(r)
@@ -2481,6 +2508,7 @@ def local_bundle_adjustment(
             bool(state.metric),
             f_scale=2.0,
             max_iter=20,
+            obs_weights=ba_obs_weights,
         )
     else:
         result = least_squares(residual, initial, **solver_options)
@@ -3162,6 +3190,34 @@ def local_bundle_adjustment(
         # Multiview world points are independent; single-view stereo points retain
         # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
+        if cull_outliers_chi2:
+            culled_obs = 0
+            fx_b = float(matrix[0, 0]) * float(baseline)
+            for idx_pt, kf_id, obs in records:
+                lm = state.landmarks.get(landmarks[idx_pt].id)
+                if lm is None or kf_id not in lm.observations or len(lm.observations) <= 1:
+                    continue
+                if kf_id not in state.keyframes:
+                    continue
+                kf_pose = state.keyframes[kf_id].pose
+                pc = kf_pose[:3, :3].T @ (lm.position - kf_pose[:3, 3])
+                is_outlier = pc[2] <= 0.05
+                if not is_outlier:
+                    h = matrix @ pc
+                    uv = h[:2] / max(float(h[2]), 1e-9)
+                    err_uv = uv - np.asarray(obs.pixel, dtype=float)
+                    err_sq = float(err_uv[0] * err_uv[0] + err_uv[1] * err_uv[1])
+                    if state.metric and obs.right_u is not None:
+                        u_r = float(uv[0]) - fx_b / max(float(pc[2]), 1e-9) - float(disparity_offset)
+                        err_r = u_r - float(obs.right_u)
+                        chi2 = err_sq + err_r * err_r
+                        is_outlier = (chi2 > 11.34) or (err_sq > 12.25) or (abs(err_r) > 3.5)
+                    else:
+                        is_outlier = (err_sq > 9.21)
+                if is_outlier and len(lm.observations) > 1:
+                    lm.observations.pop(kf_id, None)
+                    culled_obs += 1
+            report["culled_outlier_observations"] = int(culled_obs)
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)
             training_bundle_summary['committed_map_revision'] = int(state.revision)

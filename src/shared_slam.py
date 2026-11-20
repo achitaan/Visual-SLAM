@@ -305,6 +305,16 @@ class MappingConfig:
                 {
                     "use_incremental_map_index": True,
                     "use_analytic_ba_jacobians": True,
+                    "use_grid_bucketing": True,
+                    "use_projective_tracking": False,
+                    "use_heteroscedastic_stereo_pose": True,
+                    "use_far_stereo_points": True,
+                    "use_covisible_ba": True,
+                    "use_adaptive_keyframe_parallax": True,
+                    "loop_mode": "live" if stereo else "off",
+                    "max_live_loop_keyframes": 0,
+                    "use_weighted_pgo": True,
+                    "use_vlad_loop_retrieval": True,
                 }
             )
         params.update(overrides)
@@ -468,13 +478,52 @@ class SharedSlam:
         if not np.isfinite(contrast) or contrast <= 0:
             raise ValueError("Feature contrast threshold must be finite and positive")
         self.detector = cv.SIFT_create(nfeatures=self.config.features, contrastThreshold=contrast)
+        self._grid_detector = (
+            cv.SIFT_create(
+                nfeatures=max(int(self.config.features * 1.4), 2100),
+                contrastThreshold=contrast,
+            )
+            if getattr(self.config, "use_grid_bucketing", False)
+            else None
+        )
+        self._fast_stereo_sgbm = None
+        if (
+            self.stereo is not None
+            and getattr(self.config, "use_grid_bucketing", False)
+            and isinstance(getattr(self.stereo, "stereo", None), cv.StereoSGBM)
+        ):
+            src_sgbm = self.stereo.stereo
+            self._fast_stereo_sgbm = cv.StereoSGBM_create(
+                minDisparity=src_sgbm.getMinDisparity(),
+                numDisparities=src_sgbm.getNumDisparities(),
+                blockSize=src_sgbm.getBlockSize(),
+                P1=src_sgbm.getP1(),
+                P2=src_sgbm.getP2(),
+                disp12MaxDiff=src_sgbm.getDisp12MaxDiff(),
+                uniquenessRatio=src_sgbm.getUniquenessRatio(),
+                speckleWindowSize=src_sgbm.getSpeckleWindowSize(),
+                speckleRange=src_sgbm.getSpeckleRange(),
+                mode=cv.STEREO_SGBM_MODE_SGBM_3WAY,
+            )
+        self._current_octaves = None
+        from covisibility import CovisibilityGraph
+        self._covisibility = CovisibilityGraph()
         self.initial = None
         self.last_keyframe = None
         self.diagnostics = []
         self.bundle_reports = []
         self.profile = StageProfile(detailed=self.performance.profile)
-        self.loop_worker = LiveLoopWorker(self.K, self.map.metric, mode=self.config.loop_mode,
-                                          performance=self.performance, profiler=self.profile, matcher=self.matcher)
+        self.loop_worker = LiveLoopWorker(
+            self.K,
+            self.map.metric,
+            mode=self.config.loop_mode,
+            performance=self.performance,
+            profiler=self.profile,
+            matcher=self.matcher,
+            max_keyframes=getattr(self.config, "max_live_loop_keyframes", 300),
+            use_weighted_pgo=bool(getattr(self.config, "use_weighted_pgo", False)),
+            use_vlad_retrieval=bool(getattr(self.config, "use_vlad_loop_retrieval", False)),
+        )
         self.retrieval = KeyframeRetrieval()
         self.retrieval_index = KeyframeIndex() if self.performance.retrieval == 'indexed' else None
         for name in ("_extract", "_track", "_keyframe", "_relocalize", "_keyframe_stereo_reference"):
@@ -756,9 +805,29 @@ class SharedSlam:
             right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
             self.current_left_gray = np.asarray(gray, np.float32)
             self.current_right_gray = np.asarray(right_gray, np.float32)
-        keypoints, desc = self.detector.detectAndCompute(gray, None)
-        pixels = np.array([k.pt for k in keypoints], np.float32).reshape(-1, 2)
-        desc = desc if desc is not None else np.empty((0, 128), np.float32)
+        if getattr(self.config, "use_grid_bucketing", False):
+            from frontend_features import extract_grid_bucketed_sift
+
+            bucketed = extract_grid_bucketed_sift(
+                gray,
+                target_features=self.config.features,
+                grid_cols=16,
+                grid_rows=6,
+                contrast_threshold=self.config.stereo_feature_contrast_threshold,
+                detector=self._grid_detector,
+            )
+            pixels = bucketed.pixels
+            desc = bucketed.descriptors
+            self._current_octaves = bucketed.octaves
+        else:
+            from frontend_features import unpack_sift_octave
+
+            keypoints, desc = self.detector.detectAndCompute(gray, None)
+            pixels = np.array([k.pt for k in keypoints], np.float32).reshape(-1, 2)
+            desc = desc if desc is not None else np.empty((0, 128), np.float32)
+            self._current_octaves = np.array(
+                [unpack_sift_octave(k.octave) for k in keypoints], np.int16
+            )
         points = np.full((len(pixels), 3), np.nan)
         right_u = np.full(len(pixels), np.nan)
         if self.stereo is not None:
@@ -771,8 +840,9 @@ class SharedSlam:
             if self.config.stereo_depth_policy == 'verified_all':
                 self.current_left_gray = np.asarray(gray, np.float32)
                 self.current_right_gray = np.asarray(right_gray, np.float32)
+            sgbm = getattr(self, "_fast_stereo_sgbm", None) or self.stereo.stereo
             disparity = (
-                self.stereo.stereo.compute(gray, right_gray).astype(np.float32) / 16.0
+                sgbm.compute(gray, right_gray).astype(np.float32) / 16.0
             )
             self.current_disparity = disparity
             points, right_u = self._measure_stereo_pixels(
@@ -1001,6 +1071,11 @@ class SharedSlam:
         association_output.update(clean_associations)
         associations = association_output
         ident = len(self.map.keyframes)
+        kf_octaves = (
+            self._current_octaves.copy()
+            if self._current_octaves is not None and len(self._current_octaves) == len(pixels)
+            else np.zeros(len(pixels), dtype=np.int16)
+        )
         frame = MappingKeyframe(
             ident,
             index,
@@ -1009,6 +1084,7 @@ class SharedSlam:
             desc.copy(),
             np.full(len(pixels), -1, int),
             depth_points=points.copy(),
+            octaves=kf_octaves,
         )
         frame.image_size = (
             (self.current_gray.shape[1], self.current_gray.shape[0])
@@ -1109,6 +1185,7 @@ class SharedSlam:
                         continue
                 feature = members[0]
                 world = pose[:3, :3] @ seed_values[0] + pose[:3, 3]
+                lm_oct = int(kf_octaves[feature]) if feature < len(kf_octaves) else 0
                 lid = self.map.add_landmark(
                     world,
                     desc[feature],
@@ -1118,8 +1195,67 @@ class SharedSlam:
                             pixels[feature].copy(), seed_right
                         )
                     },
+                    octave=lm_oct,
+                    is_far=False,
                 )
                 frame.landmark_ids[members] = lid
+            if getattr(self.config, "use_projective_tracking", False) and ident > 0:
+                from local_map_tracker import fuse_neighbor_landmarks
+
+                recent_nbs = [k for k in sorted(self.map.keyframes)[-5:] if k != ident]
+                if recent_nbs:
+                    fuse_neighbor_landmarks(
+                        self.map,
+                        frame,
+                        recent_nbs,
+                        self.K,
+                        self.stereo.baseline,
+                        radius_px=4.0,
+                        right_u_values=map_right_u,
+                    )
+            if (getattr(self.config, "use_far_stereo_points", False)
+                    and self.last_keyframe is not None
+                    and self.last_keyframe in self.map.keyframes):
+                from local_map_tracker import triangulate_far_stereo_landmarks
+
+                prev_kf = self.map.keyframes[self.last_keyframe]
+                far_tri = triangulate_far_stereo_landmarks(
+                    prev_kf,
+                    frame,
+                    self.K,
+                    self.stereo.baseline,
+                    min_parallax_deg=0.5,
+                    min_depth_m=max(25.0, 45.0 * float(self.stereo.baseline)),
+                    max_depth_m=400.0,
+                    max_landmarks=40,
+                )
+                for item in far_tri:
+                    if (prev_kf.landmark_ids[item.prev_feat_idx] >= 0
+                            or frame.landmark_ids[item.curr_feat_idx] >= 0):
+                        continue
+                    lid = self.map.add_landmark(
+                        item.position_w,
+                        item.descriptor,
+                        prev_kf.id,
+                        {
+                            prev_kf.id: OwnedObservation(
+                                prev_kf.pixels[item.prev_feat_idx].copy(), None
+                            ),
+                            ident: OwnedObservation(
+                                frame.pixels[item.curr_feat_idx].copy(), None
+                            ),
+                        },
+                        octave=item.octave,
+                        is_far=True,
+                    )
+                    prev_kf.landmark_ids[item.prev_feat_idx] = lid
+                    frame.landmark_ids[item.curr_feat_idx] = lid
+            if (getattr(self.config, "use_incremental_map_index", False)
+                    and getattr(self.config, "use_projective_tracking", False)
+                    and ident >= 4):
+                self.map.index.prune_stale_landmarks(
+                    self.map, ident, min_age_kfs=4, min_found_ratio=0.25
+                )
         elif self.last_keyframe is not None:
             previous = self.map.keyframes[self.last_keyframe]
             measured_pairs = self._match(previous.descriptors, desc)
@@ -1636,6 +1772,7 @@ class SharedSlam:
         with self.map.lock:
             track_revision = int(self.map.revision)
             track_geometry_revision = int(self.map.geometry_revision)
+        proj_frustum_uv = None
         if (not relocalize and candidate_ids is None
                 and self.config.use_incremental_map_index
                 and len(self.map.index) == len(self.map.landmarks)):
@@ -1648,19 +1785,32 @@ class SharedSlam:
                 margin_px=40.0,
                 include_far_bearings=bool(self.config.use_far_stereo_points),
             )
-            landmarks = [
-                self.map.landmarks[int(lid)]
-                for lid in frustum.landmark_ids
-                if int(lid) in self.map.landmarks and int(lid) not in ambiguous_landmarks
-            ]
+            kept_rows = []
+            landmarks = []
+            for row_i, lid in enumerate(frustum.landmark_ids):
+                lid_int = int(lid)
+                if lid_int in self.map.landmarks and lid_int not in ambiguous_landmarks:
+                    kept_rows.append(row_i)
+                    landmarks.append(self.map.landmarks[lid_int])
             if len(landmarks) > self.config.max_landmarks:
-                landmarks.sort(
-                    key=lambda l: (max(l.observations), len(l.observations)),
+                order = sorted(
+                    range(len(landmarks)),
+                    key=lambda idx: (max(landmarks[idx].observations), len(landmarks[idx].observations)),
                     reverse=True,
-                )
-                landmarks = landmarks[: self.config.max_landmarks]
+                )[: self.config.max_landmarks]
+                landmarks = [landmarks[idx] for idx in order]
+                kept_rows = [kept_rows[idx] for idx in order]
             if not landmarks:
                 return None, {}
+            if getattr(self.config, "use_projective_tracking", False):
+                from map_index import FrustumQueryResult
+
+                kr = np.asarray(kept_rows, dtype=np.intp)
+                proj_frustum_uv = FrustumQueryResult(
+                    landmark_ids=frustum.landmark_ids[kr],
+                    projected_uv=frustum.projected_uv[kr],
+                    depths=frustum.depths[kr],
+                )
         else:
             cache = None
             if self.performance.cpu_optimizations:
@@ -1698,24 +1848,65 @@ class SharedSlam:
                     landmarks = landmarks[: self.config.max_landmarks]
             if not landmarks:
                 return None, {}
-        # Keep geometry unique by LM while retaining linked SIFT orientation
-        # descriptors from bounded anchor/latest keyframes for appearance.
-        descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
-        pairs = self._match(descriptors, desc)
         arbitration = self._arbitration_context if self.config.stereo_pose_arbitration else None
-        if arbitration is not None:
-            # A held detector observation may map to a different older landmark
-            # than the source snapshot. Exclude every linked descriptor/flow ID.
-            arbitration['excluded_landmarks'].update(
-                int(descriptor_landmark_ids[a])
-                for a, b in pairs if b in arbitration['excluded_targets'])
-            pairs = np.asarray([(a, b) for a, b in pairs
-                                if b not in arbitration['excluded_targets']
-                                and int(descriptor_landmark_ids[a])
-                                not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
-        pairs = self._collapse_landmark_matches(pairs, descriptor_landmark_ids, pixels)
-        candidates = {int(descriptor_landmark_ids[a]): (pixels[b], int(b))
-                      for a, b in pairs}
+        used_projective = False
+        if proj_frustum_uv is not None and len(pixels) > 0 and len(desc) > 0:
+            from local_map_tracker import match_landmarks_by_projection
+
+            lm_descs = np.asarray([l.descriptor for l in landmarks], dtype=np.float32)
+            lm_octs = np.asarray([int(getattr(l, "octave", 0)) for l in landmarks], dtype=np.int16)
+            frame_feats = {
+                "pixels": pixels,
+                "descriptors": desc,
+                "octaves": (
+                    self._current_octaves
+                    if self._current_octaves is not None and len(self._current_octaves) == len(pixels)
+                    else None
+                ),
+            }
+            with self.profile.measure("projective_matching"):
+                proj_map = match_landmarks_by_projection(
+                    proj_frustum_uv, frame_feats, lm_descs, lm_octs,
+                    radius_px=42.0, ratio=0.78, max_octave_diff=1,
+                )
+                min_proj_ok = max(self.config.min_inliers * 2, 30)
+                if len(proj_map) < min_proj_ok:
+                    proj_map = match_landmarks_by_projection(
+                        proj_frustum_uv, frame_feats, lm_descs, lm_octs,
+                        radius_px=96.0, ratio=0.80, max_octave_diff=2,
+                    )
+            if len(proj_map) >= min_proj_ok:
+                used_projective = True
+                if arbitration is not None:
+                    arbitration['excluded_landmarks'].update(
+                        int(lid) for lid, fidx in proj_map.items()
+                        if fidx in arbitration['excluded_targets']
+                    )
+                    proj_map = {
+                        int(lid): int(fidx)
+                        for lid, fidx in proj_map.items()
+                        if fidx not in arbitration['excluded_targets']
+                        and int(lid) not in arbitration['excluded_landmarks']
+                    }
+                candidates = {int(lid): (pixels[fidx], int(fidx)) for lid, fidx in proj_map.items()}
+        if not used_projective:
+            # Keep geometry unique by LM while retaining linked SIFT orientation
+            # descriptors from bounded anchor/latest keyframes for appearance.
+            descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
+            pairs = self._match(descriptors, desc)
+            if arbitration is not None:
+                # A held detector observation may map to a different older landmark
+                # than the source snapshot. Exclude every linked descriptor/flow ID.
+                arbitration['excluded_landmarks'].update(
+                    int(descriptor_landmark_ids[a])
+                    for a, b in pairs if b in arbitration['excluded_targets'])
+                pairs = np.asarray([(a, b) for a, b in pairs
+                                    if b not in arbitration['excluded_targets']
+                                    and int(descriptor_landmark_ids[a])
+                                    not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
+            pairs = self._collapse_landmark_matches(pairs, descriptor_landmark_ids, pixels)
+            candidates = {int(descriptor_landmark_ids[a]): (pixels[b], int(b))
+                          for a, b in pairs}
         descriptor_candidates = candidates.copy()
         if self.config.stereo_descriptor_association_retry:
             descriptor_candidates = {
@@ -1759,24 +1950,37 @@ class SharedSlam:
                 predicted_pixels[np.array(tracked_ids)[valid], 0] = projected[valid]
                 flow_visible[np.array(tracked_ids)[valid]] = True
             flow_visibility_rejections = int((~flow_visible).sum())
+            lk_levels = 4 if getattr(self.config, "use_projective_tracking", False) else 3
             flowed, ok, _ = cv.calcOpticalFlowPyrLK(
                 self.previous_gray,
                 self.current_gray,
                 old_pixels,
                 predicted_pixels,
                 winSize=(21, 21),
-                maxLevel=3,
+                maxLevel=lk_levels,
                 flags=cv.OPTFLOW_USE_INITIAL_FLOW,
             )
             if flowed is not None:
-                reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
-                    self.current_gray,
-                    self.previous_gray,
-                    flowed,
-                    None,
-                    winSize=(21, 21),
-                    maxLevel=3,
-                )
+                if lk_levels >= 4:
+                    rev_init = old_pixels.copy()
+                    reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
+                        self.current_gray,
+                        self.previous_gray,
+                        flowed,
+                        rev_init,
+                        winSize=(21, 21),
+                        maxLevel=lk_levels,
+                        flags=cv.OPTFLOW_USE_INITIAL_FLOW,
+                    )
+                else:
+                    reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
+                        self.current_gray,
+                        self.previous_gray,
+                        flowed,
+                        None,
+                        winSize=(21, 21),
+                        maxLevel=lk_levels,
+                    )
                 for j, (lid, _) in enumerate(previous_tracks):
                     p = flowed[j, 0]
                     if (
@@ -1846,13 +2050,40 @@ class SharedSlam:
             measured_right = None
             if solution is not None and self.stereo is not None:
                 _, measured_right = self._measure_stereo_pixels(observations)
-                if getattr(self.config, "use_analytic_ba_jacobians", False):
+                use_hetero = bool(getattr(self.config, "use_heteroscedastic_stereo_pose", False))
+                if use_hetero or getattr(self.config, "use_analytic_ba_jacobians", False):
+                    right_for_refine = measured_right
+                    weights_uv_uR = None
+                    if use_hetero:
+                        right_for_refine = np.asarray(measured_right, dtype=float).copy()
+                        weights_uv_uR = np.ones((len(identifiers), 3), dtype=float)
+                        fx_val = float(self.K[0, 0])
+                        bl_val = float(self.stereo.baseline)
+                        doff_val = float(self.stereo.disparity_offset)
+                        z_close = 40.0 * bl_val
+                        for row_i, lid in enumerate(identifiers):
+                            lm_obj = self.map.landmarks.get(lid)
+                            oct_v = int(getattr(lm_obj, "octave", 0)) if lm_obj is not None else 0
+                            w_oct = 1.0 / (1.15 ** min(max(oct_v, 0), 5))
+                            weights_uv_uR[row_i, 0] = w_oct
+                            weights_uv_uR[row_i, 1] = w_oct
+                            if lm_obj is not None and getattr(lm_obj, "is_far", False):
+                                right_for_refine[row_i] = np.nan
+                                weights_uv_uR[row_i, 2] = 0.0
+                            elif np.isfinite(right_for_refine[row_i]):
+                                disp = float(observations[row_i, 0] - right_for_refine[row_i] - doff_val)
+                                if disp > 0.5:
+                                    z_est = fx_val * bl_val / disp
+                                    weights_uv_uR[row_i, 2] = w_oct / float(np.sqrt(1.0 + (z_est / z_close) ** 2))
+                                else:
+                                    weights_uv_uR[row_i, 2] = 0.2 * w_oct
                     solution, stereo_diagnostics = refine_stereo_map_pose(
-                        solution, positions, observations, measured_right, self.K,
+                        solution, positions, observations, right_for_refine, self.K,
                         self.stereo.baseline, size,
                         self.config.min_inliers if not relocalize else 20,
                         self.stereo.disparity_offset,
                         use_analytic=True,
+                        weights_uv_uR=weights_uv_uR,
                     )
                 else:
                     solution, stereo_diagnostics = refine_stereo_map_pose(
@@ -2128,6 +2359,7 @@ class SharedSlam:
         self.current_gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
         self.stereo_depth_verification = {}
         self.stereo_map_depth_verification = {}
+        self._frame_verified_right_cache = {}
         if (self.config.stereo_depth_policy in ('verified_fallback', 'verified_all')
                 or getattr(self.config, 'stereo_map_depth_policy', 'inherit') == 'verified'):
             if self.stereo is not None:
@@ -6737,11 +6969,31 @@ class SharedSlam:
                 if trace_capture:
                     self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
                         status, associations, pixels, right_u, arbitration_report, info)
-                if (
-                    stereo_reference
-                    or index - last.frame >= self.config.keyframe_interval
-                    or (index - last.frame >= 2 and len(tracked_landmarks) < 80)
-                ):
+                if getattr(self.config, "use_adaptive_keyframe_parallax", False):
+                    rel_kf = np.linalg.inv(last.pose) @ pose
+                    kf_trans_m = float(np.linalg.norm(rel_kf[:3, 3]))
+                    kf_rot_deg = float(np.rad2deg(np.arccos(np.clip(
+                        (float(np.trace(rel_kf[:3, :3])) - 1.0) * 0.5, -1.0, 1.0
+                    ))))
+                    frame_gap = index - last.frame
+                    insert_keyframe = bool(
+                        stereo_reference
+                        or (frame_gap >= 3 and (
+                            kf_trans_m >= 12.0
+                            or kf_rot_deg >= 12.0
+                            or len(tracked_landmarks) < 80
+                        ))
+                        or (frame_gap >= self.config.keyframe_interval and (
+                            kf_trans_m >= 0.35 or kf_rot_deg >= 2.0
+                        ))
+                    )
+                else:
+                    insert_keyframe = bool(
+                        stereo_reference
+                        or index - last.frame >= self.config.keyframe_interval
+                        or (index - last.frame >= 2 and len(tracked_landmarks) < 80)
+                    )
+                if insert_keyframe:
                     if frontend_seed_payload is None:
                         anchor = self._keyframe(
                             index, pose, pixels, desc, points, right_u, associations
@@ -7042,6 +7294,16 @@ class SharedSlam:
                     bundle_kwargs["use_map_index"] = bool(
                         self.config.use_incremental_map_index
                     )
+                    bundle_kwargs["use_heteroscedastic_weights"] = bool(
+                        getattr(self.config, "use_heteroscedastic_stereo_pose", False)
+                    )
+                    if getattr(self.config, "use_covisible_ba", False) and anchor is not None:
+                        covis_window = self._covisibility.select_ba_window(
+                            self.map, anchor, max_keyframes=8, min_shared=8
+                        )
+                        bundle_kwargs["selected_keyframes"] = covis_window
+                        bundle_kwargs["max_landmarks"] = 350
+                        bundle_kwargs["cull_outliers_chi2"] = True
                     report = local_bundle_adjustment(
                         self.map,
                         self.K,
@@ -7146,10 +7408,10 @@ class SharedSlam:
                     self.current_supported_stereo, associations)
         # Bound the tracking working set, not the persistent map. Old, valid
         # landmarks remain available to geometric relocalization and loop correction.
-        dropped = {i:l for i,l in self.map.landmarks.items() if l.misses >= 5}
-        self.map.landmarks = {
-            i: l for i, l in self.map.landmarks.items() if l.misses < 5
-        }
+        dropped = {i: l for i, l in self.map.landmarks.items() if l.misses >= 5}
+        if dropped:
+            for lid in dropped:
+                self.map.remove_landmark(lid)
         removed = False
         affected = ({k for l in dropped.values() for k in l.observations}
                     if self.performance.cpu_optimizations else set(self.map.keyframes))

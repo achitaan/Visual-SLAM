@@ -235,14 +235,27 @@ class StereoVisualOdometry:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32), kp1, kp2, []
 
         matcher = self.brute_force if hasattr(self, "orb") else self.flann
-        matches = matcher.knnMatch(desc1, desc2, k=2)
-        thresh, good_matches = 0.7, []
-        for pair in matches:
+        matches_fwd = matcher.knnMatch(desc1, desc2, k=2)
+        thresh = 0.72
+        fwd_good = {}
+        for pair in matches_fwd:
             if len(pair) != 2:
                 continue
             m, n = pair
             if m.distance < thresh * n.distance:
-                good_matches.append(m)
+                fwd_good[m.queryIdx] = m
+        good_matches = []
+        if fwd_good and len(desc1) >= 2:
+            matches_bwd = matcher.knnMatch(desc2, desc1, k=2)
+            bwd_best = {}
+            for pair in matches_bwd:
+                if len(pair) >= 1:
+                    bwd_best[pair[0].queryIdx] = pair[0].trainIdx
+            for qidx, m in fwd_good.items():
+                if bwd_best.get(m.trainIdx) == qidx:
+                    good_matches.append(m)
+        else:
+            good_matches = list(fwd_good.values())
         if self.draw_matches:
             self.__draw_corresponding_points(i, kp1, kp2, good_matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
@@ -264,7 +277,6 @@ class StereoVisualOdometry:
             raise ValueError("Stereo images must have matching dimensions")
         disparity = self.stereo.compute(left, right).astype(np.float32) / 16.0
         valid_disparity = (disparity > MINIMUM_DISPARITY) & (disparity < NUMBER_OF_DISPARITY)
-        dense = cv.reprojectImageTo3D(disparity, self.Q)
         p1, p2, old_kp, new_kp, matches = self.flann_match_features(i)
         debug = {"num_matches": len(matches), "num_inliers": 0, "inlier_ratio": 0.0,
                  "keypoints": new_kp, "descriptors": self._current_descriptors,
@@ -272,14 +284,35 @@ class StereoVisualOdometry:
                  "tracking_ok": False, "num_valid_3d": 0, "feature_points": [], "inlier_mask": []}
         if len(matches) < STEREO_MIN_MATCHES:
             return np.eye(4), debug
+        h_img, w_img = disparity.shape
+        fx, fy = float(self.K1[0, 0]), float(self.K1[1, 1])
+        cx, cy = float(self.K1[0, 2]), float(self.K1[1, 2])
+        q32, q33, q23 = float(self.Q[3, 2]), float(self.Q[3, 3]), float(self.Q[2, 3])
         points_3d, points_2d = [], []
         for match in matches:
-            u, v = (int(round(coord)) for coord in old_kp[match.queryIdx].pt)
-            if not (0 <= u < dense.shape[1] and 0 <= v < dense.shape[0]):
+            u_f, v_f = old_kp[match.queryIdx].pt
+            if not (0.0 <= u_f <= w_img - 1.0 and 0.0 <= v_f <= h_img - 1.0):
                 continue
-            point = dense[v, u]
-            if not valid_disparity[v, u] or not np.isfinite(point).all() or not (0.1 < point[2] < 100.0):
+            x0, y0 = int(np.floor(u_f)), int(np.floor(v_f))
+            x1, y1 = min(x0 + 1, w_img - 1), min(y0 + 1, h_img - 1)
+            dx, dy = u_f - x0, v_f - y0
+            d00 = float(disparity[y0, x0])
+            d10 = float(disparity[y0, x1])
+            d01 = float(disparity[y1, x0])
+            d11 = float(disparity[y1, x1])
+            nbrs = (d00, d10, d01, d11)
+            if any((not np.isfinite(d)) or d <= MINIMUM_DISPARITY or d >= NUMBER_OF_DISPARITY for d in nbrs):
                 continue
+            if max(nbrs) - min(nbrs) > 2.0:
+                continue
+            d_sub = (1.0 - dx) * (1.0 - dy) * d00 + dx * (1.0 - dy) * d10 + (1.0 - dx) * dy * d01 + dx * dy * d11
+            denom = q32 * d_sub + q33
+            if denom <= 0.0:
+                continue
+            z = q23 / denom
+            if not np.isfinite(z) or not (0.1 < z < 100.0):
+                continue
+            point = np.array([(u_f - cx) * z / fx, (v_f - cy) * z / fy, z], dtype=np.float32)
             points_3d.append(point)
             points_2d.append(new_kp[match.trainIdx].pt)
         debug["num_valid_3d"] = len(points_3d)

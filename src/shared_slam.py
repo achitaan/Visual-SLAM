@@ -1,6 +1,6 @@
 """Persistent stereo/monocular image-only tracking and local mapping."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import hashlib
 from types import MappingProxyType
 import cv2 as cv
@@ -242,6 +242,66 @@ class MappingConfig:
             raise ValueError("nondefault stereo_two_view_solver requires stereo_two_view_refinement")
         if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
             raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset: str = "improved_stereo",
+        *,
+        stereo: bool = True,
+        **overrides,
+    ) -> "MappingConfig":
+        if not isinstance(preset, str) or preset not in MAPPING_PRESET_NAMES:
+            raise ValueError(
+                f"Unknown MappingConfig preset {preset!r}; expected one of {MAPPING_PRESET_NAMES}"
+            )
+        if not isinstance(stereo, bool):
+            raise ValueError("stereo must be a bool")
+        valid_fields = {f.name for f in fields(cls)}
+        unknown = [key for key in overrides if key not in valid_fields]
+        if unknown:
+            raise ValueError(
+                f"Unknown MappingConfig override key(s): {', '.join(sorted(map(repr, unknown)))}"
+            )
+        if "loop_mode" in overrides and overrides["loop_mode"] not in ("off", "live", "offline"):
+            raise ValueError("loop_mode must be 'off', 'live', or 'offline'")
+        if "stereo_depth_policy" in overrides and overrides["stereo_depth_policy"] not in (
+            "supported",
+            "verified_fallback",
+            "verified_all",
+        ):
+            raise ValueError("Invalid stereo_depth_policy")
+        params: dict[str, object] = {}
+        if preset in ("verified_baseline", "improved_stereo"):
+            if stereo:
+                params.update(
+                    {
+                        "features": 1500,
+                        "loop_mode": "off",
+                        "stereo_depth_policy": "verified_fallback",
+                        "stereo_map_depth_policy": "verified",
+                        "stereo_pose_arbitration": True,
+                        "stereo_raw_reference_retry": True,
+                        "stereo_verified_reference_retry": True,
+                        "stereo_descriptor_association_retry": True,
+                        "bundle_solver_accuracy": "precise",
+                        "bundle_landmark_policy": "bounded_fixed",
+                        "stereo_bundle_gauge_mode": "veto",
+                    }
+                )
+            else:
+                params.update(
+                    {
+                        "features": 1500,
+                        "loop_mode": "off",
+                        "bundle_solver_accuracy": "precise",
+                    }
+                )
+        params.update(overrides)
+        return cls(**params)
+
+
+MAPPING_PRESET_NAMES = ("improved_stereo", "verified_baseline", "legacy_default")
 
 
 class SharedSlam:

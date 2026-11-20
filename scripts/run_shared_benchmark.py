@@ -282,14 +282,19 @@ def _annotate_partial_report(path, run_identity):
     return True
 
 
-def _configuration(repo):
+def _configuration(repo, preset=None):
     source_path = str(repo / "src")
     if source_path not in sys.path:
         sys.path.insert(0, source_path)
     from shared_slam import MappingConfig
     from performance import PerformanceConfig
 
-    mapping = MappingConfig().__dict__.copy()
+    cfg = (
+        MappingConfig.from_preset(preset, stereo=True)
+        if preset is not None
+        else MappingConfig()
+    )
+    mapping = cfg.__dict__.copy()
     performance = PerformanceConfig().__dict__.copy()
     return mapping, performance, {
         "opencv": 1,
@@ -479,7 +484,8 @@ def _try_reuse(output, expected_identity, *, sequence, mode, frames, coverage,
 
 def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, mode,
               frames, coverage, reference, contract, batch_identity, inputs,
-              mapping, performance, threads, budget=None, timing_history_paths=()):
+              mapping, performance, threads, budget=None, timing_history_paths=(),
+              preset=None):
     evaluator_input_source = "local_images" if use_local_cache else "official_remote_archive"
     run_identity = _run_identity(
         batch_identity, contract, inputs, sequence, mode, frames, coverage,
@@ -553,7 +559,7 @@ def _run_mode(repo, root, status, save, env, cache, use_local_cache, sequence, m
         "--sequence", sequence,
         "--poses-root", str(reference.parent),
         "--output", str(output),
-        "--loop-mode", "live",
+        *(["--preset", preset] if preset is not None else ["--loop-mode", "live"]),
         "--matching-backend", "cpu",
         "--retrieval", "current",
         "--opencv-threads", "1",
@@ -739,6 +745,7 @@ def _run_sequence(repo, root, status, save, env, args, sequence, contract,
                 sequence, mode, frames, report_coverage, reference, contract,
                 batch_identity, inputs, mapping, performance, threads,
                 batch_budget, timing_history_paths,
+                preset=getattr(args, "preset", None),
             )
 
 
@@ -747,6 +754,8 @@ def main():
     parser.add_argument("--sequences", nargs="+", default=list(FULL_FRAMES))
     parser.add_argument("--modes", nargs="+", choices=["stereo", "mono"],
                         default=["stereo", "mono"])
+    parser.add_argument("--preset", choices=["improved_stereo", "verified_baseline", "legacy_default"],
+                        default=None, help="Named SharedSlam configuration preset")
     parser.add_argument("--poses-root", type=Path, required=True)
     parser.add_argument("--data-root", type=Path,
                         help="Read existing KITTI sequences without downloading or deleting images")
@@ -768,6 +777,10 @@ def main():
         parser.error("Evaluation sequences must be KITTI odometry 00–10")
     if len(set(args.sequences)) != len(args.sequences):
         parser.error("Sequences must not be repeated")
+    if args.preset is not None and (
+        "mono" in args.modes or "stereo" not in args.modes
+    ):
+        parser.error(f"--preset {args.preset} requires --modes stereo")
     if args.max_frames is not None and args.max_frames < 2:
         parser.error("--max-frames must be at least 2")
     if args.preflight_budget_seconds <= 0:
@@ -785,7 +798,7 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     args.poses_root = args.poses_root.resolve()
     contract = source_contract(repo)
-    mapping, performance, threads = _configuration(repo)
+    mapping, performance, threads = _configuration(repo, preset=args.preset)
     effective_full = all(
         args.max_frames is None or args.max_frames >= FULL_FRAMES[sequence]
         for sequence in args.sequences
@@ -802,10 +815,12 @@ def main():
         "input_source": "local_images" if args.data_root is not None else "official_remote_archive",
         "configuration": mapping,
         "performance_configuration": performance,
-        "loop_mode": "live",
+        "loop_mode": mapping.get("loop_mode", "live"),
         "threads": threads,
         "diagnostic_cache": None,
     }
+    if args.preset is not None:
+        batch_identity["preset"] = args.preset
     root = args.output.resolve() / contract["contract_sha256"][:12] / coverage
     root.mkdir(parents=True, exist_ok=True)
     if args.data_root is None:

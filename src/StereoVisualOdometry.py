@@ -32,27 +32,26 @@ class StereoVisualOdometry:
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        if poses_path and os.path.exists(poses_path):
-            self.true_poses = self.__load_poses(poses_path)
-        else:
-            self.true_poses = [np.eye(4)]
-        self.poses = [np.eye(4)]
-
-        # Load left and right images
-        self.Images_1 = self.__load(folder_path + "0", max_frames=max_frames)  # Left images
-        self.Images_2 = self.__load(folder_path + "1", max_frames=max_frames)  # Right images
-        if [p.name for p in image_paths(folder_path + "0", max_frames)] != [p.name for p in image_paths(folder_path + "1", max_frames)]:
-            raise ValueError("Left/right image filenames must match")
-
-        # Compute the Q matrix for reprojectImageTo3D using the correct stereo pair.
+        # Compute the Q matrix for reprojectImageTo3D using the correct stereo pair,
+        # validating focal lengths and positive baseline before dividing or loading images.
         f = float(self.K1[0, 0])
+        f_right = float(self.P2[0, 0])
+        fy_left = float(self.K1[1, 1])
+        fy_right = float(self.P2[1, 1])
+        if (
+            not np.isfinite(f) or f <= 0.0
+            or not np.isfinite(f_right) or f_right <= 0.0
+            or not np.isfinite(fy_left) or fy_left <= 0.0
+            or not np.isfinite(fy_right) or fy_right <= 0.0
+        ):
+            raise ValueError("Stereo calibration requires positive finite focal lengths")
         cx_left = float(self.P1[0, 2])
         cy_left = float(self.P1[1, 2])
         cx_right = float(self.P2[0, 2])
-        tx = float(self.P2[0, 3]) / float(self.P2[0, 0])  # Tx = -B
+        tx = float(self.P2[0, 3]) / f_right  # Tx = -B
         print((f, cx_left, cy_left))
-        baseline = float(self.P1[0, 3] / self.P1[0, 0]) - tx
-        if not np.isfinite(baseline) or baseline <= 0:
+        baseline = float(self.P1[0, 3]) / f - tx
+        if not np.isfinite(baseline) or baseline <= 0.0:
             raise ValueError("Stereo calibration requires a positive left-to-right baseline")
         self.baseline = float(baseline)
         self.Q = np.array(
@@ -64,6 +63,18 @@ class StereoVisualOdometry:
             ],
             dtype=np.float32,
         )
+
+        if poses_path and os.path.exists(poses_path):
+            self.true_poses = self.__load_poses(poses_path)
+        else:
+            self.true_poses = [np.eye(4)]
+        self.poses = [np.eye(4)]
+
+        # Load left and right images
+        self.Images_1 = self.__load(folder_path + "0", max_frames=max_frames)  # Left images
+        self.Images_2 = self.__load(folder_path + "1", max_frames=max_frames)  # Right images
+        if [p.name for p in image_paths(folder_path + "0", max_frames)] != [p.name for p in image_paths(folder_path + "1", max_frames)]:
+            raise ValueError("Left/right image filenames must match")
 
 
         self.stereo = cv.StereoSGBM_create(
@@ -150,22 +161,53 @@ class StereoVisualOdometry:
             K = P[0:3, 0:3]
         return K, P
     
-    def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
-        P = {}
-        with open(filepath, 'r') as f:
-            for line in f:
-                if line.startswith("P"):
-                    key = line.split(':', 1)[0].strip()
-                    params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
-                    P[key] = np.reshape(params, (3, 4))
-        # KITTI gray sequences use P0/P1 for left/right.
-        if "P0" in P and "P1" in P:
-            P_l, P_r = P["P0"], P["P1"]
+    @staticmethod
+    def _parse_projection_matrix(raw: str, filepath: str, label: str) -> NDArray:
+        tokens = raw.strip().split()
+        try:
+            values = np.array([float(tok) for tok in tokens], dtype=np.float64)
+        except ValueError as exc:
+            raise ValueError(f"Invalid calibration floats for {label} in {filepath}") from exc
+        if values.size != 12 or not np.isfinite(values).all():
+            raise ValueError(f"Expected 12 finite calibration values for {label} in {filepath}")
+        return values.reshape(3, 4)
+
+    @classmethod
+    def parse_stereo_calib(cls, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        if not lines:
+            raise ValueError(f"Empty calibration file: {filepath}")
+        labeled: dict[str, NDArray] = {}
+        for line in lines:
+            if ':' in line:
+                key, rhs = line.split(':', 1)
+                key = key.strip()
+                if key.startswith('P'):
+                    labeled[key] = cls._parse_projection_matrix(rhs, filepath, key)
+        # KITTI gray sequences use P0/P1 for left/right; color uses P2/P3 or P1/P2;
+        # bundled unlabeled files provide P0 on line 1 and P1 on line 2.
+        if "P0" in labeled and "P1" in labeled:
+            P_l, P_r = labeled["P0"], labeled["P1"]
+        elif "P1" in labeled and "P2" in labeled:
+            P_l, P_r = labeled["P1"], labeled["P2"]
+        elif labeled:
+            raise ValueError(
+                f"Labeled stereo calibration in {filepath} must provide P0/P1 or P1/P2"
+            )
         else:
-            P_l, P_r = P["P1"], P["P2"]
+            if len(lines) < 2:
+                raise ValueError(
+                    f"Unlabeled stereo calibration in {filepath} requires at least 2 lines (P0 and P1)"
+                )
+            P_l = cls._parse_projection_matrix(lines[0], filepath, "line 1 (P0)")
+            P_r = cls._parse_projection_matrix(lines[1], filepath, "line 2 (P1)")
         K_l = P_l[0:3, 0:3]
         K_r = P_r[0:3, 0:3]
         return K_l, P_l, K_r, P_r
+
+    def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        return self.parse_stereo_calib(filepath)
 
     def bf_match_features(self, i: int):
         # Match features between left image at frame i-1 and frame i using ORB + BFMatcher

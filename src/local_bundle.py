@@ -193,6 +193,9 @@ def local_bundle_adjustment(
     gauge_mode="veto",
     candidate_validation_provider=None,
     landmark_policy="bounded_fixed",
+    use_analytic_jacobian=False,
+    use_map_index=False,
+    selected_keyframes=None,
 ):
     if landmark_policy not in ("bounded_fixed", "joint_tracks"):
         raise ValueError(
@@ -375,7 +378,13 @@ def local_bundle_adjustment(
              for key, frame in state.keyframes.items()}
             if provider_enabled else None
         )
-        selected = list(state.keyframes)[-window:]
+        if selected_keyframes is not None:
+            selected = [k for k in selected_keyframes if k in state.keyframes]
+            if len(selected) < 3:
+                selected = list(state.keyframes)[-window:]
+        else:
+            selected = list(state.keyframes)[-window:]
+        selected_set = set(selected)
         diagnostic_keyframe_rows = {} if snapshot_enabled else None
         if snapshot_enabled:
             for keyframe_id in selected:
@@ -388,14 +397,24 @@ def local_bundle_adjustment(
         # Hold the two oldest monocular anchors to fix scale in the local window.
         fixed = set(selected[: 1 if state.metric else 2])
         free = [k for k in selected if k not in fixed]
+        free_set = set(free)
+        if (use_map_index and hasattr(state, "index")
+                and len(state.index) == len(state.landmarks)):
+            window_landmark_pool = [
+                state.landmarks[lid]
+                for lid in state.index.landmarks_for_keyframes(selected)
+                if lid in state.landmarks
+            ]
+        else:
+            window_landmark_pool = list(state.landmarks.values())
         landmarks = [
             l
-            for l in state.landmarks.values()
-            if sum(k in selected for k in l.observations) >= 2
+            for l in window_landmark_pool
+            if sum(k in selected_set for k in l.observations) >= 2
         ]
         landmarks.sort(
             key=lambda l: (
-                sum(k in selected for k in l.observations),
+                sum(k in selected_set for k in l.observations),
                 max(l.observations),
             ),
             reverse=True,
@@ -487,19 +506,19 @@ def local_bundle_adjustment(
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
             (landmark.position.copy(), k, o)
-            for landmark in state.landmarks.values()
+            for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) >= 2
             for k, o in landmark.observations.items()
-            if k in free
+            if k in free_set
         ]
         held_out_ids = [] if snapshot_enabled else None
         if snapshot_enabled:
             held_out_ids = [
                 int(landmark.id)
-                for landmark in state.landmarks.values()
+                for landmark in window_landmark_pool
                 if landmark.id not in optimized_ids and len(landmark.observations) >= 2
                 for k, _ in landmark.observations.items()
-                if k in free
+                if k in free_set
             ]
         joint_landmark_expansion = None
         if landmark_policy == "joint_tracks":
@@ -514,19 +533,19 @@ def local_bundle_adjustment(
             ]
             old_fixed_row_ids = [
                 (int(landmark.id), int(keyframe_id))
-                for landmark in state.landmarks.values()
+                for landmark in window_landmark_pool
                 if landmark.id not in optimized_ids
                 and len(landmark.observations) >= 2
                 for keyframe_id in landmark.observations
-                if keyframe_id in free
+                if keyframe_id in free_set
             ]
             old_fixed_row_id_set = set(old_fixed_row_ids)
             promoted_landmarks = sorted(
                 (
-                    landmark for landmark in state.landmarks.values()
+                    landmark for landmark in window_landmark_pool
                     if landmark.id not in optimized_ids
                     and len(landmark.observations) >= 2
-                    and any(keyframe_id in free
+                    and any(keyframe_id in free_set
                             for keyframe_id in landmark.observations)
                 ),
                 key=lambda landmark: int(landmark.id),
@@ -644,9 +663,9 @@ def local_bundle_adjustment(
             }
         single_view = [
             (landmark.id, landmark.anchor, landmark.position.copy())
-            for landmark in state.landmarks.values()
+            for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) == 1
-            and landmark.anchor in free and landmark.anchor in landmark.observations
+            and landmark.anchor in free_set and landmark.anchor in landmark.observations
         ]
         single_view_observation_rows = [] if provider_enabled else None
         if provider_enabled:
@@ -772,16 +791,24 @@ def local_bundle_adjustment(
         [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out],
         dtype=int,
     )
-    pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
-    row = 0
-    for (i, k, _), dim in zip(records, dimensions):
-        if k in pose_offset:
-            pattern[row : row + dim, pose_offset[k] : pose_offset[k] + 6] = 1
-        pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
-        row += dim
-    for (_, k, _), dim in zip(held_out, held_dimensions):
-        pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
-        row += dim
+    need_sparsity_pattern = not (
+        use_analytic_jacobian
+        and not provider_enabled
+        and not source_history_enabled
+        and not retention_requested
+    )
+    pattern = None
+    if need_sparsity_pattern:
+        pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
+        row = 0
+        for (i, k, _), dim in zip(records, dimensions):
+            if k in pose_offset:
+                pattern[row : row + dim, pose_offset[k] : pose_offset[k] + 6] = 1
+            pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
+            row += dim
+        for (_, k, _), dim in zip(held_out, held_dimensions):
+            pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
+            row += dim
 
     # Residual rows repeatedly use the same point indices, camera indices, and
     # measurements. Materialize those once so each solver evaluation only
@@ -2312,14 +2339,46 @@ def local_bundle_adjustment(
                 + retained_source_before
             ),
         })
+    use_analytic_jac_effective = bool(
+        use_analytic_jacobian
+        and owned_training_rows is None
+        and not source_history_rows
+        and not retained_source_rows
+    )
     solver_options = {
-        "jac_sparsity": pattern.tocsr(),
         "loss": "huber",
         "f_scale": 2.0,
         "max_nfev": 30,
         "x_scale": variable_scale,
         "tr_solver": "lsmr",
     }
+    if use_analytic_jac_effective:
+        from analytic_ba import build_local_bundle_jacobian
+
+        def analytic_jacobian(vector):
+            return build_local_bundle_jacobian(
+                vector,
+                camera_poses_for(vector),
+                free_camera_indices,
+                free_offsets,
+                point_offset,
+                point_limit,
+                record_cameras,
+                record_points,
+                measured_pixels,
+                dimension_mask,
+                held_cameras,
+                held_points,
+                held_pixels,
+                held_dimension_mask,
+                matrix,
+                baseline,
+                bool(state.metric),
+            )
+
+        solver_options["jac"] = analytic_jacobian
+    else:
+        solver_options["jac_sparsity"] = pattern.tocsr()
     precise_inner_solve = solver_accuracy == "precise" or owned_training_rows is not None
     inner_options = None
     if precise_inner_solve:
@@ -2396,7 +2455,35 @@ def local_bundle_adjustment(
                        if gauge_correction is not None else {}),
                     **solver_metadata("not_run"),
                 })
-    result = least_squares(residual, initial, **solver_options)
+    if use_analytic_jac_effective:
+        from analytic_ba import solve_schur_local_bundle
+
+        result = solve_schur_local_bundle(
+            initial,
+            camera_poses_for,
+            free_camera_indices,
+            free_offsets,
+            point_offset,
+            point_limit,
+            record_cameras,
+            record_points,
+            measured_pixels,
+            measured_right,
+            dimension_mask,
+            held_cameras,
+            held_points,
+            held_pixels,
+            held_right,
+            held_dimension_mask,
+            matrix,
+            baseline,
+            disparity_offset,
+            bool(state.metric),
+            f_scale=2.0,
+            max_iter=20,
+        )
+    else:
+        result = least_squares(residual, initial, **solver_options)
     if gauge_certificate is not None:
         from bundle_gauge import canonicalize_two_bridge_candidate
         raw_solver_vector = np.asarray(result.x, dtype=float).copy()

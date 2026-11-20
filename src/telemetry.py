@@ -120,8 +120,18 @@ class TelemetryServer:
             if self._thread.is_alive():
                 raise RuntimeError("Telemetry server did not stop")
 
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
+    @property
+    def has_clients(self) -> bool:
+        return bool(self._clients)
+
     def publish(self, payload: Dict[str, Any]) -> None:
         self._latest = payload
+        if not self._clients:
+            return
         try:
             self._queue.put_nowait(payload)
         except queue.Full:

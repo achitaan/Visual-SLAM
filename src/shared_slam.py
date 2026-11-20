@@ -243,6 +243,9 @@ class MappingConfig:
         if self.stereo_physical_match_pool and not self.stereo_pose_arbitration:
             raise ValueError("stereo_physical_match_pool requires stereo_pose_arbitration")
 
+    def enhancement_dict(self) -> dict[str, object]:
+        return {key: getattr(self, key) for key in _MAPPING_ENHANCEMENT_DEFAULTS}
+
     @classmethod
     def from_preset(
         cls,
@@ -257,7 +260,7 @@ class MappingConfig:
             )
         if not isinstance(stereo, bool):
             raise ValueError("stereo must be a bool")
-        valid_fields = {f.name for f in fields(cls)}
+        valid_fields = {f.name for f in fields(cls)} | set(_MAPPING_ENHANCEMENT_DEFAULTS)
         unknown = [key for key in overrides if key not in valid_fields]
         if unknown:
             raise ValueError(
@@ -297,8 +300,48 @@ class MappingConfig:
                         "bundle_solver_accuracy": "precise",
                     }
                 )
+        if preset == "improved_stereo":
+            params.update(
+                {
+                    "use_incremental_map_index": True,
+                    "use_analytic_ba_jacobians": True,
+                }
+            )
         params.update(overrides)
         return cls(**params)
+
+
+_MAPPING_ENHANCEMENT_DEFAULTS: dict[str, object] = {
+    "use_incremental_map_index": False,
+    "use_analytic_ba_jacobians": False,
+    "use_grid_bucketing": False,
+    "use_projective_tracking": False,
+    "use_heteroscedastic_stereo_pose": False,
+    "use_far_stereo_points": False,
+    "use_covisible_ba": False,
+    "use_vlad_loop_retrieval": False,
+    "use_weighted_pgo": False,
+    "use_adaptive_keyframe_parallax": False,
+    "max_live_loop_keyframes": 300,
+}
+
+for _enh_key, _enh_default in _MAPPING_ENHANCEMENT_DEFAULTS.items():
+    setattr(MappingConfig, _enh_key, _enh_default)
+
+_MAPPING_CONFIG_ORIG_INIT = MappingConfig.__init__
+
+
+def _mapping_config_init(self, *args, **kwargs):
+    enh = {
+        key: kwargs.pop(key, default)
+        for key, default in _MAPPING_ENHANCEMENT_DEFAULTS.items()
+    }
+    _MAPPING_CONFIG_ORIG_INIT(self, *args, **kwargs)
+    for key, val in enh.items():
+        object.__setattr__(self, key, val)
+
+
+MappingConfig.__init__ = _mapping_config_init  # type: ignore[method-assign]
 
 
 MAPPING_PRESET_NAMES = ("improved_stereo", "verified_baseline", "legacy_default")
@@ -1016,8 +1059,8 @@ class SharedSlam:
                 else:
                     _, measured = self._measure_stereo_pixels(observed_pixel[None])
                 measured_right = float(measured[0]) if np.isfinite(measured[0]) else None
-            self.map.landmarks[lid].observations[ident] = OwnedObservation(
-                observed_pixel.copy(), measured_right
+            self.map.add_observation(
+                lid, ident, OwnedObservation(observed_pixel.copy(), measured_right)
             )
         if self.stereo is not None:
             for group_id, members in enumerate(groups):
@@ -1593,42 +1636,68 @@ class SharedSlam:
         with self.map.lock:
             track_revision = int(self.map.revision)
             track_geometry_revision = int(self.map.geometry_revision)
-        cache = None
-        if self.performance.cpu_optimizations:
-            cache = self._cached_landmarks()
-            landmarks = cache[2]
-        else:
-            landmarks = list(self.map.landmarks.values())
-        if candidate_ids is not None:
-            landmarks = [l for l in landmarks if l.id in candidate_ids]
-            cache = None
-        ambiguous_landmarks = self._landmark_pixel_identity_conflicts(landmarks)
-        if ambiguous_landmarks:
-            landmarks = [l for l in landmarks if l.id not in ambiguous_landmarks]
-            cache = None
-        if not landmarks:
-            return None, {}
-        if not relocalize:
+        if (not relocalize and candidate_ids is None
+                and self.config.use_incremental_map_index
+                and len(self.map.index) == len(self.map.landmarks)):
+            ambiguous_landmarks = self._landmark_pixel_identity_conflicts(None)
             predicted = self._motion_prediction()
-            projected, z = project(
-                cache[3] if cache is not None else np.array([l.position for l in landmarks]), predicted, self.K
+            T_cw = np.linalg.inv(predicted)
+            frustum = self.map.index.query_frustum(
+                T_cw, self.K, size,
+                max_depth=1e6,
+                margin_px=40.0,
+                include_far_bearings=bool(self.config.use_far_stereo_points),
             )
-            visible = (
-                (z > 0)
-                & (projected[:, 0] >= -40)
-                & (projected[:, 0] < size[0] + 40)
-                & (projected[:, 1] >= -40)
-                & (projected[:, 1] < size[1] + 40)
-            )
-            landmarks = [l for l, ok in zip(landmarks, visible) if ok]
+            landmarks = [
+                self.map.landmarks[int(lid)]
+                for lid in frustum.landmark_ids
+                if int(lid) in self.map.landmarks and int(lid) not in ambiguous_landmarks
+            ]
             if len(landmarks) > self.config.max_landmarks:
                 landmarks.sort(
                     key=lambda l: (max(l.observations), len(l.observations)),
                     reverse=True,
                 )
                 landmarks = landmarks[: self.config.max_landmarks]
-        if not landmarks:
-            return None, {}
+            if not landmarks:
+                return None, {}
+        else:
+            cache = None
+            if self.performance.cpu_optimizations:
+                cache = self._cached_landmarks()
+                landmarks = cache[2]
+            else:
+                landmarks = list(self.map.landmarks.values())
+            if candidate_ids is not None:
+                landmarks = [l for l in landmarks if l.id in candidate_ids]
+                cache = None
+            ambiguous_landmarks = self._landmark_pixel_identity_conflicts(landmarks)
+            if ambiguous_landmarks:
+                landmarks = [l for l in landmarks if l.id not in ambiguous_landmarks]
+                cache = None
+            if not landmarks:
+                return None, {}
+            if not relocalize:
+                predicted = self._motion_prediction()
+                projected, z = project(
+                    cache[3] if cache is not None else np.array([l.position for l in landmarks]), predicted, self.K
+                )
+                visible = (
+                    (z > 0)
+                    & (projected[:, 0] >= -40)
+                    & (projected[:, 0] < size[0] + 40)
+                    & (projected[:, 1] >= -40)
+                    & (projected[:, 1] < size[1] + 40)
+                )
+                landmarks = [l for l, ok in zip(landmarks, visible) if ok]
+                if len(landmarks) > self.config.max_landmarks:
+                    landmarks.sort(
+                        key=lambda l: (max(l.observations), len(l.observations)),
+                        reverse=True,
+                    )
+                    landmarks = landmarks[: self.config.max_landmarks]
+            if not landmarks:
+                return None, {}
         # Keep geometry unique by LM while retaining linked SIFT orientation
         # descriptors from bounded anchor/latest keyframes for appearance.
         descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
@@ -1777,12 +1846,21 @@ class SharedSlam:
             measured_right = None
             if solution is not None and self.stereo is not None:
                 _, measured_right = self._measure_stereo_pixels(observations)
-                solution, stereo_diagnostics = refine_stereo_map_pose(
-                    solution, positions, observations, measured_right, self.K,
-                    self.stereo.baseline, size,
-                    self.config.min_inliers if not relocalize else 20,
-                    self.stereo.disparity_offset,
-                )
+                if getattr(self.config, "use_analytic_ba_jacobians", False):
+                    solution, stereo_diagnostics = refine_stereo_map_pose(
+                        solution, positions, observations, measured_right, self.K,
+                        self.stereo.baseline, size,
+                        self.config.min_inliers if not relocalize else 20,
+                        self.stereo.disparity_offset,
+                        use_analytic=True,
+                    )
+                else:
+                    solution, stereo_diagnostics = refine_stereo_map_pose(
+                        solution, positions, observations, measured_right, self.K,
+                        self.stereo.baseline, size,
+                        self.config.min_inliers if not relocalize else 20,
+                        self.stereo.disparity_offset,
+                    )
                 diagnostics.update(stereo_diagnostics)
             if self._tracking_trace_enabled(getattr(self, "_tracking_trace_frame", -1)):
                 valid_indices = (
@@ -2383,6 +2461,12 @@ class SharedSlam:
 
     def _landmark_pixel_identity_conflicts(self, landmarks):
         """Find distinct LMs claiming one exact pixel in one keyframe."""
+        cfg = getattr(self, "config", None)
+        if (cfg is not None and getattr(cfg, "use_incremental_map_index", False)
+                and self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY
+                and hasattr(self.map, "index")
+                and len(self.map.index) == len(self.map.landmarks)):
+            return set(self.map.index.conflicted_landmark_ids())
         claims = {}
         conflicts = set()
         cached_keyframes = set()
@@ -6952,6 +7036,12 @@ class SharedSlam:
                                     "accepted": False, "reason": "guard_construction_failed", "error_type": kind
                                 }
                             )
+                    bundle_kwargs["use_analytic_jacobian"] = bool(
+                        self.config.use_analytic_ba_jacobians
+                    )
+                    bundle_kwargs["use_map_index"] = bool(
+                        self.config.use_incremental_map_index
+                    )
                     report = local_bundle_adjustment(
                         self.map,
                         self.K,
@@ -7123,8 +7213,19 @@ class SharedSlam:
         }
 
     def map_points_sample(self, max_points=1000):
-        points = [l.position.tolist() for l in self.map.landmarks.values()]
-        return points[:: max(1, len(points) // max(1, max_points))][:max_points]
+        import itertools
+        limit = max(0, int(max_points))
+        if limit == 0:
+            return []
+        with self.map.lock:
+            total = len(self.map.landmarks)
+            if total == 0:
+                return []
+            step = max(1, total // limit)
+            return [
+                lm.position.tolist()
+                for lm in itertools.islice(self.map.landmarks.values(), 0, None, step)
+            ][:limit]
 
 
 _ORIGINAL_PHYSICAL_PIXEL_KEY = SharedSlam._physical_pixel_key

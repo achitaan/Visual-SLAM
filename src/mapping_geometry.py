@@ -89,7 +89,8 @@ def right_pixel(left_u, depth, focal_length, baseline, disparity_offset=0.0):
 
 
 def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, baseline,
-                           size, min_inliers=15, disparity_offset=0.0):
+                           size, min_inliers=15, disparity_offset=0.0,
+                           use_analytic=False, weights_uv_uR=None):
     """Verify a left-image PnP hypothesis against current stereo observations."""
     from scipy.optimize import least_squares
 
@@ -99,6 +100,45 @@ def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, bas
     report = {"stereo_observations": int(available.sum()), "stereo_refinement_applied": False}
     if available.sum() < min_inliers or coverage(observed[available], size) < 3:
         return solution, {**report, "stereo_verification": "insufficient_current_depth_support"}
+
+    if use_analytic:
+        from analytic_ba import refine_stereo_pose_analytic
+
+        obs_3 = np.column_stack((observed[:, 0], observed[:, 1], np.where(available, right, 0.0)))
+        comp_mask = np.column_stack((np.ones(len(world), dtype=bool), np.ones(len(world), dtype=bool), available))
+        w_in = None if weights_uv_uR is None else np.asarray(weights_uv_uR, dtype=float)[ids]
+        res_opt = refine_stereo_pose_analytic(
+            pose, world, obs_3, w_in, comp_mask, matrix, baseline,
+            disparity_offset=disparity_offset, f_scale=2.0, max_iter=15,
+        )
+        refined = res_opt.T_wc if (np.isfinite(res_opt.T_wc).all() and res_opt.final_cost < res_opt.initial_cost) else pose.copy()
+        R_cw = refined[:3, :3].T
+        t_cw = -R_cw @ refined[:3, 3]
+        camera = world @ R_cw.T + t_cw
+        homogeneous = camera @ matrix.T
+        predicted = homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9)
+        left_error = predicted - observed
+        right_error = right_pixel(predicted[:, 0], camera[:, 2], matrix[0, 0], baseline, disparity_offset) - right
+        depth = camera[:, 2]
+        left_norm = np.linalg.norm(left_error, axis=1)
+        valid = (depth > 0) & (left_norm <= 2.0) & (~available | (np.abs(right_error) <= 2.0))
+        stereo_valid = valid & available
+        report.update(
+            stereo_refinement_applied=bool(res_opt.final_cost < res_opt.initial_cost),
+            stereo_initial_cost=float(res_opt.initial_cost),
+            stereo_final_cost=float(res_opt.final_cost),
+            stereo_consistent_inliers=int(stereo_valid.sum()),
+            stereo_rejected_inliers=int((available & ~valid).sum()),
+        )
+        if (valid.sum() < min_inliers or valid.sum() / len(points) < 0.25
+                or stereo_valid.sum() < min_inliers
+                or coverage(observed[stereo_valid], size) < 3
+                or np.median(left_norm[valid]) > 1.5
+                or np.median(np.abs(right_error[stereo_valid])) > 1.5):
+            return None, {**report, "pose_rejection_reason": "stereo_map_inconsistency"}
+        return (refined, ids[valid], float(np.median(left_norm[valid]))), {
+            **report, "stereo_verification": "current_right_reprojection"}
+
     inverse = np.linalg.inv(pose)
     initial = np.r_[cv.Rodrigues(inverse[:3, :3])[0].ravel(), inverse[:3, 3]]
 

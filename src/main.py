@@ -495,8 +495,9 @@ def main() -> None:
                         inlier = inlier_mask[idx] if idx < len(inlier_mask) else True
                         features.append({"x": float(x), "y": float(y), "inlier": inlier})
 
+                has_clients = bool(getattr(telemetry, "has_clients", True))
                 image_payload = None
-                if telemetry.state.stream_enabled and TELEMETRY.stream_images:
+                if has_clients and telemetry.state.stream_enabled and TELEMETRY.stream_images:
                     image_payload = encode_image(vo.Images_1[i] if use_stereo else vo.Images[i], encoding="jpg")
 
                 tracking = {
@@ -509,10 +510,10 @@ def main() -> None:
                 }
                 map_state = shared.map_state() if shared is not None else slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
                 pose_graph_state = None if shared is not None else slam_backend.pose_graph_state(i if (use_keyframes or use_local_map) else None)
-                if shared is not None and shared.loop_worker.verified:
+                if has_clients and shared is not None and shared.loop_worker.verified:
                     pose_graph_state={'optimized_pose_T_wc':vo.poses[-1].tolist(),'optimized_poses_count':len(vo.poses),'optimized_poses':[p.tolist() for p in vo.poses] if len(vo.poses)<=5000 else None}
                 map_points_payload = None
-                if use_local_map and TELEMETRY.stream_map_points:
+                if has_clients and use_local_map and TELEMETRY.stream_map_points:
                     map_points_payload = shared.map_points_sample(TELEMETRY.max_map_points) if shared is not None else slam_backend.map_points_sample(TELEMETRY.max_map_points)
 
                 expected_pose = gt_poses[i] if gt_poses and i < len(gt_poses) else None
@@ -526,7 +527,7 @@ def main() -> None:
                     pose_graph=pose_graph_state,
                     expected_pose_T_wc=expected_pose,
                     image_payload=image_payload,
-                    features=features,
+                    features=features if has_clients else None,
                     fps=fps,
                     state=telemetry.state,
                     events=([{'timestamp':current_time,'type':e['type'],'message':str(e),'severity':'warn' if e['type'] in ('loop_failed','loop_discarded') else 'info'} for e in shared.loop_worker.events[shared_events_sent:]] if shared is not None else [e.__dict__ for e in events]),
@@ -540,7 +541,7 @@ def main() -> None:
                 if shared is not None:shared_events_sent=len(shared.loop_worker.events)
             if args.realtime and frame_times and i < len(frame_times):
                 time.sleep(max(0.0, frame_times[i] - frame_times[i - 1]))
-            elif telemetry and args.frame_delay_ms > 0:
+            elif telemetry and getattr(telemetry, "has_clients", True) and args.frame_delay_ms > 0:
                 time.sleep(args.frame_delay_ms / 1000.0)
     finally:
         if shared is not None:

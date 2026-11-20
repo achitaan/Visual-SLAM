@@ -4,12 +4,15 @@ from dataclasses import dataclass, field
 from threading import RLock
 import numpy as np
 from kitti import validate_pose
+from map_index import IncrementalMapIndex
 
 
 @dataclass
 class Observation:
     pixel: np.ndarray
     right_u: float | None = None
+    octave: int = 0
+    sigma_disparity: float = 1.0
 
 
 @dataclass
@@ -20,6 +23,8 @@ class Landmark:
     anchor: int
     observations: dict[int, Observation] = field(default_factory=dict)
     misses: int = 0
+    octave: int = 0
+    is_far: bool = False
 
 
 @dataclass
@@ -33,6 +38,7 @@ class MappingKeyframe:
     image: np.ndarray | None = None
     depth_points: np.ndarray | None = None
     image_size: tuple[int, int] | None = None
+    octaves: np.ndarray | None = None
 
 
 class MapState:
@@ -53,6 +59,7 @@ class MapState:
         self.geometry_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
+        self.index = IncrementalMapIndex()
 
     def add_stereo_motion(self, previous, current, measurement):
         """Retain independently verified metric motion between accepted frames."""
@@ -68,16 +75,32 @@ class MapState:
             # Append-only evidence accompanies recorded frames, without changing geometry.
             self.stereo_motion[key] = measurement.copy()
 
-    def add_landmark(self, position, descriptor, anchor, observations):
+    def add_landmark(self, position, descriptor, anchor, observations, *, octave=0, is_far=False):
         position = np.asarray(position, float).reshape(3)
         if not np.isfinite(position).all():
             raise ValueError("Nonfinite landmark")
         ident = self.next_landmark
         self.next_landmark += 1
-        self.landmarks[ident] = Landmark(
-            ident, position.copy(), descriptor.copy(), anchor, observations
+        landmark = Landmark(
+            ident, position.copy(), descriptor.copy(), anchor, observations,
+            octave=int(octave), is_far=bool(is_far),
         )
+        self.landmarks[ident] = landmark
+        self.index.on_landmark_added(landmark)
         return ident
+
+    def add_observation(self, landmark_id, keyframe_id, observation):
+        landmark = self.landmarks.get(landmark_id)
+        if landmark is None:
+            return
+        landmark.observations[keyframe_id] = observation
+        self.index.on_observation_added(landmark_id, observation, keyframe_id=keyframe_id)
+
+    def remove_landmark(self, landmark_id):
+        removed = self.landmarks.pop(landmark_id, None)
+        if removed is not None:
+            self.index.on_landmark_removed(landmark_id)
+        return removed
 
     def record(self, pose, status, anchor=None):
         validate_pose(pose)
@@ -276,6 +299,7 @@ class MapState:
                     }
             for ident, position in positions.items():
                 self.landmarks[ident].position = position
+            self.index.on_landmarks_bulk_moved(positions)
             for ident, pose in corrected.items():
                 self.keyframes[ident].pose = pose.copy()
                 if not self.metric and self.keyframes[ident].depth_points is not None:

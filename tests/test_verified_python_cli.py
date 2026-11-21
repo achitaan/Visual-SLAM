@@ -79,3 +79,35 @@ def test_main_cli_preserves_improved_stereo_preset_and_overrides():
         assert slam.loop_worker.use_vlad_retrieval is True
     finally:
         slam.close()
+
+
+def test_main_cli_pipeline_extraction_options():
+    spec = importlib.util.spec_from_file_location('pipeline_cli_main', ROOT / 'src/main.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    _, default_args = module.parse_main_args(['--slam', '--stereo', '--preset', 'improved_stereo'])
+    assert default_args.pipeline_extraction is False
+    assert default_args.pipeline_buffer == 1
+
+    _, pipe_args = module.parse_main_args([
+        '--slam', '--stereo', '--preset', 'improved_stereo',
+        '--pipeline-extraction', '--pipeline-buffer', '2',
+    ])
+    assert pipe_args.pipeline_extraction is True
+    assert pipe_args.pipeline_buffer == 2
+
+    bad_no_slam = subprocess.run(
+        [sys.executable, '-B', str(ROOT / 'src/main.py'), '--pipeline-extraction'],
+        cwd=ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert bad_no_slam.returncode == 2
+    assert '--pipeline-extraction requires --slam' in bad_no_slam.stderr
+
+    bad_buf = subprocess.run(
+        [sys.executable, '-B', str(ROOT / 'src/main.py'), '--slam', '--pipeline-extraction', '--pipeline-buffer', '0'],
+        cwd=ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert bad_buf.returncode == 2
+    assert '--pipeline-buffer must be positive' in bad_buf.stderr
+

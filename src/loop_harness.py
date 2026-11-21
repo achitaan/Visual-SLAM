@@ -235,6 +235,9 @@ def build_airgapped_estimator_invocation(
     seed: int,
     opencv_threads: int,
     max_frames: int | None,
+    pipeline_extraction: bool = False,
+    pipeline_buffer: int = 1,
+    openblas_threads: int = 1,
 ) -> tuple[list[str], dict[str, str], Path]:
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
@@ -271,9 +274,10 @@ def build_airgapped_estimator_invocation(
         if val is not None:
             env[key] = val
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
-    env["OPENBLAS_NUM_THREADS"] = "1"
+    blas_t = str(max(1, int(openblas_threads)))
+    env["OPENBLAS_NUM_THREADS"] = blas_t
     env["OMP_NUM_THREADS"] = "1"
-    env["MKL_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = blas_t
     env["NUMEXPR_NUM_THREADS"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".mpl-cache"))
@@ -300,6 +304,9 @@ def build_airgapped_estimator_invocation(
     ]
     if max_frames is not None:
         command.extend(["--max-frames", str(int(max_frames))])
+    if pipeline_extraction:
+        command.append("--pipeline-extraction")
+        command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
 
     forbidden_tokens = {
         str(poses_dir),
@@ -332,6 +339,9 @@ def run_airgapped_estimator_subprocess(
     seed: int,
     opencv_threads: int,
     max_frames: int | None,
+    pipeline_extraction: bool = False,
+    pipeline_buffer: int = 1,
+    openblas_threads: int = 1,
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +355,9 @@ def run_airgapped_estimator_subprocess(
         seed=seed,
         opencv_threads=opencv_threads,
         max_frames=max_frames,
+        pipeline_extraction=pipeline_extraction,
+        pipeline_buffer=pipeline_buffer,
+        openblas_threads=openblas_threads,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -477,6 +490,8 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--opencv-threads", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--pipeline-extraction", action="store_true")
+    parser.add_argument("--pipeline-buffer", type=int, default=2)
     args = parser.parse_args(argv)
 
     import cv2 as cv
@@ -494,6 +509,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         matching_backend="cpu",
         cpu_optimizations=True,
         profile=True,
+        pipeline_extraction=bool(args.pipeline_extraction),
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -519,43 +535,97 @@ def _estimator_worker_main(argv: list[str]) -> int:
     online_first_poses: list[np.ndarray] = []
     online_end_poses: list[np.ndarray] = []
     frame_latencies_s: list[float] = []
+    service_intervals_s: list[float] = []
     process_latencies_s: list[float] = []
     keyframe_latencies_s: list[float] = []
     non_keyframe_latencies_s: list[float] = []
     io_elapsed_s = 0.0
     slam_process_elapsed_s = 0.0
+    worker_extract_elapsed_s = 0.0
+    extract_wait_elapsed_s = 0.0
     online_elapsed_s = 0.0
     shutdown_drain_s = 0.0
 
+    pipeline = None
+    if args.pipeline_extraction:
+        from frontend_pipeline import FrontendExtractionPipeline
+        pipeline = FrontendExtractionPipeline(slam, buffer_size=max(1, int(args.pipeline_buffer)))
+
     started = time.perf_counter()
     try:
-        for frame_idx in range(total_frames):
-            t_frame_start = time.perf_counter()
-            im1 = vo.Images_1[frame_idx]
-            im2 = vo.Images_2[frame_idx]
-            t_io_end = time.perf_counter()
-            prev_kfs = len(slam.map.keyframes)
-            pose_emitted, _ = slam.process(frame_idx, im1, im2)
-            t_frame_end = time.perf_counter()
+        if pipeline is not None:
+            def _load_pair(idx: int):
+                return vo.Images_1[idx], vo.Images_2[idx]
 
-            online_first_poses.append(np.asarray(pose_emitted, dtype=np.float64).copy())
-            io_dt = t_io_end - t_frame_start
-            proc_dt = t_frame_end - t_io_end
-            frame_dt = t_frame_end - t_frame_start
-            io_elapsed_s += io_dt
-            slam_process_elapsed_s += proc_dt
-            frame_latencies_s.append(frame_dt)
-            process_latencies_s.append(proc_dt)
-            if len(slam.map.keyframes) > prev_kfs:
-                keyframe_latencies_s.append(frame_dt)
-            else:
-                non_keyframe_latencies_s.append(frame_dt)
+            submit_times: dict[int, float] = {}
+            prefetch_depth = min(max(1, int(args.pipeline_buffer)), total_frames)
+            next_submit = 0
+            while next_submit < prefetch_depth:
+                submit_times[next_submit] = time.perf_counter()
+                pipeline.submit_loader(next_submit, _load_pair)
+                next_submit += 1
+
+            for frame_idx in range(total_frames):
+                t_iter_start = time.perf_counter()
+                extracted = pipeline.get(frame_idx)
+                t_extract_ready = time.perf_counter()
+                if next_submit < total_frames:
+                    submit_times[next_submit] = time.perf_counter()
+                    pipeline.submit_loader(next_submit, _load_pair)
+                    next_submit += 1
+                prev_kfs = len(slam.map.keyframes)
+                t_proc_start = time.perf_counter()
+                pose_emitted, _ = slam.process(frame_idx, extracted=extracted)
+                t_frame_end = time.perf_counter()
+
+                online_first_poses.append(np.asarray(pose_emitted, dtype=np.float64).copy())
+                t_avail = submit_times.pop(frame_idx, t_iter_start)
+                # True first-pose latency from image availability (includes queueing + I/O + extraction + tracking)
+                first_pose_dt = t_frame_end - t_avail
+                service_dt = t_frame_end - t_iter_start
+                proc_dt = t_frame_end - t_proc_start
+                io_elapsed_s += extracted.io_elapsed_s
+                worker_extract_elapsed_s += extracted.extract_elapsed_s
+                extract_wait_elapsed_s += (t_extract_ready - t_iter_start)
+                slam_process_elapsed_s += proc_dt
+                frame_latencies_s.append(first_pose_dt)
+                service_intervals_s.append(service_dt)
+                process_latencies_s.append(proc_dt)
+                if len(slam.map.keyframes) > prev_kfs:
+                    keyframe_latencies_s.append(first_pose_dt)
+                else:
+                    non_keyframe_latencies_s.append(first_pose_dt)
+        else:
+            for frame_idx in range(total_frames):
+                t_frame_start = time.perf_counter()
+                im1 = vo.Images_1[frame_idx]
+                im2 = vo.Images_2[frame_idx]
+                t_io_end = time.perf_counter()
+                prev_kfs = len(slam.map.keyframes)
+                pose_emitted, _ = slam.process(frame_idx, im1, im2)
+                t_frame_end = time.perf_counter()
+
+                online_first_poses.append(np.asarray(pose_emitted, dtype=np.float64).copy())
+                io_dt = t_io_end - t_frame_start
+                proc_dt = t_frame_end - t_io_end
+                frame_dt = t_frame_end - t_frame_start
+                io_elapsed_s += io_dt
+                slam_process_elapsed_s += proc_dt
+                frame_latencies_s.append(frame_dt)
+                service_intervals_s.append(frame_dt)
+                process_latencies_s.append(proc_dt)
+                if len(slam.map.keyframes) > prev_kfs:
+                    keyframe_latencies_s.append(frame_dt)
+                else:
+                    non_keyframe_latencies_s.append(frame_dt)
 
         online_elapsed_s = max(time.perf_counter() - started, 1e-9)
         with slam.map.lock:
             online_end_poses = [p.copy() for p in slam.map.poses]
     finally:
         t_close_start = time.perf_counter()
+        if pipeline is not None:
+            pipeline.close()
         slam.close(finish=True)
         shutdown_drain_s = max(time.perf_counter() - t_close_start, 0.0)
     elapsed_s = max(time.perf_counter() - started, 1e-9)
@@ -586,6 +656,8 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "max_frames": args.max_frames,
         "seed": args.seed,
         "opencv_threads": args.opencv_threads,
+        "openblas_threads": int(os.environ.get("OPENBLAS_NUM_THREADS", "1")),
+        "pipeline_extraction": bool(args.pipeline_extraction),
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -609,11 +681,14 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "online_elapsed_s": float(online_elapsed_s),
         "slam_process_elapsed_s": float(slam_process_elapsed_s),
         "io_elapsed_s": float(io_elapsed_s),
+        "worker_extract_elapsed_s": float(worker_extract_elapsed_s),
+        "extract_wait_elapsed_s": float(extract_wait_elapsed_s),
         "shutdown_drain_s": float(shutdown_drain_s),
         "processing_fps": float(total_frames / elapsed_s),
         "online_fps": float(total_frames / online_elapsed_s),
         "frame_latency_ms": {
             "all": _summarize_latencies_ms(frame_latencies_s),
+            "service_interval": _summarize_latencies_ms(service_intervals_s),
             "process_only": _summarize_latencies_ms(process_latencies_s),
             "keyframe": _summarize_latencies_ms(keyframe_latencies_s),
             "non_keyframe": _summarize_latencies_ms(non_keyframe_latencies_s),
@@ -1252,6 +1327,9 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hypothesis", type=str, default="")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--opencv-threads", type=int, default=1)
+    parser.add_argument("--openblas-threads", type=int, default=1)
+    parser.add_argument("--pipeline-extraction", action="store_true")
+    parser.add_argument("--pipeline-buffer", type=int, default=1)
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1284,6 +1362,10 @@ def resolve_loop_cli_args(argv: list[str] | None = None) -> tuple[argparse.Names
         parser.error("--seed must be between 0 and 2147483647")
     if args.opencv_threads < 1:
         parser.error("--opencv-threads must be positive")
+    if args.openblas_threads < 1:
+        parser.error("--openblas-threads must be positive")
+    if args.pipeline_buffer < 1:
+        parser.error("--pipeline-buffer must be positive")
     if args.tier == "custom" and not args.sequences:
         parser.error("--tier custom requires --sequences")
 
@@ -1364,6 +1446,9 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             seed=args.seed,
             opencv_threads=args.opencv_threads,
             max_frames=seq_max_frames,
+            pipeline_extraction=bool(args.pipeline_extraction),
+            pipeline_buffer=int(args.pipeline_buffer),
+            openblas_threads=int(args.openblas_threads),
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)

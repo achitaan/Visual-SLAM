@@ -16,6 +16,7 @@ class PerformanceConfig:
     matching_backend: str = "cpu"
     cpu_optimizations: bool = True
     profile: bool = False
+    pipeline_extraction: bool = False
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):

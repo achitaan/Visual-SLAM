@@ -6195,17 +6195,17 @@ class SharedSlam:
             }
         return provider
 
-    def process(self, index, image, right=None):
+    def process(self, index, image=None, right=None, *, extracted=None):
         # A frontend seed may be consumed only by the keyframe created during
         # this process call. Never let an early return or exception carry it to
         # a later frame.
         self._active_frontend_seed_payload = None
         try:
-            return self._process_frame(index, image, right)
+            return self._process_frame(index, image, right, extracted=extracted)
         finally:
             self._active_frontend_seed_payload = None
 
-    def _process_frame(self, index, image, right=None):
+    def _process_frame(self, index, image=None, right=None, *, extracted=None):
         if index != len(self.map.poses):
             raise ValueError(
                 "Frames must arrive in consecutive order, starting at zero"
@@ -6219,7 +6219,19 @@ class SharedSlam:
         )
         if getattr(self.config, "stereo_source_history_bundle", False):
             self._source_history_capture = source_history_capture
-        self._prepare_frame_images(image, right)
+        if extracted is not None:
+            if int(extracted.index) != int(index):
+                raise ValueError(
+                    f"ExtractedFrame index {extracted.index} does not match frame {index}"
+                )
+            self.current_gray = extracted.gray
+            self.current_left_gray = extracted.left_gray_f32
+            self.current_right_gray = extracted.right_gray_f32
+            self.stereo_depth_verification = dict(extracted.stereo_depth_verification)
+            self.stereo_map_depth_verification = {}
+            self._frame_verified_right_cache = {}
+        else:
+            self._prepare_frame_images(image, right)
         trace_capture = self._tracking_trace_enabled(index)
         self._tracking_trace_frame = int(index) if trace_capture else -1
         self._tracking_trace_probe_count = 0
@@ -6253,12 +6265,23 @@ class SharedSlam:
         if raw_stereo_enabled:
             self._supported_extraction = None
             self._arbitration_context = None
-        pixels, desc, points, right_u = self._extract(image, right)
+        if extracted is not None:
+            self.current_disparity = extracted.disparity
+            self._current_octaves = extracted.octaves
+            if raw_stereo_enabled:
+                self._supported_extraction = extracted.supported_extraction
+            pixels = extracted.pixels
+            desc = extracted.descriptors
+            points = extracted.points
+            right_u = extracted.right_u
+            size = extracted.image_size
+        else:
+            pixels, desc, points, right_u = self._extract(image, right)
+            size = (image.shape[1], image.shape[0])
         frontend_seed_payload = self._extract_frontend_seed_payload(
             index, pixels, points, right_u
         )
         self._active_frontend_seed_payload = frontend_seed_payload
-        size = (image.shape[1], image.shape[0])
         arbitration_report = None
         arbitration_measurement = None
         if raw_stereo_enabled:

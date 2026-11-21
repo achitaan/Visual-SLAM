@@ -1784,33 +1784,32 @@ class SharedSlam:
                 max_depth=1e6,
                 margin_px=40.0,
                 include_far_bearings=bool(self.config.use_far_stereo_points),
+                exclude_conflicted=True,
+                max_landmarks=self.config.max_landmarks,
             )
-            kept_rows = []
-            landmarks = []
-            for row_i, lid in enumerate(frustum.landmark_ids):
-                lid_int = int(lid)
-                if lid_int in self.map.landmarks and lid_int not in ambiguous_landmarks:
-                    kept_rows.append(row_i)
-                    landmarks.append(self.map.landmarks[lid_int])
-            if len(landmarks) > self.config.max_landmarks:
-                order = sorted(
-                    range(len(landmarks)),
-                    key=lambda idx: (max(landmarks[idx].observations), len(landmarks[idx].observations)),
-                    reverse=True,
-                )[: self.config.max_landmarks]
-                landmarks = [landmarks[idx] for idx in order]
-                kept_rows = [kept_rows[idx] for idx in order]
+            map_landmarks = self.map.landmarks
+            landmarks = [
+                map_landmarks[lid_int]
+                for lid_int in frustum.landmark_ids.tolist()
+                if lid_int in map_landmarks
+            ]
             if not landmarks:
                 return None, {}
             if getattr(self.config, "use_projective_tracking", False):
-                from map_index import FrustumQueryResult
+                if len(landmarks) == len(frustum.landmark_ids):
+                    proj_frustum_uv = frustum
+                else:
+                    from map_index import FrustumQueryResult
 
-                kr = np.asarray(kept_rows, dtype=np.intp)
-                proj_frustum_uv = FrustumQueryResult(
-                    landmark_ids=frustum.landmark_ids[kr],
-                    projected_uv=frustum.projected_uv[kr],
-                    depths=frustum.depths[kr],
-                )
+                    kr = np.asarray(
+                        [i for i, lid in enumerate(frustum.landmark_ids.tolist()) if lid in map_landmarks],
+                        dtype=np.intp,
+                    )
+                    proj_frustum_uv = FrustumQueryResult(
+                        landmark_ids=frustum.landmark_ids[kr],
+                        projected_uv=frustum.projected_uv[kr],
+                        depths=frustum.depths[kr],
+                    )
         else:
             cache = None
             if self.performance.cpu_optimizations:
@@ -2437,6 +2436,9 @@ class SharedSlam:
         groups, _ = cls._physical_pixel_groups(pixels)
         finite_row = (np.isfinite(points).all(axis=1) & np.isfinite(right_u)).tolist()
         selected = []
+        multi_checks = []
+        rep_idx = []
+        mem_idx = []
         for members in groups:
             if len(members) == 1:
                 r = members[0]
@@ -2445,11 +2447,30 @@ class SharedSlam:
                 continue
             if not all(finite_row[r] for r in members):
                 continue
-            values = points[members]
-            rights = right_u[members]
-            if (np.allclose(values, values[0], rtol=1e-6, atol=1e-6)
-                    and np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6)):
-                selected.append(members[0])
+            r0 = members[0]
+            start = len(rep_idx)
+            for r in members[1:]:
+                rep_idx.append(r0)
+                mem_idx.append(r)
+            multi_checks.append((len(selected), r0, start, len(rep_idx)))
+            selected.append(-1)
+        if multi_checks:
+            p0 = points[rep_idx]
+            pm = points[mem_idx]
+            r0_v = right_u[rep_idx]
+            rm_v = right_u[mem_idx]
+            pair_ok = (
+                np.all(np.abs(pm - p0) <= 1e-6 + 1e-6 * np.abs(p0), axis=1)
+                & (np.abs(rm_v - r0_v) <= 1e-6 + 1e-6 * np.abs(r0_v))
+            ).tolist()
+            has_reject = False
+            for out_pos, first_row, start, end in multi_checks:
+                if all(pair_ok[start:end]):
+                    selected[out_pos] = first_row
+                else:
+                    has_reject = True
+            if has_reject:
+                selected = [row for row in selected if row >= 0]
         return np.asarray(selected, int)
 
     @classmethod
@@ -2464,19 +2485,38 @@ class SharedSlam:
         groups, _ = cls._physical_pixel_groups(pixels)
         finite_pt = np.isfinite(points).all(axis=1).tolist()
         selected = []
+        multi_checks = []
+        rep_idx = []
+        mem_idx = []
         for members in groups:
             if len(members) == 1:
                 selected.append(members[0])
                 continue
             finite_rows = [row for row in members if finite_pt[row]]
-            if finite_rows:
-                if len(finite_rows) > 1:
-                    finite_points = points[finite_rows]
-                    if not np.allclose(finite_points, finite_points[0], rtol=1e-6, atol=1e-6):
-                        continue
+            if not finite_rows:
+                selected.append(members[0])
+            elif len(finite_rows) == 1:
                 selected.append(finite_rows[0])
             else:
-                selected.append(members[0])
+                r0 = finite_rows[0]
+                start = len(rep_idx)
+                for r in finite_rows[1:]:
+                    rep_idx.append(r0)
+                    mem_idx.append(r)
+                multi_checks.append((len(selected), r0, start, len(rep_idx)))
+                selected.append(-1)
+        if multi_checks:
+            p0 = points[rep_idx]
+            pm = points[mem_idx]
+            pair_ok = np.all(np.abs(pm - p0) <= 1e-6 + 1e-6 * np.abs(p0), axis=1).tolist()
+            has_reject = False
+            for out_pos, first_row, start, end in multi_checks:
+                if all(pair_ok[start:end]):
+                    selected[out_pos] = first_row
+                else:
+                    has_reject = True
+            if has_reject:
+                selected = [row for row in selected if row >= 0]
         return np.asarray(selected, int)
 
     @classmethod
@@ -2492,6 +2532,9 @@ class SharedSlam:
             return result, usable
         groups, _ = cls._physical_pixel_groups(pixels)
         finite_pt = np.isfinite(points).all(axis=1).tolist()
+        multi_checks = []
+        rep_idx = []
+        mem_idx = []
         for members in groups:
             if len(members) == 1:
                 r = members[0]
@@ -2502,18 +2545,27 @@ class SharedSlam:
             if not finite_rows:
                 result[members] = np.nan
                 continue
-            if len(finite_rows) > 1:
-                finite_points = points[finite_rows]
-                if not np.allclose(finite_points, finite_points[0], rtol=1e-6, atol=1e-6):
+            if len(finite_rows) == 1:
+                result[members] = points[finite_rows[0]]
+                continue
+            r0 = finite_rows[0]
+            start = len(rep_idx)
+            for r in finite_rows[1:]:
+                rep_idx.append(r0)
+                mem_idx.append(r)
+            multi_checks.append((members, r0, start, len(rep_idx)))
+        if multi_checks:
+            p0 = points[rep_idx]
+            pm = points[mem_idx]
+            pair_ok = np.all(np.abs(pm - p0) <= 1e-6 + 1e-6 * np.abs(p0), axis=1).tolist()
+            for members, first_row, start, end in multi_checks:
+                if all(pair_ok[start:end]):
+                    # Orientation rows at one exact float32 pixel describe one camera
+                    # measurement. Preserve their descriptors and reuse that one value.
+                    result[members] = points[first_row]
+                else:
                     result[members] = np.nan
                     usable[members] = False
-                    continue
-                canonical = finite_points[0]
-            else:
-                canonical = points[finite_rows[0]]
-            # Orientation rows at one exact float32 pixel describe one camera
-            # measurement. Preserve their descriptors and reuse that one value.
-            result[members] = canonical
         return result, usable
 
     def _physical_stereo_reference_inputs(
@@ -3165,12 +3217,28 @@ class SharedSlam:
                 return None, report
             # Preserve the default numerical path exactly. It drops duplicate
             # endpoint pixels before splitting descriptor rows by source index.
-            _, previous_inverse, previous_counts = np.unique(
-                np.asarray(previous.pixels, np.float32), axis=0,
-                return_inverse=True, return_counts=True)
-            _, current_inverse, current_counts = np.unique(
-                np.asarray(current.pixels, np.float32), axis=0,
-                return_inverse=True, return_counts=True)
+            prev_f32 = np.ascontiguousarray(previous.pixels, np.float32)
+            curr_f32 = np.ascontiguousarray(current.pixels, np.float32)
+            prev_all_finite = bool(len(prev_f32) and np.isfinite(prev_f32).all())
+            curr_all_finite = bool(len(curr_f32) and np.isfinite(curr_f32).all())
+            if prev_all_finite:
+                prev_norm = np.where(prev_f32 == 0.0, np.float32(0.0), prev_f32)
+                prev_u64 = prev_norm.view(np.uint64).ravel()
+                _, previous_inverse, previous_counts = np.unique(
+                    prev_u64, return_inverse=True, return_counts=True)
+            else:
+                prev_norm = prev_u64 = None
+                _, previous_inverse, previous_counts = np.unique(
+                    prev_f32, axis=0, return_inverse=True, return_counts=True)
+            if curr_all_finite:
+                curr_norm = np.where(curr_f32 == 0.0, np.float32(0.0), curr_f32)
+                curr_u64 = curr_norm.view(np.uint64).ravel()
+                _, current_inverse, current_counts = np.unique(
+                    curr_u64, return_inverse=True, return_counts=True)
+            else:
+                curr_norm = curr_u64 = None
+                _, current_inverse, current_counts = np.unique(
+                    curr_f32, axis=0, return_inverse=True, return_counts=True)
             a, b = pairs.T
             valid = (np.isfinite(previous.points[a]).all(axis=1)
                      & np.isfinite(current.points[b]).all(axis=1)
@@ -3220,13 +3288,35 @@ class SharedSlam:
                 for edge in held_edges
             ], dtype=np.int64)
         else:
-            source_pixels = {self._physical_pixel_key(p) for p in previous.pixels[source]}
-            target_pixels = {self._physical_pixel_key(p) for p in current.pixels[target]}
-            excluded_targets = {j for j, p in enumerate(current.pixels)
-                                if self._physical_pixel_key(p) in target_pixels}
-            excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
-            excluded_landmarks.update(lid for lid, p in self.previous_tracks
-                                      if self._physical_pixel_key(p) in source_pixels)
+            if prev_norm is not None and curr_norm is not None:
+                source_pixels = {tuple(row) for row in prev_norm[source].tolist()}
+                target_pixels = {tuple(row) for row in curr_norm[target].tolist()}
+                # All rows in `target` already passed `current_counts == 1`.
+                excluded_targets = set(target.tolist())
+                excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
+                if self.previous_tracks:
+                    src_u64_set = set(prev_u64[source].tolist())
+                    tr_px = np.ascontiguousarray(
+                        [p for _, p in self.previous_tracks], np.float32
+                    ).reshape(-1, 2)
+                    if np.isfinite(tr_px).all():
+                        tr_u64 = np.where(tr_px == 0.0, np.float32(0.0), tr_px).view(np.uint64).ravel().tolist()
+                        for (lid, _), k in zip(self.previous_tracks, tr_u64):
+                            if k in src_u64_set:
+                                excluded_landmarks.add(lid)
+                    else:
+                        excluded_landmarks.update(
+                            lid for lid, p in self.previous_tracks
+                            if self._physical_pixel_key(p) in source_pixels
+                        )
+            else:
+                source_pixels = {self._physical_pixel_key(p) for p in previous.pixels[source]}
+                target_pixels = {self._physical_pixel_key(p) for p in current.pixels[target]}
+                excluded_targets = {j for j, p in enumerate(current.pixels)
+                                    if self._physical_pixel_key(p) in target_pixels}
+                excluded_landmarks = set(previous.landmark_ids[source].tolist()) - {-1}
+                excluded_landmarks.update(lid for lid, p in self.previous_tracks
+                                          if self._physical_pixel_key(p) in source_pixels)
             held_landmark_ids = previous.landmark_ids[source]
         evidence = SupportedStereoHoldout(previous.points[source], current.pixels[target],
                                          current.right_u[target], source, target,

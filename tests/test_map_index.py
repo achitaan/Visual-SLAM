@@ -203,3 +203,115 @@ def test_local_bundle_outlier_culling_updates_map_index():
     assert lm_good not in state.index.conflicted_landmark_ids()
     assert lm_bad not in state.index.conflicted_landmark_ids()
 
+
+def test_frustum_query_top_k_and_exclude_conflicted_matches_naive_sort():
+    K = np.array([[700.0, 0.0, 620.0], [0.0, 700.0, 188.0], [0.0, 0.0, 1.0]])
+    T_cw = np.eye(4)
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+    rng = np.random.default_rng(42)
+
+    # Create 60 visible landmarks with deliberate ties in (max_obs, num_obs)
+    # plus 2 conflicted landmarks and 5 removed landmarks to exercise swap-delete.
+    for i in range(65):
+        pos = np.array([rng.uniform(-4.0, 4.0), rng.uniform(-1.5, 1.5), rng.uniform(8.0, 40.0)])
+        base_kf = i % 6
+        obs = {
+            base_kf: Observation(np.array([50.0 + i * 3.0, 100.0 + (i % 5)], np.float32), 30.0)
+        }
+        if i % 3 == 0:
+            obs[base_kf + 2] = Observation(np.array([52.0 + i * 3.0, 101.0], np.float32), 31.0)
+        if i % 5 == 0:
+            obs[base_kf + 4] = Observation(np.array([54.0 + i * 3.0, 102.0], np.float32), 32.0)
+        state.add_landmark(pos, desc, anchor=base_kf, observations=obs)
+
+    # Create a pixel conflict between landmark 10 and landmark 11 on kf 9
+    conflict_px = np.array([333.5, 177.25], np.float32)
+    state.add_observation(10, 9, Observation(conflict_px, 310.0))
+    state.add_observation(11, 9, Observation(conflict_px, 311.0))
+
+    # Remove an observation (lowering max_obs_kf) and remove several landmarks (swap-delete)
+    state.remove_observation(15, max(state.landmarks[15].observations))
+    for dead_id in (2, 17, 31, 44):
+        state.remove_landmark(dead_id)
+
+    # Reference naive query + filter + stable Python sort
+    full = state.index.query_frustum(T_cw, K, (1241, 376), max_depth=1e6, margin_px=40.0, include_far_bearings=True)
+    amb = state.index.conflicted_landmark_ids()
+    ref_ids = [int(lid) for lid in full.landmark_ids if int(lid) in state.landmarks and int(lid) not in amb]
+    ref_order = sorted(
+        range(len(ref_ids)),
+        key=lambda idx: (
+            max(state.landmarks[ref_ids[idx]].observations),
+            len(state.landmarks[ref_ids[idx]].observations),
+        ),
+        reverse=True,
+    )[:25]
+    expected_ids = [ref_ids[idx] for idx in ref_order]
+
+    fast = state.index.query_frustum(
+        T_cw, K, (1241, 376),
+        max_depth=1e6, margin_px=40.0, include_far_bearings=True,
+        exclude_conflicted=True, max_landmarks=25,
+    )
+    assert fast.landmark_ids.tolist() == expected_ids
+    assert 10 not in fast.landmark_ids.tolist()
+    assert 11 not in fast.landmark_ids.tolist()
+
+
+def test_sparse_apply_corrections_matches_dense_and_preserves_atomicity():
+    from slam_state import MappingKeyframe
+
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+    for kf_id in range(6):
+        pose = np.eye(4)
+        pose[2, 3] = float(kf_id * 2.0)
+        state.keyframes[kf_id] = MappingKeyframe(
+            kf_id, kf_id * 4, pose.copy(),
+            np.empty((0, 2), np.float32), np.empty((0, 128), np.float32), np.empty(0, int),
+        )
+        for offset in range(4):
+            fp = pose.copy()
+            fp[2, 3] += 0.5 * offset
+            state.record(fp, "tracking", anchor=kf_id)
+        for j in range(5):
+            pt = np.array([float(j) - 2.0, 0.3, float(kf_id * 2.0) + 10.0])
+            state.add_landmark(
+                pt, desc, anchor=kf_id,
+                observations={kf_id: Observation(np.array([100.0 + j * 10.0, 150.0], np.float32))},
+            )
+
+    # 1. Sparse propagate_landmarks=True moving only keyframes 4 and 5
+    corrected = {k: kf.pose.copy() for k, kf in state.keyframes.items()}
+    corrected[4][0, 3] += 0.25
+    corrected[5][0, 3] += 0.50
+    old_lm_kf0 = state.landmarks[0].position.copy()
+    old_lm_kf4 = state.landmarks[20].position.copy()
+    old_lm_kf5 = state.landmarks[25].position.copy()
+    assert state.apply_corrections(state.revision, corrected, propagate_landmarks=True)
+    np.testing.assert_array_equal(state.landmarks[0].position, old_lm_kf0)
+    np.testing.assert_allclose(state.landmarks[20].position, old_lm_kf4 + [0.25, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(state.landmarks[25].position, old_lm_kf5 + [0.50, 0.0, 0.0], atol=1e-12)
+    # Index positions must match MapState landmarks
+    for lid, lm in state.landmarks.items():
+        slot = state.index._id_to_slot[lid]
+        np.testing.assert_allclose(state.index._positions[slot], lm.position, atol=1e-12)
+    # Propagated frame poses and relative poses must stay consistent
+    for frame, (p, a, rel) in enumerate(zip(state.poses, state.pose_anchors, state.relative_poses)):
+        np.testing.assert_allclose(state.keyframes[a].pose @ rel, p, atol=1e-12)
+
+    # 2. Atomic rollback on nonfinite landmark_update
+    rev_before = state.revision
+    pose5_before = state.keyframes[5].pose.copy()
+    bad_corrected = {k: kf.pose.copy() for k, kf in state.keyframes.items()}
+    bad_corrected[5][1, 3] += 1.0
+    with pytest.raises(ValueError, match="Nonfinite corrected landmark"):
+        state.apply_corrections(
+            state.revision, bad_corrected, propagate_landmarks=False,
+            landmark_updates={25: np.array([np.nan, 0.0, 1.0])},
+        )
+    assert state.revision == rev_before
+    np.testing.assert_array_equal(state.keyframes[5].pose, pose5_before)
+
+

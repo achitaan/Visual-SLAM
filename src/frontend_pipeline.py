@@ -292,8 +292,9 @@ def _compute_disparity_f32(
         hl = cv.resize(gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
         hr = cv.resize(right_gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
         raw = half_sgbm.compute(hl, hr)
-        valid_h = (raw > 0).astype(np.uint8) * 255
-        dh = np.where(raw > 0, raw.astype(np.float32) * (2.0 / 16.0), np.float32(0.0))
+        valid_h = np.where(raw > 0, np.uint8(255), np.uint8(0))
+        dh = raw.astype(np.float32) * np.float32(2.0 / 16.0)
+        dh[raw <= 0] = np.float32(0.0)
         disp = cv.resize(dh, (w, h), interpolation=cv.INTER_LINEAR)
         valid_up = cv.resize(valid_h, (w, h), interpolation=cv.INTER_LINEAR)
         disp[valid_up < 255] = np.float32(-1.0)
@@ -375,8 +376,12 @@ def extract_frame_owned(
 
     if has_stereo:
         if need_f32_pair:
-            left_gray_f32 = np.asarray(gray, np.float32)
-            right_gray_f32 = np.asarray(right_gray, np.float32)
+            if gray.dtype == np.uint8 and right_gray.dtype == np.uint8:
+                left_gray_f32 = gray
+                right_gray_f32 = right_gray
+            else:
+                left_gray_f32 = np.asarray(gray, np.float32)
+                right_gray_f32 = np.asarray(right_gray, np.float32)
         if need_sgbm:
             if sgbm_future is not None:
                 disparity = sgbm_future.result()

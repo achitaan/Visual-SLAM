@@ -127,9 +127,7 @@ _ZNCC_REASON_NAMES: dict[int, str] = {
 def _get_zncc_lib() -> ctypes.CDLL | None:
     lib = _load_library("fast_zncc")
     if lib is not None and not getattr(lib, "_configured", False):
-        lib.verify_stereo_zncc_batch_f32.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
+        _common = [
             ctypes.c_int32,
             ctypes.c_int32,
             ctypes.POINTER(ctypes.c_double),
@@ -145,7 +143,19 @@ def _get_zncc_lib() -> ctypes.CDLL | None:
             ctypes.POINTER(ctypes.c_double),
             ctypes.POINTER(ctypes.c_int32),
         ]
+        lib.verify_stereo_zncc_batch_f32.argtypes = [
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            *_common,
+        ]
         lib.verify_stereo_zncc_batch_f32.restype = ctypes.c_int32
+        if hasattr(lib, "verify_stereo_zncc_batch_u8"):
+            lib.verify_stereo_zncc_batch_u8.argtypes = [
+                ctypes.POINTER(ctypes.c_uint8),
+                ctypes.POINTER(ctypes.c_uint8),
+                *_common,
+            ]
+            lib.verify_stereo_zncc_batch_u8.restype = ctypes.c_int32
         lib._configured = True
     return lib
 
@@ -164,30 +174,56 @@ def verify_stereo_zncc_avx512(
     lib = _get_zncc_lib()
     if lib is None:
         return None
-    left_c = np.ascontiguousarray(left, dtype=np.float32)
-    right_c = np.ascontiguousarray(right, dtype=np.float32)
     pts_c = np.ascontiguousarray(finite_pixels, dtype=np.float64)
     n = len(pts_c)
     out_u = np.empty(n, dtype=np.float64)
     out_r = np.empty(n, dtype=np.int32)
-    ok = lib.verify_stereo_zncc_batch_f32(
-        left_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-        right_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-        left_c.shape[0],
-        left_c.shape[1],
-        pts_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        n,
-        int(config.patch_size),
-        int(config.max_disparity),
-        float(config.minimum_correlation),
-        float(config.uniqueness_ratio),
-        float(config.round_trip_px),
-        float(config.minimum_texture_std),
-        float(disparity_bounds[0]),
-        float(disparity_bounds[1]),
-        out_u.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        out_r.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
-    )
+    if (
+        left.dtype == np.uint8
+        and right.dtype == np.uint8
+        and hasattr(lib, "verify_stereo_zncc_batch_u8")
+    ):
+        left_c = np.ascontiguousarray(left, dtype=np.uint8)
+        right_c = np.ascontiguousarray(right, dtype=np.uint8)
+        ok = lib.verify_stereo_zncc_batch_u8(
+            left_c.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            right_c.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            left_c.shape[0],
+            left_c.shape[1],
+            pts_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            n,
+            int(config.patch_size),
+            int(config.max_disparity),
+            float(config.minimum_correlation),
+            float(config.uniqueness_ratio),
+            float(config.round_trip_px),
+            float(config.minimum_texture_std),
+            float(disparity_bounds[0]),
+            float(disparity_bounds[1]),
+            out_u.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            out_r.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        )
+    else:
+        left_c = np.ascontiguousarray(left, dtype=np.float32)
+        right_c = np.ascontiguousarray(right, dtype=np.float32)
+        ok = lib.verify_stereo_zncc_batch_f32(
+            left_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            right_c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            left_c.shape[0],
+            left_c.shape[1],
+            pts_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            n,
+            int(config.patch_size),
+            int(config.max_disparity),
+            float(config.minimum_correlation),
+            float(config.uniqueness_ratio),
+            float(config.round_trip_px),
+            float(config.minimum_texture_std),
+            float(disparity_bounds[0]),
+            float(disparity_bounds[1]),
+            out_u.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            out_r.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        )
     if ok != 1:
         return None
     counts: dict[str, int] = {"verified": 0}

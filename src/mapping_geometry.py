@@ -206,11 +206,14 @@ def triangulate(
 
 
 def coverage(pixels, size):
-    return (
-        len(np.unique(np.clip((pixels / np.array(size) * 3).astype(int), 0, 2), axis=0))
-        if len(pixels)
-        else 0
-    )
+    n = len(pixels)
+    if not n:
+        return 0
+    px = np.asarray(pixels)
+    w, h = float(size[0]), float(size[1])
+    cx = np.clip((px[:, 0] / w * 3.0).astype(np.intp), 0, 2)
+    cy = np.clip((px[:, 1] / h * 3.0).astype(np.intp), 0, 2)
+    return int(np.count_nonzero(np.bincount(cx * 3 + cy, minlength=9)))
 
 
 def right_pixel(left_u, depth, focal_length, baseline, disparity_offset=0.0):

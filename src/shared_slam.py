@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, fields
 import hashlib
+from math import isfinite as _isfinite
 from types import MappingProxyType
 import cv2 as cv
 import numpy as np
@@ -1231,32 +1232,45 @@ class SharedSlam:
                     # Only an all-NaN provider abstention may use the fresh
                     # current-frame extraction as a point seed. Partial/Inf
                     # output and alias disagreement remain fail-closed.
-                    clean_abstention = bool(
-                        np.isnan(values).all() and np.isnan(rights).all()
-                    )
                     if not (
                         map_depth_verified
                         and self.config.stereo_map_frontend_seed_fallback
                         and frontend_seed_points is not None
                         and frontend_seed_right_u is not None
-                        and clean_abstention
                     ):
                         continue
-                    seed_values = frontend_seed_points[members]
-                    seed_rights = frontend_seed_right_u[members]
-                    if (
-                        seed_values.shape != values.shape
-                        or seed_rights.shape != rights.shape
-                        or not np.isfinite(seed_values).all()
-                        or not np.isfinite(seed_rights).all()
-                        or np.any(seed_values[:, 2] <= 0.1)
-                        or np.any(seed_values[:, 2] >= 100.0)
-                        or not np.allclose(seed_values, seed_values[0],
-                                           rtol=1e-6, atol=1e-6)
-                        or not np.allclose(seed_rights, seed_rights[0],
-                                           rtol=1e-6, atol=1e-6)
-                    ):
-                        continue
+                    if len(members) == 1:
+                        f0 = members[0]
+                        if not (np.isnan(values[0]).all() and np.isnan(rights[0])):
+                            continue
+                        sv0 = frontend_seed_points[f0]
+                        sr0 = frontend_seed_right_u[f0]
+                        sx, sy, sz = float(sv0[0]), float(sv0[1]), float(sv0[2])
+                        if not (
+                            _isfinite(sx) and _isfinite(sy) and _isfinite(sz)
+                            and _isfinite(float(sr0))
+                            and 0.1 < sz < 100.0
+                        ):
+                            continue
+                        seed_values = frontend_seed_points[f0:f0 + 1]
+                    else:
+                        if not (np.isnan(values).all() and np.isnan(rights).all()):
+                            continue
+                        seed_values = frontend_seed_points[members]
+                        seed_rights = frontend_seed_right_u[members]
+                        if (
+                            seed_values.shape != values.shape
+                            or seed_rights.shape != rights.shape
+                            or not np.isfinite(seed_values).all()
+                            or not np.isfinite(seed_rights).all()
+                            or np.any(seed_values[:, 2] <= 0.1)
+                            or np.any(seed_values[:, 2] >= 100.0)
+                            or not np.allclose(seed_values, seed_values[0],
+                                               rtol=1e-6, atol=1e-6)
+                            or not np.allclose(seed_rights, seed_rights[0],
+                                               rtol=1e-6, atol=1e-6)
+                        ):
+                            continue
                 feature = members[0]
                 world = pose[:3, :3] @ seed_values[0] + pose[:3, 3]
                 lm_oct = int(kf_octaves[feature]) if feature < len(kf_octaves) else 0
@@ -1435,6 +1449,28 @@ class SharedSlam:
 
     @staticmethod
     def _snapshot_vector(value, shape, dtype=float):
+        if type(value) is np.ndarray and value.shape == shape:
+            if dtype is float or dtype == np.float64:
+                if value.dtype == np.float64:
+                    vals = value.tolist()
+                    if shape == (3,):
+                        if not (_isfinite(vals[0]) and _isfinite(vals[1]) and _isfinite(vals[2])):
+                            return None
+                    elif shape == (2,):
+                        if not (_isfinite(vals[0]) and _isfinite(vals[1])):
+                            return None
+                    elif not np.isfinite(value).all():
+                        return None
+                    array = value.copy()
+                    array.setflags(write=False)
+                    return array
+            elif dtype == np.float32 and value.dtype == np.float32 and shape == (2,):
+                x, y = value.tolist()
+                if not (_isfinite(x) and _isfinite(y)):
+                    return None
+                array = value.copy()
+                array.setflags(write=False)
+                return array
         array = np.asarray(value, dtype=dtype)
         if array.shape != shape or not np.isfinite(array).all():
             return None
@@ -1476,25 +1512,30 @@ class SharedSlam:
                 self._physical_pixel_key(np.asarray(value, np.float32).reshape(2))
                 for value in excluded_pixels
             )
-            if not all(len(key) == 2 and np.isfinite(key).all()
+            if not all(len(key) == 2 and _isfinite(key[0]) and _isfinite(key[1])
                        for key in excluded_pixel_keys):
                 return None
             calibration_identity = self._live_stereo_calibration_identity()
             if calibration_identity != self.stereo_calibration_identity:
                 return None
             descriptors = np.asarray(pixels, np.float32).reshape(-1, 2)
+            n_desc = len(descriptors)
+            desc_list = descriptors.tolist()
+            use_fast_key = (self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
             descriptor_rows = []
             attempted_ids = set(map(int, descriptor_candidates)) | set(map(int, primary_candidates))
+            snap_vec = self._snapshot_vector
             with self.map.lock:
                 if (int(self.map.revision) != int(track_revision)
                         or int(self.map.geometry_revision) != int(track_geometry_revision)):
                     return None
+                landmarks_map = self.map.landmarks
                 states = {}
                 for landmark_id in sorted(attempted_ids):
-                    landmark = self.map.landmarks.get(landmark_id)
+                    landmark = landmarks_map.get(landmark_id)
                     if landmark is None:
                         return None
-                    position = self._snapshot_vector(landmark.position, (3,), float)
+                    position = snap_vec(landmark.position, (3,), float)
                     misses = landmark.misses
                     if (position is None or not isinstance(misses, (int, np.integer))
                             or isinstance(misses, (bool, np.bool_)) or int(misses) < 0):
@@ -1510,12 +1551,16 @@ class SharedSlam:
                             or isinstance(raw_feature, (bool, np.bool_))):
                         return None
                     feature = int(raw_feature)
-                    if feature < 0 or feature >= len(descriptors):
+                    if feature < 0 or feature >= n_desc:
                         return None
-                    pixel = self._snapshot_vector(raw_pixel, (2,), np.float32)
-                    if pixel is None or not np.array_equal(pixel, descriptors[feature]):
+                    pixel = snap_vec(raw_pixel, (2,), np.float32)
+                    if pixel is None:
                         return None
-                    physical_key = self._physical_pixel_key(pixel)
+                    px0, px1 = pixel.tolist()
+                    df = desc_list[feature]
+                    if px0 != df[0] or px1 != df[1]:
+                        return None
+                    physical_key = (px0, px1) if use_fast_key else self._physical_pixel_key(pixel)
                     # An ambiguous whole pool abstains; never improve its ratio
                     # denominator by silently filtering duplicate ownership.
                     if (landmark_id in seen_ids or feature in seen_features
@@ -1527,10 +1572,11 @@ class SharedSlam:
                     seen_ids.add(landmark_id)
                     seen_features.add(feature)
                     seen_pixels.add(physical_key)
+                    st = states[int(landmark_id)]
                     descriptor_rows.append({
                         'landmark_id': int(landmark_id),
-                        'landmark': states[int(landmark_id)]['landmark'],
-                        'position': states[int(landmark_id)]['position'],
+                        'landmark': st['landmark'],
+                        'position': st['position'],
                         'pixel': pixel, 'feature': feature,
                     })
             return {
@@ -2528,32 +2574,59 @@ class SharedSlam:
                 # Map-only verification also needs the original grayscale pair;
                 # frontend extraction and reference measurements retain their
                 # configured policy.
-                self.current_left_gray = np.asarray(self.current_gray, np.float32)
-                self.current_right_gray = (None if right is None else np.asarray(
-                    cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right, np.float32))
+                left_gray = self.current_gray
+                self.current_left_gray = (
+                    left_gray if (isinstance(left_gray, np.ndarray) and left_gray.dtype == np.uint8)
+                    else np.asarray(left_gray, np.float32)
+                )
+                if right is None:
+                    self.current_right_gray = None
+                else:
+                    right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
+                    self.current_right_gray = (
+                        right_gray if (isinstance(right_gray, np.ndarray) and right_gray.dtype == np.uint8)
+                        else np.asarray(right_gray, np.float32)
+                    )
 
     @staticmethod
     def _physical_pixel_key(pixel):
+        if type(pixel) is np.ndarray and pixel.dtype == np.float32 and pixel.shape == (2,):
+            x, y = pixel.tolist()
+            return (x, y)
         return tuple(np.asarray(pixel, np.float32).tolist())
 
     @classmethod
-    def _physical_pixel_groups(cls, pixels):
+    def _physical_pixel_groups(cls, pixels, *, need_groups=True):
         """Return stable exact-float32 pixel groups and a row-to-group map."""
-        pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
+        if not (type(pixels) is np.ndarray and pixels.dtype == np.float32 and pixels.ndim == 2 and pixels.shape[1] == 2):
+            pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
         n = len(pixels)
         if n == 0:
-            return [], np.empty(0, int)
-        keys, groups = {}, []
-        row_groups = np.empty(n, int)
-        finite = np.isfinite(pixels).all(axis=1)
+            return ([] if need_groups else None), np.empty(0, int)
         use_fast_key = (cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
         if use_fast_key:
-            all_finite = bool(finite.all())
-            u64 = np.ascontiguousarray(pixels + np.float32(0.0), np.float32).view(np.uint64).ravel()
-            vals = u64.tolist()
+            all_finite = bool(np.isfinite(pixels).all())
+            # Normalize -0.0 to +0.0 only if any zero exists; otherwise view directly
+            p_contig = pixels if pixels.flags.c_contiguous else np.ascontiguousarray(pixels, np.float32)
+            if not all_finite or bool((p_contig == 0.0).any()):
+                p_contig = np.ascontiguousarray(p_contig + np.float32(0.0), np.float32)
             if all_finite:
+                if not need_groups:
+                    u64 = p_contig.view(np.uint64).ravel()
+                    order = np.argsort(u64, kind="mergesort")
+                    su = u64[order]
+                    diff = np.empty(n, dtype=bool)
+                    diff[0] = False
+                    diff[1:] = (su[1:] != su[:-1])
+                    if diff[1:].all():
+                        return None, np.arange(n, dtype=int)
+                    rg = np.empty(n, dtype=int)
+                    rg[order] = np.cumsum(diff, dtype=int)
+                    return None, rg
+                vals = p_contig.view(np.uint64).ravel().tolist()
                 if len(set(vals)) == n:
                     return [[i] for i in range(n)], np.arange(n, dtype=int)
+                keys, groups = {}, []
                 row_groups_list = [0] * n
                 for row, key in enumerate(vals):
                     group = keys.get(key)
@@ -2565,7 +2638,9 @@ class SharedSlam:
                         groups[group].append(row)
                     row_groups_list[row] = group
                 return groups, np.asarray(row_groups_list, int)
-            finite_list = finite.tolist()
+            vals = p_contig.view(np.uint64).ravel().tolist()
+            finite_list = np.isfinite(pixels).all(axis=1).tolist()
+            keys, groups = {}, []
             row_groups_list = [0] * n
             for row, key in enumerate(vals):
                 if not finite_list[row]:
@@ -2582,7 +2657,10 @@ class SharedSlam:
                 else:
                     groups[group].append(row)
                 row_groups_list[row] = group
-            return groups, np.asarray(row_groups_list, int)
+            return (groups if need_groups else None), np.asarray(row_groups_list, int)
+        keys, groups = {}, []
+        row_groups = np.empty(n, int)
+        finite = np.isfinite(pixels).all(axis=1)
         for row, pixel in enumerate(pixels):
             if not finite[row]:
                 # Invalid coordinates are never evidence of shared identity.
@@ -2599,7 +2677,7 @@ class SharedSlam:
             else:
                 groups[group].append(row)
             row_groups[row] = group
-        return groups, row_groups
+        return (groups if need_groups else None), row_groups
 
     @classmethod
     def _unique_supported_feature_rows(cls, pixels, points, right_u):
@@ -2609,10 +2687,62 @@ class SharedSlam:
         right_u = np.asarray(right_u, float).reshape(-1)
         if len(points) != len(pixels) or len(right_u) != len(pixels):
             return np.empty(0, int)
-        if not len(pixels):
+        n = len(pixels)
+        if not n:
             return np.empty(0, int)
+        finite_mask = np.isfinite(points).all(axis=1) & np.isfinite(right_u)
+        if cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY:
+            p_contig = pixels if pixels.flags.c_contiguous else np.ascontiguousarray(pixels, np.float32)
+            if bool(np.isfinite(p_contig).all()):
+                if bool((p_contig == 0.0).any()):
+                    p_contig = np.ascontiguousarray(p_contig + np.float32(0.0), np.float32)
+                u64 = p_contig.view(np.uint64).ravel()
+                order = np.argsort(u64, kind="mergesort")
+                su = u64[order]
+                dup_next = np.empty(n, dtype=bool)
+                dup_next[-1] = False
+                dup_next[:-1] = (su[:-1] == su[1:])
+                if not dup_next.any():
+                    return np.flatnonzero(finite_mask)
+                dup_prev = np.empty(n, dtype=bool)
+                dup_prev[0] = False
+                dup_prev[1:] = dup_next[:-1]
+                keep = finite_mask.copy()
+                keep[order[dup_next | dup_prev]] = False
+                starts = np.flatnonzero(dup_next & ~dup_prev).tolist()
+                ends = np.flatnonzero(~dup_next & dup_prev).tolist()
+                order_list = order.tolist()
+                finite_list = finite_mask.tolist()
+                rep_idx = []
+                mem_idx = []
+                run_meta = []
+                for s, e in zip(starts, ends):
+                    members = order_list[s : e + 1]
+                    if not all(finite_list[r] for r in members):
+                        continue
+                    r0 = members[0]
+                    rstart = len(rep_idx)
+                    for r in members[1:]:
+                        rep_idx.append(r0)
+                        mem_idx.append(r)
+                    run_meta.append((r0, rstart, len(rep_idx)))
+                if run_meta:
+                    p0 = points[rep_idx]
+                    pm = points[mem_idx]
+                    r0_v = right_u[rep_idx]
+                    rm_v = right_u[mem_idx]
+                    pair_ok = (
+                        np.all(np.abs(pm - p0) <= 1e-6 + 1e-6 * np.abs(p0), axis=1)
+                        & (np.abs(rm_v - r0_v) <= 1e-6 + 1e-6 * np.abs(r0_v))
+                    ).tolist()
+                    for r0, rstart, rend in run_meta:
+                        if all(pair_ok[rstart:rend]):
+                            keep[r0] = True
+                return np.flatnonzero(keep)
         groups, _ = cls._physical_pixel_groups(pixels)
-        finite_row = (np.isfinite(points).all(axis=1) & np.isfinite(right_u)).tolist()
+        if len(groups) == n:
+            return np.flatnonzero(finite_mask)
+        finite_row = finite_mask.tolist()
         selected = []
         multi_checks = []
         rep_idx = []
@@ -2658,9 +2788,59 @@ class SharedSlam:
         points = np.asarray(points, float).reshape(-1, 3)
         if len(points) != len(pixels):
             return np.empty(0, int)
-        if not len(pixels):
+        n = len(pixels)
+        if not n:
             return np.empty(0, int)
+        if cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY:
+            p_contig = pixels if pixels.flags.c_contiguous else np.ascontiguousarray(pixels, np.float32)
+            if bool(np.isfinite(p_contig).all()):
+                if bool((p_contig == 0.0).any()):
+                    p_contig = np.ascontiguousarray(p_contig + np.float32(0.0), np.float32)
+                u64 = p_contig.view(np.uint64).ravel()
+                order = np.argsort(u64, kind="mergesort")
+                su = u64[order]
+                dup_next = np.empty(n, dtype=bool)
+                dup_next[-1] = False
+                dup_next[:-1] = (su[:-1] == su[1:])
+                if not dup_next.any():
+                    return np.arange(n, dtype=int)
+                dup_prev = np.empty(n, dtype=bool)
+                dup_prev[0] = False
+                dup_prev[1:] = dup_next[:-1]
+                keep = np.ones(n, dtype=bool)
+                keep[order[dup_next | dup_prev]] = False
+                starts = np.flatnonzero(dup_next & ~dup_prev).tolist()
+                ends = np.flatnonzero(~dup_next & dup_prev).tolist()
+                order_list = order.tolist()
+                finite_list = np.isfinite(points).all(axis=1).tolist()
+                rep_idx = []
+                mem_idx = []
+                run_meta = []
+                for s, e in zip(starts, ends):
+                    members = order_list[s : e + 1]
+                    finite_rows = [r for r in members if finite_list[r]]
+                    if not finite_rows:
+                        keep[members[0]] = True
+                    elif len(finite_rows) == 1:
+                        keep[finite_rows[0]] = True
+                    else:
+                        r0 = finite_rows[0]
+                        rstart = len(rep_idx)
+                        for r in finite_rows[1:]:
+                            rep_idx.append(r0)
+                            mem_idx.append(r)
+                        run_meta.append((r0, rstart, len(rep_idx)))
+                if run_meta:
+                    p0 = points[rep_idx]
+                    pm = points[mem_idx]
+                    pair_ok = np.all(np.abs(pm - p0) <= 1e-6 + 1e-6 * np.abs(p0), axis=1).tolist()
+                    for r0, rstart, rend in run_meta:
+                        if all(pair_ok[rstart:rend]):
+                            keep[r0] = True
+                return np.flatnonzero(keep)
         groups, _ = cls._physical_pixel_groups(pixels)
+        if len(groups) == n:
+            return np.arange(n, dtype=int)
         finite_pt = np.isfinite(points).all(axis=1).tolist()
         selected = []
         multi_checks = []
@@ -2874,17 +3054,34 @@ class SharedSlam:
                 or np.any(pairs[:, 0] >= len(landmark_ids))
                 or np.any(pairs[:, 1] >= len(target_pixels))))):
             return np.empty((0, 2), int)
-        _, target_row_group = SharedSlam._physical_pixel_groups(target_pixels)
+        if not len(pairs):
+            return np.empty((0, 2), int)
+        _, target_row_group = SharedSlam._physical_pixel_groups(target_pixels, need_groups=False)
+        lm_ids_list = landmark_ids.tolist()
+        trg_list = target_row_group.tolist()
         edges = {}
         lm_to_target, target_to_lm = {}, {}
-        for row, target in pairs:
-            landmark_id = int(landmark_ids[row])
-            target_group = int(target_row_group[target])
+        for row, target in pairs.tolist():
+            landmark_id = lm_ids_list[row]
             if landmark_id < 0:
                 continue
-            edges.setdefault((landmark_id, target_group), []).append((int(row), int(target)))
-            lm_to_target.setdefault(landmark_id, set()).add(target_group)
-            target_to_lm.setdefault(target_group, set()).add(landmark_id)
+            target_group = trg_list[target]
+            edge_key = (landmark_id, target_group)
+            bucket = edges.get(edge_key)
+            if bucket is None:
+                edges[edge_key] = [(row, target)]
+            else:
+                bucket.append((row, target))
+            t_set = lm_to_target.get(landmark_id)
+            if t_set is None:
+                lm_to_target[landmark_id] = {target_group}
+            else:
+                t_set.add(target_group)
+            l_set = target_to_lm.get(target_group)
+            if l_set is None:
+                target_to_lm[target_group] = {landmark_id}
+            else:
+                l_set.add(landmark_id)
         ambiguous_lms = {landmark_id for landmark_id, targets in lm_to_target.items()
                          if len(targets) > 1}
         ambiguous_targets = {target for target, landmarks in target_to_lm.items()
@@ -2898,25 +3095,51 @@ class SharedSlam:
     def _collapse_track_candidates(cls, candidates, target_pixels):
         """Keep unique flow rays and clear only ambiguous detector labels."""
         target_pixels = np.asarray(target_pixels, np.float32).reshape(-1, 2)
+        n_target = len(target_pixels)
+        use_fast_key = (cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
+        target_list = target_pixels.tolist() if use_fast_key else None
         group_claims, candidate_groups, feature_claims = {}, {}, {}
         for landmark_id, (pixel, feature) in candidates.items():
             # The LK measurement is the geometry observation. Its nearest SIFT
             # row is only an appearance association and may be shared by nearby
             # but physically distinct flow tracks.
-            key = cls._physical_pixel_key(np.asarray(pixel, np.float32).reshape(2))
-            candidate_groups[int(landmark_id)] = key
-            group_claims.setdefault(key, set()).add(int(landmark_id))
-            if 0 <= int(feature) < len(target_pixels):
-                detector_key = cls._physical_pixel_key(target_pixels[int(feature)])
-                feature_claims.setdefault(detector_key, []).append(int(landmark_id))
+            lid = int(landmark_id)
+            feat = int(feature)
+            if use_fast_key and type(pixel) is np.ndarray and pixel.dtype == np.float32 and pixel.shape == (2,):
+                px0, px1 = pixel.tolist()
+                key = (px0, px1)
+            else:
+                key = cls._physical_pixel_key(np.asarray(pixel, np.float32).reshape(2))
+            candidate_groups[lid] = key
+            g_set = group_claims.get(key)
+            if g_set is None:
+                group_claims[key] = {lid}
+            else:
+                g_set.add(lid)
+            if 0 <= feat < n_target:
+                if use_fast_key:
+                    trow = target_list[feat]
+                    detector_key = (trow[0], trow[1])
+                else:
+                    detector_key = cls._physical_pixel_key(target_pixels[feat])
+                f_list = feature_claims.get(detector_key)
+                if f_list is None:
+                    feature_claims[detector_key] = [lid]
+                else:
+                    f_list.append(lid)
         conflicts = {key for key, identifiers in group_claims.items()
                      if len(identifiers) > 1}
-        kept = {int(landmark_id): value for landmark_id, value in candidates.items()
-                if candidate_groups[int(landmark_id)] not in conflicts}
+        if not conflicts:
+            kept = {int(landmark_id): value for landmark_id, value in candidates.items()}
+        else:
+            kept = {int(landmark_id): value for landmark_id, value in candidates.items()
+                    if candidate_groups[int(landmark_id)] not in conflicts}
         # Two different physical observations cannot both claim the same
         # detector identity. Preserve their actual coordinates as flow-only
         # rows; keep an exact-pixel claimant linked when it is unambiguous.
         for detector_key, identifiers in feature_claims.items():
+            if len(identifiers) <= 1:
+                continue
             identifiers = [landmark_id for landmark_id in identifiers if landmark_id in kept]
             keys = {candidate_groups[landmark_id] for landmark_id in identifiers}
             if len(keys) <= 1:
@@ -2942,6 +3165,10 @@ class SharedSlam:
                 gen.clear()
             if lm_cache is not None:
                 lm_cache.clear()
+            self._lm_desc_pool_size = 0
+            free_slots = getattr(self, "_lm_desc_free", None)
+            if free_slots is not None:
+                free_slots.clear()
             return
         if cache is not None:
             cache.pop(kf_id, None)
@@ -2964,6 +3191,33 @@ class SharedSlam:
             self._kf_landmark_row_gen = gen
             self._lm_desc_cache = lm_cache
             self._kf_landmark_row_map_id = cur_map_id
+            self._lm_desc_pool = np.empty((2048, 128), dtype=np.float32)
+            self._lm_desc_pool_size = 0
+            self._lm_desc_free = []
+
+        pool = self._lm_desc_pool
+        free_slots = self._lm_desc_free
+
+        def _alloc_pool_slots(descs_tuple):
+            nonlocal pool
+            for d in descs_tuple:
+                if not (type(d) is np.ndarray and d.dtype == np.float32 and d.shape == (128,)):
+                    return None
+            out = []
+            for d in descs_tuple:
+                if free_slots:
+                    s = free_slots.pop()
+                else:
+                    s = self._lm_desc_pool_size
+                    if s >= len(pool):
+                        new_pool = np.empty((len(pool) * 2, 128), dtype=np.float32)
+                        new_pool[:len(pool)] = pool
+                        pool = new_pool
+                        self._lm_desc_pool = pool
+                    self._lm_desc_pool_size = s + 1
+                pool[s] = d
+                out.append(s)
+            return tuple(out)
 
         def _kf_row_map(frame_id):
             keyframe = keyframes[frame_id]
@@ -2983,7 +3237,11 @@ class SharedSlam:
             cache[frame_id] = (id(keyframe), id(lm_ids), row_map)
             return row_map
 
-        descriptors, identifiers = [], []
+        pool_slots = []
+        identifiers = []
+        fallback_descs = None
+        lm_cache_get = lm_cache.get
+        gen_get = gen.get
         for landmark in landmarks:
             lid = int(landmark.id)
             anchor = landmark.anchor
@@ -2995,9 +3253,9 @@ class SharedSlam:
                 latest = next(iter(obs))
             else:
                 latest = max(obs)
-            g_a = gen.get(anchor, 0)
-            g_l = gen.get(latest, 0)
-            entry = lm_cache.get(lid)
+            g_a = gen_get(anchor, 0)
+            g_l = gen_get(latest, 0)
+            entry = lm_cache_get(lid)
             if (
                 entry is not None
                 and entry[0] == id(landmark)
@@ -3008,7 +3266,10 @@ class SharedSlam:
                 and entry[5] == g_l
             ):
                 cached = entry[6]
+                slots = entry[7]
             else:
+                if entry is not None and entry[7] is not None:
+                    free_slots.extend(entry[7])
                 cand_descs = []
                 if anchor in keyframes:
                     rows = _kf_row_map(anchor).get(lid)
@@ -3037,17 +3298,32 @@ class SharedSlam:
                         seen_descriptors.add(signature)
                         dedup.append(descriptor)
                     cached = tuple(dedup)
-                lm_cache[lid] = (id(landmark), anchor, n_obs, latest, g_a, g_l, cached)
+                slots = _alloc_pool_slots(cached)
+                lm_cache[lid] = (id(landmark), anchor, n_obs, latest, g_a, g_l, cached, slots)
+            if fallback_descs is None:
+                if slots is not None:
+                    if len(slots) == 1:
+                        pool_slots.append(slots[0])
+                        identifiers.append(lid)
+                    else:
+                        for s in slots:
+                            pool_slots.append(s)
+                            identifiers.append(lid)
+                    continue
+                fallback_descs = [pool[s] for s in pool_slots]
+                pool_slots.clear()
             if len(cached) == 1:
-                descriptors.append(cached[0])
+                fallback_descs.append(cached[0])
                 identifiers.append(lid)
             else:
                 for d in cached:
-                    descriptors.append(d)
+                    fallback_descs.append(d)
                     identifiers.append(lid)
-        if not descriptors:
+        if not identifiers:
             return np.empty((0, 128), np.float32), np.empty(0, int)
-        return np.asarray(descriptors), np.asarray(identifiers, int)
+        if fallback_descs is None:
+            return pool[pool_slots], np.asarray(identifiers, int)
+        return np.asarray(fallback_descs), np.asarray(identifiers, int)
 
     def _landmark_pixel_identity_conflicts(self, landmarks):
         """Find distinct LMs claiming one exact pixel in one keyframe."""
@@ -3128,21 +3404,50 @@ class SharedSlam:
     @classmethod
     def _unique_physical_tracks(cls, tracks):
         """Keep one LM per exact accepted-flow pixel and one pixel per LM."""
+        use_fast_key = (cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
         by_landmark, by_pixel = {}, {}
         normalized = []
         for landmark_id, pixel in tracks:
-            landmark_id = int(landmark_id)
-            pixel = np.asarray(pixel).reshape(2)
-            if not np.isfinite(pixel).all():
-                continue
-            key = cls._physical_pixel_key(pixel)
-            by_landmark.setdefault(landmark_id, set()).add(key)
-            by_pixel.setdefault(key, set()).add(landmark_id)
-            normalized.append((landmark_id, pixel.copy(), key))
+            lid = int(landmark_id)
+            if type(pixel) is np.ndarray and pixel.shape == (2,):
+                if pixel.dtype == np.float32:
+                    x, y = pixel.tolist()
+                    if not (_isfinite(x) and _isfinite(y)):
+                        continue
+                    key = (x, y) if use_fast_key else cls._physical_pixel_key(pixel)
+                elif pixel.dtype == np.float64:
+                    x, y = pixel.tolist()
+                    if not (_isfinite(x) and _isfinite(y)):
+                        continue
+                    key = tuple(pixel.astype(np.float32).tolist()) if use_fast_key else cls._physical_pixel_key(pixel)
+                else:
+                    if not np.isfinite(pixel).all():
+                        continue
+                    key = cls._physical_pixel_key(pixel)
+                p_copy = pixel.copy()
+            else:
+                pixel = np.asarray(pixel).reshape(2)
+                if not np.isfinite(pixel).all():
+                    continue
+                key = cls._physical_pixel_key(pixel)
+                p_copy = pixel.copy()
+            lm_set = by_landmark.get(lid)
+            if lm_set is None:
+                by_landmark[lid] = {key}
+            else:
+                lm_set.add(key)
+            px_set = by_pixel.get(key)
+            if px_set is None:
+                by_pixel[key] = {lid}
+            else:
+                px_set.add(lid)
+            normalized.append((lid, p_copy, key))
         ambiguous_landmarks = {landmark_id for landmark_id, keys in by_landmark.items()
                                if len(keys) > 1}
         ambiguous_pixels = {key for key, identifiers in by_pixel.items()
                             if len(identifiers) > 1}
+        if not ambiguous_landmarks and not ambiguous_pixels and len(normalized) == len(by_landmark):
+            return [(lid, p_copy) for lid, p_copy, _ in normalized]
         result, seen = [], set()
         for landmark_id, pixel, key in normalized:
             if (landmark_id in ambiguous_landmarks or key in ambiguous_pixels
@@ -4150,6 +4455,37 @@ class SharedSlam:
 
     @staticmethod
     def _is_proper_se3(value):
+        if type(value) is np.ndarray and value.dtype == np.float64 and value.shape == (4, 4):
+            r0, r1, r2, r3 = value.tolist()
+            a0, a1, a2, tx = r0
+            b0, b1, b2, ty = r1
+            c0, c1, c2, tz = r2
+            d0, d1, d2, d3 = r3
+            if not (
+                _isfinite(a0) and _isfinite(a1) and _isfinite(a2) and _isfinite(tx)
+                and _isfinite(b0) and _isfinite(b1) and _isfinite(b2) and _isfinite(ty)
+                and _isfinite(c0) and _isfinite(c1) and _isfinite(c2) and _isfinite(tz)
+                and _isfinite(d0) and _isfinite(d1) and _isfinite(d2) and _isfinite(d3)
+            ):
+                return False
+            if abs(d0) > 1e-8 or abs(d1) > 1e-8 or abs(d2) > 1e-8 or abs(d3 - 1.0) > 1e-8:
+                return False
+            # R^T R == I within atol=1e-6
+            if (
+                abs(a0 * a0 + b0 * b0 + c0 * c0 - 1.0) > 1e-6
+                or abs(a1 * a1 + b1 * b1 + c1 * c1 - 1.0) > 1e-6
+                or abs(a2 * a2 + b2 * b2 + c2 * c2 - 1.0) > 1e-6
+                or abs(a0 * a1 + b0 * b1 + c0 * c1) > 1e-6
+                or abs(a0 * a2 + b0 * b2 + c0 * c2) > 1e-6
+                or abs(a1 * a2 + b1 * b2 + c1 * c2) > 1e-6
+            ):
+                return False
+            det = (
+                a0 * (b1 * c2 - b2 * c1)
+                - a1 * (b0 * c2 - b2 * c0)
+                + a2 * (b0 * c1 - b1 * c0)
+            )
+            return abs(det - 1.0) <= 1e-6
         try:
             raw = np.asarray(value)
             if np.iscomplexobj(raw):

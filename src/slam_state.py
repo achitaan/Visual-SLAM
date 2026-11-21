@@ -1,6 +1,7 @@
 """Authoritative persistent map. Estimator inputs deliberately exclude reference poses."""
 
 from dataclasses import dataclass, field
+from math import isfinite as _isfinite
 from threading import RLock
 import numpy as np
 from kitti import validate_pose
@@ -255,7 +256,8 @@ class MapState:
                             pos = raw_pos.copy()
                         else:
                             pos = np.asarray(raw_pos, float).reshape(3).copy()
-                        if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                        x, y, z = pos.tolist()
+                        if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
             else:
@@ -275,7 +277,8 @@ class MapState:
                                 pos = raw_pos.copy()
                             else:
                                 pos = np.asarray(raw_pos, float).reshape(3).copy()
-                            if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                            x, y, z = pos.tolist()
+                            if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                                 raise ValueError("Nonfinite corrected landmark")
                             positions[ident] = pos
                         else:
@@ -292,7 +295,8 @@ class MapState:
                         else:
                             for i in id_list:
                                 pos = scale * rotation @ self.landmarks[i].position + translation
-                                if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                                x, y, z = pos.tolist()
+                                if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                                     raise ValueError("Nonfinite corrected landmark")
                                 positions[i] = pos
                 else:
@@ -306,7 +310,8 @@ class MapState:
                             pos = scale * rotation @ landmark.position + translation
                         else:
                             continue
-                        if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                        x, y, z = pos.tolist()
+                        if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
             poses = list(self.poses)

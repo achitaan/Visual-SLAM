@@ -27,9 +27,24 @@ enum RejectReason : int32_t {
     REASON_ROUND_TRIP = 200,
 };
 
+template <typename T>
+inline __m512 load16_f32(const T* ptr);
+
+template <>
+inline __m512 load16_f32<float>(const float* ptr) {
+    return _mm512_loadu_ps(ptr);
+}
+
+template <>
+inline __m512 load16_f32<uint8_t>(const uint8_t* ptr) {
+    return _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr))));
+}
+
 // Exact bilinear sampling with BORDER_REPLICATE matching cv::remap(INTER_LINEAR, BORDER_REPLICATE).
+template <typename T>
 inline float sample_bilinear_scalar(
-    const float* img, int32_t h, int32_t w, float x, float y
+    const T* img, int32_t h, int32_t w, float x, float y
 ) {
     int32_t ix0 = static_cast<int32_t>(std::floor(x));
     int32_t iy0 = static_cast<int32_t>(std::floor(y));
@@ -41,27 +56,27 @@ inline float sample_bilinear_scalar(
     ix1 = (ix1 < 0) ? 0 : (ix1 >= w ? w - 1 : ix1);
     iy0 = (iy0 < 0) ? 0 : (iy0 >= h ? h - 1 : iy0);
     iy1 = (iy1 < 0) ? 0 : (iy1 >= h ? h - 1 : iy1);
-    const float* r0 = img + static_cast<size_t>(iy0) * w;
-    const float* r1 = img + static_cast<size_t>(iy1) * w;
-    const float v0 = r0[ix0] + fx * (r0[ix1] - r0[ix0]);
-    const float v1 = r1[ix0] + fx * (r1[ix1] - r1[ix0]);
+    const T* r0 = img + static_cast<size_t>(iy0) * w;
+    const T* r1 = img + static_cast<size_t>(iy1) * w;
+    const float r00 = static_cast<float>(r0[ix0]);
+    const float r01 = static_cast<float>(r0[ix1]);
+    const float r10 = static_cast<float>(r1[ix0]);
+    const float r11 = static_cast<float>(r1[ix1]);
+    const float v0 = r00 + fx * (r01 - r00);
+    const float v1 = r10 + fx * (r11 - r10);
     return v0 + fy * (v1 - v0);
 }
 
-// Fast AVX-512 horizontal bilinear sampling of a contiguous row of length `len`
-// at coordinates (x0 + 0, y), (x0 + 1, y), ..., (x0 + len - 1, y).
-// Since x increments by exactly +1.0 per sample, the fractional part `fx` and `fy`
-// are CONSTANT across the entire row! That reduces bilinear sampling to 4 aligned/unaligned
-// AVX-512 vector loads + 3 FMA instructions for 16 pixels at once!
+template <typename T>
 inline void sample_rect_fast(
-    const float* img,
+    const T* img,
     int32_t h,
     int32_t w,
     float cx,
     float cy,
     int32_t out_w,
     int32_t out_h,
-    float* dst  // [out_h, out_w]
+    float* dst
 ) {
     const float x0 = cx - 0.5f * static_cast<float>(out_w - 1);
     const float y0 = cy - 0.5f * static_cast<float>(out_h - 1);
@@ -86,25 +101,26 @@ inline void sample_rect_fast(
         int32_t iy1 = iy0 + 1;
         iy0 = (iy0 < 0) ? 0 : (iy0 >= h ? h - 1 : iy0);
         iy1 = (iy1 < 0) ? 0 : (iy1 >= h ? h - 1 : iy1);
-        const float* r0 = img + static_cast<size_t>(iy0) * w;
-        const float* r1 = img + static_cast<size_t>(iy1) * w;
+        const T* r0 = img + static_cast<size_t>(iy0) * w;
+        const T* r1 = img + static_cast<size_t>(iy1) * w;
         float* out_row = dst + static_cast<size_t>(dy) * out_w;
 
         if (x_interior) {
-            const float* p00 = r0 + ix0_base;
-            const float* p01 = p00 + 1;
-            const float* p10 = r1 + ix0_base;
-            const float* p11 = p10 + 1;
+            const T* p00 = r0 + ix0_base;
+            const T* p01 = p00 + 1;
+            const T* p10 = r1 + ix0_base;
+            const T* p11 = p10 + 1;
             int32_t dx = 0;
             for (; dx + 15 < out_w; dx += 16) {
-                __m512 v = _mm512_mul_ps(vw00, _mm512_loadu_ps(p00 + dx));
-                v = _mm512_fmadd_ps(vw01, _mm512_loadu_ps(p01 + dx), v);
-                v = _mm512_fmadd_ps(vw10, _mm512_loadu_ps(p10 + dx), v);
-                v = _mm512_fmadd_ps(vw11, _mm512_loadu_ps(p11 + dx), v);
+                __m512 v = _mm512_mul_ps(vw00, load16_f32(p00 + dx));
+                v = _mm512_fmadd_ps(vw01, load16_f32(p01 + dx), v);
+                v = _mm512_fmadd_ps(vw10, load16_f32(p10 + dx), v);
+                v = _mm512_fmadd_ps(vw11, load16_f32(p11 + dx), v);
                 _mm512_storeu_ps(out_row + dx, v);
             }
             for (; dx < out_w; ++dx) {
-                out_row[dx] = w00 * p00[dx] + w01 * p01[dx] + w10 * p10[dx] + w11 * p11[dx];
+                out_row[dx] = w00 * static_cast<float>(p00[dx]) + w01 * static_cast<float>(p01[dx])
+                            + w10 * static_cast<float>(p10[dx]) + w11 * static_cast<float>(p11[dx]);
             }
         } else {
             for (int32_t dx = 0; dx < out_w; ++dx) {
@@ -112,17 +128,17 @@ inline void sample_rect_fast(
                 int32_t ix1 = ix0 + 1;
                 ix0 = (ix0 < 0) ? 0 : (ix0 >= w ? w - 1 : ix0);
                 ix1 = (ix1 < 0) ? 0 : (ix1 >= w ? w - 1 : ix1);
-                out_row[dx] = w00 * r0[ix0] + w01 * r0[ix1] + w10 * r1[ix0] + w11 * r1[ix1];
+                out_row[dx] = w00 * static_cast<float>(r0[ix0]) + w01 * static_cast<float>(r0[ix1])
+                            + w10 * static_cast<float>(r1[ix0]) + w11 * static_cast<float>(r1[ix1]);
             }
         }
     }
 }
 
-// Single epipolar ZNCC search matching _batch_search in src/stereo_depth.py.
-// Returns REASON_OK and sets *out_x on success, or returns reject reason code.
+template <typename T>
 int32_t zncc_search_one(
-    const float* src_img,
-    const float* tgt_img,
+    const T* src_img,
+    const T* tgt_img,
     int32_t h,
     int32_t w,
     double x,
@@ -340,18 +356,13 @@ int32_t zncc_search_one(
     return REASON_OK;
 }
 
-}  // namespace
-
-extern "C" {
-
-// Full stereo verification with forward (L->R) + reverse (R->L) + round-trip gate.
-// Supports patch_size <= 15 and max_disp <= 240.
-int32_t verify_stereo_zncc_batch_f32(
-    const float* left_img,
-    const float* right_img,
+template <typename T>
+int32_t verify_stereo_zncc_batch_impl(
+    const T* left_img,
+    const T* right_img,
     int32_t h,
     int32_t w,
-    const double* pixels_xy,   // [n, 2]
+    const double* pixels_xy,
     int32_t n,
     int32_t patch_size,
     int32_t max_disp,
@@ -361,8 +372,8 @@ int32_t verify_stereo_zncc_batch_f32(
     double min_tex_std,
     double disp_lo,
     double disp_hi,
-    double* out_right_u,       // [n]
-    int32_t* out_reasons       // [n]
+    double* out_right_u,
+    int32_t* out_reasons
 ) {
     if (patch_size < 3 || patch_size > 15 || (patch_size & 1) == 0 || max_disp < 2 || max_disp > 240) {
         return 0;
@@ -407,6 +418,60 @@ int32_t verify_stereo_zncc_batch_f32(
         out_reasons[i] = REASON_OK;
     }
     return 1;
+}
+
+}  // namespace
+
+extern "C" {
+
+int32_t verify_stereo_zncc_batch_f32(
+    const float* left_img,
+    const float* right_img,
+    int32_t h,
+    int32_t w,
+    const double* pixels_xy,
+    int32_t n,
+    int32_t patch_size,
+    int32_t max_disp,
+    double min_corr,
+    double uniq_ratio,
+    double round_trip_px,
+    double min_tex_std,
+    double disp_lo,
+    double disp_hi,
+    double* out_right_u,
+    int32_t* out_reasons
+) {
+    return verify_stereo_zncc_batch_impl(
+        left_img, right_img, h, w, pixels_xy, n, patch_size, max_disp,
+        min_corr, uniq_ratio, round_trip_px, min_tex_std, disp_lo, disp_hi,
+        out_right_u, out_reasons
+    );
+}
+
+int32_t verify_stereo_zncc_batch_u8(
+    const uint8_t* left_img,
+    const uint8_t* right_img,
+    int32_t h,
+    int32_t w,
+    const double* pixels_xy,
+    int32_t n,
+    int32_t patch_size,
+    int32_t max_disp,
+    double min_corr,
+    double uniq_ratio,
+    double round_trip_px,
+    double min_tex_std,
+    double disp_lo,
+    double disp_hi,
+    double* out_right_u,
+    int32_t* out_reasons
+) {
+    return verify_stereo_zncc_batch_impl(
+        left_img, right_img, h, w, pixels_xy, n, patch_size, max_disp,
+        min_corr, uniq_ratio, round_trip_px, min_tex_std, disp_lo, disp_hi,
+        out_right_u, out_reasons
+    );
 }
 
 }  // extern "C"

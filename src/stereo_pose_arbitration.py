@@ -49,17 +49,64 @@ class SupportedStereoHoldout:
 
 
 def _cells(pixels, size):
-    return len(np.unique(np.clip((pixels / np.asarray(size) * 3).astype(int), 0, 2), axis=0)) if len(pixels) else 0
+    n = len(pixels)
+    if not n:
+        return 0
+    px = np.asarray(pixels)
+    w, h = float(size[0]), float(size[1])
+    cx = np.clip((px[:, 0] / w * 3.0).astype(np.intp), 0, 2)
+    cy = np.clip((px[:, 1] / h * 3.0).astype(np.intp), 0, 2)
+    return int(np.count_nonzero(np.bincount(cx * 3 + cy, minlength=9)))
+
+
+from math import isfinite as _isfinite
+
+
+def _is_valid_se3_pose(pose):
+    if type(pose) is np.ndarray and pose.dtype == np.float64 and pose.shape == (4, 4):
+        r0, r1, r2, r3 = pose.tolist()
+        a0, a1, a2, tx = r0
+        b0, b1, b2, ty = r1
+        c0, c1, c2, tz = r2
+        d0, d1, d2, d3 = r3
+        if not (
+            _isfinite(a0) and _isfinite(a1) and _isfinite(a2) and _isfinite(tx)
+            and _isfinite(b0) and _isfinite(b1) and _isfinite(b2) and _isfinite(ty)
+            and _isfinite(c0) and _isfinite(c1) and _isfinite(c2) and _isfinite(tz)
+            and _isfinite(d0) and _isfinite(d1) and _isfinite(d2) and _isfinite(d3)
+        ):
+            return False
+        if abs(d0) > 1e-8 or abs(d1) > 1e-8 or abs(d2) > 1e-8 or abs(d3 - 1.0) > 1e-5 + 1e-8:
+            return False
+        if (
+            abs(a0 * a0 + b0 * b0 + c0 * c0 - 1.0) > 1e-5 + 1e-7
+            or abs(a1 * a1 + b1 * b1 + c1 * c1 - 1.0) > 1e-5 + 1e-7
+            or abs(a2 * a2 + b2 * b2 + c2 * c2 - 1.0) > 1e-5 + 1e-7
+            or abs(a0 * a1 + b0 * b1 + c0 * c1) > 1e-7
+            or abs(a0 * a2 + b0 * b2 + c0 * c2) > 1e-7
+            or abs(a1 * a2 + b1 * b2 + c1 * c2) > 1e-7
+        ):
+            return False
+        det = (
+            a0 * (b1 * c2 - b2 * c1)
+            - a1 * (b0 * c2 - b2 * c0)
+            + a2 * (b0 * c1 - b1 * c0)
+        )
+        return abs(det - 1.0) <= 1e-5 + 1e-7
+    return bool(
+        pose.shape == (4, 4)
+        and np.isfinite(pose).all()
+        and np.allclose(pose[3], [0, 0, 0, 1])
+        and np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-7)
+        and np.isclose(np.linalg.det(pose[:3, :3]), 1., atol=1e-7)
+    )
 
 
 def _score(pose, evidence, matrix, baseline, offset, size, minimum):
     n = len(evidence.points)
     report = {'cost': None, 'inliers': 0, 'cells': 0, 'eligible': False}
-    pose = np.asarray(pose, float)
-    if (pose.shape != (4, 4) or not np.isfinite(pose).all()
-            or not np.allclose(pose[3], [0, 0, 0, 1])
-            or not np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-7)
-            or not np.isclose(np.linalg.det(pose[:3, :3]), 1., atol=1e-7)):
+    pose = pose if (type(pose) is np.ndarray and pose.dtype == np.float64) else np.asarray(pose, float)
+    if not _is_valid_se3_pose(pose):
         report['reason'] = 'invalid_pose'
         return report
     camera = (evidence.points - pose[:3, 3]) @ pose[:3, :3]

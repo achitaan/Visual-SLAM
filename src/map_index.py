@@ -300,6 +300,21 @@ class IncrementalMapIndex:
     def on_landmarks_bulk_moved(self, positions_by_id: dict[int, np.ndarray]) -> None:
         id_to_slot = self._id_to_slot
         positions = self._positions
+        n = len(positions_by_id)
+        if n >= 32:
+            slots = []
+            vals = []
+            get_slot = id_to_slot.get
+            for lm_id, pos in positions_by_id.items():
+                slot = get_slot(lm_id)
+                if slot is None:
+                    slot = get_slot(int(lm_id))
+                if slot is not None:
+                    slots.append(slot)
+                    vals.append(pos)
+            if slots:
+                positions[slots] = np.asarray(vals, dtype=np.float64)
+            return
         for lm_id, pos in positions_by_id.items():
             slot = id_to_slot.get(int(lm_id))
             if slot is not None:

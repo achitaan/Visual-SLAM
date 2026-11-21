@@ -334,63 +334,48 @@ int32_t match_sift_mutual_f32(
     );
     free(b_pack);
 
-    const double ratio_tol = 1e-5;
     int32_t amb_a = 0;
     int32_t amb_b = 0;
     std::vector<uint8_t> ok_f(m, 0);
     std::vector<uint8_t> ok_b(n, 0);
 
+    // Every integer squared L2 distance for 128-D [0..255] descriptors is at most
+    // 128 * 255^2 = 8,323,200 < 2^24 = 16,777,216, so float(d) is bit-exact and
+    // sqrtf(float(d)) matches OpenCV cv.BFMatcher(NORM_L2)'s float32 distance identically.
     for (int32_t i = 0; i < m; ++i) {
         if (d1_f[i] < d2_f[i]) {
-            const double s1 = std::sqrt(static_cast<double>(d1_f[i]));
-            const double s2 = std::sqrt(static_cast<double>(d2_f[i]));
-            const double rhs = ratio * s2;
-            if (std::abs(s1 - rhs) <= ratio_tol * (s2 + 1.0)) {
-                out_ambig_a[amb_a++] = i;
-            } else if (s1 < rhs) {
+            const double s1 = static_cast<double>(std::sqrt(static_cast<float>(d1_f[i])));
+            const double s2 = static_cast<double>(std::sqrt(static_cast<float>(d2_f[i])));
+            if (s1 < ratio * s2) {
                 ok_f[i] = 1;
             }
         }
     }
     for (int32_t j = 0; j < n; ++j) {
         if (d1_b[j] < d2_b[j]) {
-            const double s1 = std::sqrt(static_cast<double>(d1_b[j]));
-            const double s2 = std::sqrt(static_cast<double>(d2_b[j]));
-            const double rhs = ratio * s2;
-            if (std::abs(s1 - rhs) <= ratio_tol * (s2 + 1.0)) {
-                out_ambig_b[amb_b++] = j;
-            } else if (s1 < rhs) {
+            const double s1 = static_cast<double>(std::sqrt(static_cast<float>(d1_b[j])));
+            const double s2 = static_cast<double>(std::sqrt(static_cast<float>(d2_b[j])));
+            if (s1 < ratio * s2) {
                 ok_b[j] = 1;
             }
         }
     }
 
-    // Fast path: when no rows sit near the ratio boundary (99.9%+ of calls), emit
-    // final mutual pairs directly in C++. If any row is near the ratio boundary,
-    // return ok_f/best_f/ok_b/best_b via caller-provided buffers (or signal fallback).
-    if (amb_a == 0 && amb_b == 0) {
-        int32_t cnt = 0;
-        for (int32_t i = 0; i < m; ++i) {
-            if (ok_f[i]) {
-                const int32_t j = best_f[i];
-                if (j >= 0 && ok_b[j] && best_b[j] == i) {
-                    out_pairs[2 * cnt + 0] = i;
-                    out_pairs[2 * cnt + 1] = j;
-                    ++cnt;
-                }
+    int32_t cnt = 0;
+    for (int32_t i = 0; i < m; ++i) {
+        if (ok_f[i]) {
+            const int32_t j = best_f[i];
+            if (j >= 0 && ok_b[j] && best_b[j] == i) {
+                out_pairs[2 * cnt + 0] = i;
+                out_pairs[2 * cnt + 1] = j;
+                ++cnt;
             }
         }
-        *out_count = cnt;
-        *out_ambig_a_cnt = 0;
-        *out_ambig_b_cnt = 0;
-        return 1;
     }
-
-    // Rare boundary ambiguity: return 2 to tell caller to resolve with exact float32/BF path.
-    *out_count = 0;
+    *out_count = cnt;
     *out_ambig_a_cnt = amb_a;
     *out_ambig_b_cnt = amb_b;
-    return 2;
+    return 1;
 }
 
 }  // extern "C"

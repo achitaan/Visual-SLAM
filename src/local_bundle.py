@@ -3144,11 +3144,34 @@ def local_bundle_adjustment(
             }
             for ident, point_index in extra_index.items():
                 updates[ident] = points[point_index].copy()
-        for ident, anchor, position in single_view:
-            if ident in optimized_single_ids:
-                continue
-            camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])
-            updates[ident] = poses[anchor][:3, :3] @ camera + poses[anchor][:3, 3]
+        if single_view:
+            by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
+            for ident, anchor, position in single_view:
+                if ident in optimized_single_ids:
+                    continue
+                bucket = by_anchor.get(anchor)
+                if bucket is None:
+                    by_anchor[anchor] = ([ident], [position])
+                else:
+                    bucket[0].append(ident)
+                    bucket[1].append(position)
+            for anchor, (id_list, pos_list) in by_anchor.items():
+                base_a = base[anchor]
+                pose_a = poses[anchor]
+                if len(id_list) >= 4:
+                    pts_arr = np.asarray(pos_list, dtype=np.float64)
+                    # Equivalent to pose_R @ (base_R.T @ (pos - base_t)) + pose_t
+                    rel_R = pose_a[:3, :3] @ base_a[:3, :3].T
+                    new_pts = (pts_arr - base_a[:3, 3]) @ rel_R.T + pose_a[:3, 3]
+                    for ident, row in zip(id_list, new_pts):
+                        updates[ident] = row
+                else:
+                    base_RT = base_a[:3, :3].T
+                    base_t = base_a[:3, 3]
+                    pose_R = pose_a[:3, :3]
+                    pose_t = pose_a[:3, 3]
+                    for ident, position in zip(id_list, pos_list):
+                        updates[ident] = pose_R @ (base_RT @ (position - base_t)) + pose_t
         correction_arguments = {'propagate_landmarks': False, 'landmark_updates': updates}
         if intermediate_updates is not None:
             correction_arguments['frame_updates'] = intermediate_updates

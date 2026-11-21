@@ -380,39 +380,51 @@ def triangulate_far_stereo_landmarks(
     cos_min = 0.72
     r2_thresh = float(ratio * ratio)
 
-    # Single BLAS SGEMM for all normalized descriptor similarities + vectorized distance mask
+    # Single BLAS SGEMM for all normalized descriptor similarities + float32 distance mask
     valid_i1 = np.flatnonzero(valid_h)
     if len(valid_i1):
-        p_sub = pred2[valid_i1]  # [M, 2]
-        dx = p_sub[:, 0:1] - px2[None, :, 0]
-        dy = p_sub[:, 1:2] - px2[None, :, 1]
-        in_rad = (dx * dx + dy * dy) <= rad_sq
+        p_sub = pred2[valid_i1].astype(np.float32, copy=False)  # [M, 2]
+        px2_f32 = px2.astype(np.float32, copy=False)
+        dx = p_sub[:, 0:1] - px2_f32[None, :, 0]
+        dy = p_sub[:, 1:2] - px2_f32[None, :, 1]
+        dx *= dx
+        dy *= dy
+        dx += dy
+        in_rad = dx <= np.float32(rad_sq)
+        del dy, dx
         row_has = in_rad.any(axis=1)
         act = np.flatnonzero(row_has)
         if len(act):
             act_i1 = valid_i1[act]
-            sims_all = np.ascontiguousarray(d1[act_i1], np.float32) @ np.ascontiguousarray(d2, np.float32).T
+            d1_sub = np.ascontiguousarray(d1[act_i1], np.float32)
+            d2_c = d2 if (d2.dtype == np.float32 and d2.flags.c_contiguous) else np.ascontiguousarray(d2, np.float32)
+            sims_all = d1_sub @ d2_c.T
             in_rad_act = in_rad[act]
-            masked_sims = np.where(in_rad_act, sims_all, np.float32(-2.0))
-            best_j = np.argmax(masked_sims, axis=1)
+            sims_all[~in_rad_act] = np.float32(-2.0)
+            best_j = np.argmax(sims_all, axis=1)
             rows_a = np.arange(len(act))
-            best_s = masked_sims[rows_a, best_j]
-            masked_sims[rows_a, best_j] = np.float32(-2.0)
-            second_s = np.max(masked_sims, axis=1)
+            best_s = sims_all[rows_a, best_j].copy()
+            sims_all[rows_a, best_j] = np.float32(-2.0)
+            second_s = np.max(sims_all, axis=1)
             counts = in_rad_act.sum(axis=1)
+            best_s_list = best_s.tolist()
+            second_s_list = second_s.tolist()
+            best_j_list = best_j.tolist()
+            counts_list = counts.tolist()
+            act_i1_list = act_i1.tolist()
             for idx_a in range(len(act)):
-                bs = float(best_s[idx_a])
+                bs = best_s_list[idx_a]
                 if bs < cos_min:
                     continue
-                if counts[idx_a] > 1:
+                if counts_list[idx_a] > 1:
                     d1_sq = max(0.0, 2.0 - 2.0 * bs)
-                    d2_sq = max(0.0, 2.0 - 2.0 * float(second_s[idx_a]))
+                    d2_sq = max(0.0, 2.0 - 2.0 * second_s_list[idx_a])
                     if d2_sq > 1e-12 and d1_sq >= r2_thresh * d2_sq:
                         continue
-                i2 = int(best_j[idx_a])
+                i2 = best_j_list[idx_a]
                 if i2 not in used_curr:
                     used_curr.add(i2)
-                    pairs.append((int(act_i1[idx_a]), i2))
+                    pairs.append((act_i1_list[idx_a], i2))
 
     if not pairs:
         return []

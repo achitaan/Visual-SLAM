@@ -39,7 +39,9 @@ void pyr_down_avx512(
     const float* __restrict src, int32_t sh, int32_t sw, int32_t sstride,
     float* __restrict dst, int32_t dh, int32_t dw, int32_t dstride
 ) {
-    std::vector<float> tmp(static_cast<size_t>(sh) * dw);
+    thread_local std::vector<float> tmp;
+    const size_t need = static_cast<size_t>(sh) * dw;
+    if (tmp.size() < need) tmp.resize(need);
     const __m512 v1 = _mm512_set1_ps(1.0f / 16.0f);
     const __m512 v4 = _mm512_set1_ps(4.0f / 16.0f);
     const __m512 v6 = _mm512_set1_ps(6.0f / 16.0f);
@@ -117,7 +119,7 @@ void* lk_pyramid_create(const uint8_t* gray, int32_t h, int32_t w, int32_t max_l
         pyr->h[lvl] = lh;
         pyr->w[lvl] = lw;
         pyr->stride[lvl] = lstride;
-        pyr->img[lvl].assign(static_cast<size_t>(lh + 2 * PYR_PAD) * lstride, 0.0f);
+        pyr->img[lvl].resize(static_cast<size_t>(lh + 2 * PYR_PAD) * lstride);
 
         if (lvl == 0) {
             float* dst = pyr->img[0].data();

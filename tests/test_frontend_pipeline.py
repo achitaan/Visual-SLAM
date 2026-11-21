@@ -171,5 +171,39 @@ def test_pipeline_error_propagation_and_clean_shutdown():
         finally:
             pipe.close()
             assert not pipe._thread.is_alive()
+            assert pipe._sgbm_executor is None
+    finally:
+        slam.close(finish=False)
+
+
+def test_concurrent_stereo_matches_sequential_and_shuts_down_cleanly():
+    K, stereo = _make_stereo_camera()
+    cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")
+    frames = [_synthetic_stereo_pair(seed=99, shift=12 + i) for i in range(3)]
+    slam = SharedSlam(K, stereo=stereo, config=cfg)
+    try:
+        seq_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=1, concurrent_stereo=False) as p_seq:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_seq.submit(i, im_l, im_r)
+                seq_out.append(p_seq.get(i))
+
+        conc_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, concurrent_stereo=True) as p_conc:
+            assert p_conc._sgbm_executor is not None
+            for i, (im_l, im_r) in enumerate(frames):
+                p_conc.submit(i, im_l, im_r)
+            for i in range(len(frames)):
+                conc_out.append(p_conc.get(i))
+        assert p_conc._sgbm_executor is None
+
+        for a, b in zip(seq_out, conc_out):
+            np.testing.assert_array_equal(a.pixels, b.pixels)
+            np.testing.assert_array_equal(a.descriptors, b.descriptors)
+            np.testing.assert_array_equal(a.octaves, b.octaves)
+            np.testing.assert_array_equal(a.disparity, b.disparity)
+            np.testing.assert_array_equal(a.points, b.points)
+            np.testing.assert_array_equal(a.right_u, b.right_u)
+            assert a.stereo_depth_verification == b.stereo_depth_verification
     finally:
         slam.close(finish=False)

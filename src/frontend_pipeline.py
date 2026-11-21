@@ -7,6 +7,7 @@ OpenCV ``SIFT`` and ``StereoSGBM`` instances so background threads never mutate
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import queue
 import threading
@@ -251,6 +252,11 @@ def _measure_stereo_pixels_owned(
     return points, right_u, supported_extraction, verification_counts
 
 
+def _compute_disparity_f32(sgbm: Any, gray: np.ndarray, right_gray: np.ndarray) -> np.ndarray:
+    """Compute float32 disparity map on a thread-private StereoSGBM instance."""
+    return sgbm.compute(gray, right_gray).astype(np.float32) / 16.0
+
+
 def extract_frame_owned(
     index: int,
     image: np.ndarray,
@@ -262,6 +268,7 @@ def extract_frame_owned(
     stereo_search_config: Any,
     detector: cv.SIFT,
     sgbm: Any = None,
+    sgbm_executor: ThreadPoolExecutor | None = None,
     io_elapsed_s: float = 0.0,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
@@ -277,14 +284,19 @@ def extract_frame_owned(
         or getattr(config, "stereo_map_depth_policy", "inherit") == "verified"
     )
     right_gray = None
-    left_gray_f32 = np.asarray(gray, np.float32) if need_f32_pair else None
+    left_gray_f32 = None
     right_gray_f32 = None
+    sgbm_future = None
     if has_stereo:
         if right is None or right.shape[:2] != image.shape[:2]:
             raise ValueError("Stereo requires matching right image")
+        if sgbm is None:
+            raise ValueError("Stereo extraction requires a StereoSGBM matcher instance")
         right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
-        if need_f32_pair:
-            right_gray_f32 = np.asarray(right_gray, np.float32)
+        if sgbm_executor is not None:
+            # Launch StereoSGBM concurrently on its own single-thread executor while
+            # SIFT runs on the calling extraction thread (both OpenCV calls release the GIL).
+            sgbm_future = sgbm_executor.submit(_compute_disparity_f32, sgbm, gray, right_gray)
 
     if getattr(config, "use_grid_bucketing", False):
         bucketed = extract_grid_bucketed_sift(
@@ -313,9 +325,13 @@ def extract_frame_owned(
     verification_counts: dict[str, int] = {}
 
     if has_stereo:
-        if sgbm is None:
-            raise ValueError("Stereo extraction requires a StereoSGBM matcher instance")
-        disparity = sgbm.compute(gray, right_gray).astype(np.float32) / 16.0
+        if need_f32_pair:
+            left_gray_f32 = np.asarray(gray, np.float32)
+            right_gray_f32 = np.asarray(right_gray, np.float32)
+        if sgbm_future is not None:
+            disparity = sgbm_future.result()
+        else:
+            disparity = _compute_disparity_f32(sgbm, gray, right_gray)
         capture_supported = bool(
             config.stereo_pose_arbitration or config.stereo_raw_reference_retry
         )
@@ -359,12 +375,20 @@ class FrontendExtractionPipeline:
 
     Guarantees:
     - Thread-private OpenCV SIFT and StereoSGBM instances (no cross-thread sharing).
+    - Optional concurrent SIFT + StereoSGBM execution on dedicated worker threads
+      (ideal with ``--opencv-threads 1`` to avoid OpenCV spin-barrier overhead).
     - Strictly bounded in-flight memory (``buffer_size`` frames).
     - Strict FIFO in-order output verified by frame index.
     - Clean worker exception propagation and deterministic shutdown.
     """
 
-    def __init__(self, slam: Any, *, buffer_size: int = 2) -> None:
+    def __init__(
+        self,
+        slam: Any,
+        *,
+        buffer_size: int = 2,
+        concurrent_stereo: bool = True,
+    ) -> None:
         if buffer_size < 1:
             raise ValueError("buffer_size must be >= 1")
         self._config = slam.config
@@ -378,6 +402,11 @@ class FrontendExtractionPipeline:
             else None
         )
         self._sgbm = _clone_sgbm(src_sgbm)
+        self._sgbm_executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="frontend-sgbm")
+            if (concurrent_stereo and self._sgbm is not None)
+            else None
+        )
         self._in_q: queue.Queue[Any] = queue.Queue(maxsize=int(buffer_size))
         self._out_q: queue.Queue[Any] = queue.Queue(maxsize=int(buffer_size))
         self._stop_event = threading.Event()
@@ -417,6 +446,7 @@ class FrontendExtractionPipeline:
                         stereo_search_config=self._stereo_search_config,
                         detector=self._detector,
                         sgbm=self._sgbm,
+                        sgbm_executor=self._sgbm_executor,
                         io_elapsed_s=io_dt,
                     )
                     self._put_output((index, extracted, None))
@@ -521,6 +551,9 @@ class FrontendExtractionPipeline:
         except queue.Full:
             pass
         self._thread.join(timeout=timeout)
+        if self._sgbm_executor is not None:
+            self._sgbm_executor.shutdown(wait=True, cancel_futures=True)
+            self._sgbm_executor = None
 
     def __enter__(self) -> "FrontendExtractionPipeline":
         return self

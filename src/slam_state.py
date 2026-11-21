@@ -90,17 +90,32 @@ class MapState:
         return ident
 
     def add_observation(self, landmark_id, keyframe_id, observation):
-        landmark = self.landmarks.get(landmark_id)
-        if landmark is None:
-            return
-        landmark.observations[keyframe_id] = observation
-        self.index.on_observation_added(landmark_id, observation, keyframe_id=keyframe_id)
+        with self.lock:
+            landmark = self.landmarks.get(landmark_id)
+            if landmark is None:
+                return
+            previous = landmark.observations.get(keyframe_id)
+            if previous is not None:
+                self.index.on_observation_removed(landmark_id, keyframe_id, previous)
+            landmark.observations[keyframe_id] = observation
+            self.index.on_observation_added(landmark_id, observation, keyframe_id=keyframe_id)
+
+    def remove_observation(self, landmark_id, keyframe_id):
+        with self.lock:
+            landmark = self.landmarks.get(landmark_id)
+            if landmark is None:
+                return None
+            removed = landmark.observations.pop(keyframe_id, None)
+            if removed is not None:
+                self.index.on_observation_removed(landmark_id, keyframe_id, removed)
+            return removed
 
     def remove_landmark(self, landmark_id):
-        removed = self.landmarks.pop(landmark_id, None)
-        if removed is not None:
-            self.index.on_landmark_removed(landmark_id)
-        return removed
+        with self.lock:
+            removed = self.landmarks.pop(landmark_id, None)
+            if removed is not None:
+                self.index.on_landmark_removed(landmark_id)
+            return removed
 
     def record(self, pose, status, anchor=None):
         validate_pose(pose)

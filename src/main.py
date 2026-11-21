@@ -91,21 +91,24 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     plt.show()
 
 
+_CLI_MAPPING_FIELDS = (
+    'features', 'loop_mode', 'stereo_depth_policy', 'stereo_map_depth_policy',
+    'stereo_map_frontend_seed_fallback', 'stereo_pose_arbitration',
+    'stereo_two_view_refinement', 'stereo_two_view_solver',
+    'stereo_raw_reference_retry', 'stereo_descriptor_association_retry',
+    'stereo_verified_reference_retry', 'stereo_owned_image_bundle',
+    'stereo_source_history_bundle', 'stereo_retained_source_observations',
+    'stereo_mapping_observation_retention', 'bundle_solver_accuracy',
+    'bundle_landmark_policy', 'stereo_bundle_gauge_mode',
+)
+
+
 def _mapping_config_from_args(args):
     preset = getattr(args, 'preset', None)
-    if preset is not None and not getattr(args, '_preset_applied', False):
+    if preset is not None:
         stereo = bool(getattr(args, 'stereo', True))
         overrides = {}
-        for field_name in (
-            'features', 'loop_mode', 'stereo_depth_policy', 'stereo_map_depth_policy',
-            'stereo_map_frontend_seed_fallback', 'stereo_pose_arbitration',
-            'stereo_two_view_refinement', 'stereo_two_view_solver',
-            'stereo_raw_reference_retry', 'stereo_descriptor_association_retry',
-            'stereo_verified_reference_retry', 'stereo_owned_image_bundle',
-            'stereo_source_history_bundle', 'stereo_retained_source_observations',
-            'stereo_mapping_observation_retention', 'bundle_solver_accuracy',
-            'bundle_landmark_policy', 'stereo_bundle_gauge_mode',
-        ):
+        for field_name in _CLI_MAPPING_FIELDS:
             val = getattr(args, field_name, None)
             if val is not None:
                 overrides[field_name] = val
@@ -213,19 +216,9 @@ def parse_main_args(argv=None):
         if args.preset is not None
         else MappingConfig()
     )
-    for field_name in (
-        'features', 'loop_mode', 'stereo_depth_policy', 'stereo_map_depth_policy',
-        'stereo_map_frontend_seed_fallback', 'stereo_pose_arbitration',
-        'stereo_two_view_refinement', 'stereo_two_view_solver',
-        'stereo_raw_reference_retry', 'stereo_descriptor_association_retry',
-        'stereo_verified_reference_retry', 'stereo_owned_image_bundle',
-        'stereo_source_history_bundle', 'stereo_retained_source_observations',
-        'stereo_mapping_observation_retention', 'bundle_solver_accuracy',
-        'bundle_landmark_policy', 'stereo_bundle_gauge_mode',
-    ):
+    for field_name in _CLI_MAPPING_FIELDS:
         if getattr(args, field_name) is None:
             setattr(args, field_name, getattr(base_cfg, field_name))
-    args._preset_applied = True
     try:
         args.features = validate_feature_budget(args.features)
     except ValueError as error:

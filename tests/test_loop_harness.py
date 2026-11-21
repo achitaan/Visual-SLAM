@@ -232,3 +232,72 @@ def test_camera_calib_import_and_eval_kitti_aggregate():
     assert agg["segment_weighted_rotation_deg_per_100m"] == pytest.approx(
         100.0 * (0.005 * 43 + 0.010 * 157) / 200.0
     )
+
+
+def test_loop_harness_importable_without_unix_resource_module(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "resource", None)
+    spec = importlib.util.spec_from_file_location(
+        "loop_harness_windows_sim", SRC_DIR / "loop_harness.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+
+    assert module.resource is None
+    rss_mb = module._self_peak_rss_mb()
+    assert isinstance(rss_mb, float) and math.isfinite(rss_mb) and rss_mb >= 0.0
+
+
+def test_subprocess_isolation_metadata_matches_enforced_boundary(tmp_path, monkeypatch):
+    import loop_harness
+
+    seq_dir = tmp_path / "kitti" / "sequences" / "04"
+    for cam in ("image_0", "image_1"):
+        (seq_dir / cam).mkdir(parents=True)
+        for idx in range(2):
+            (seq_dir / cam / f"{idx:06d}.png").write_bytes(b"png")
+    (seq_dir / "calib.txt").write_text("P0: 1 0 0 0 0 1 0 0 0 0 1 0\n")
+    poses_dir = tmp_path / "kitti" / "poses"
+    poses_dir.mkdir(parents=True)
+    seq_out_dir = tmp_path / "out" / "04"
+
+    class _DummyProc:
+        pid = 12345
+
+        def wait(self):
+            return 0
+
+    def _fake_popen(command, env, cwd, stdout, stderr):
+        (seq_out_dir / "poses.txt").write_text(
+            "1 0 0 0 0 1 0 0 0 0 1 0\n1 0 0 0 0 1 0 0 0 0 1 1\n", encoding="utf-8"
+        )
+        (seq_out_dir / "run.json").write_text(
+            json.dumps({"sequence": "04", "frames": 2, "peak_rss_mb": 42.5}),
+            encoding="utf-8",
+        )
+        return _DummyProc()
+
+    monkeypatch.setattr(loop_harness.subprocess, "Popen", _fake_popen)
+    monkeypatch.delattr(loop_harness.os, "wait4", raising=False)
+
+    payload = loop_harness.run_airgapped_estimator_subprocess(
+        sequence="04",
+        data_root=tmp_path / "kitti",
+        poses_root=poses_dir,
+        seq_out_dir=seq_out_dir,
+        preset="improved_stereo",
+        effective_overrides={},
+        seed=0,
+        opencv_threads=1,
+        max_frames=2,
+    )
+    assert "airgap_verified" not in payload
+    assert payload["isolation_mode"] == "subprocess_argv_env_sanitized_posthoc_eval"
+    assert payload["argv_env_sanitized"] is True
+    assert payload["posthoc_gt_evaluation"] is True
+    assert payload["filesystem_sandbox_enforced"] is False
+    assert payload["ground_truth_used_for_estimation"] is False
+    assert payload["peak_rss_mb"] == pytest.approx(42.5)
+

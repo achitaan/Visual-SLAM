@@ -3215,8 +3215,12 @@ def local_bundle_adjustment(
                     else:
                         is_outlier = (err_sq > 9.21)
                 if is_outlier and len(lm.observations) > 1:
-                    lm.observations.pop(kf_id, None)
-                    culled_obs += 1
+                    if hasattr(state, "remove_observation"):
+                        removed = state.remove_observation(lm.id, kf_id)
+                    else:
+                        removed = lm.observations.pop(kf_id, None)
+                    if removed is not None:
+                        culled_obs += 1
             report["culled_outlier_observations"] = int(culled_obs)
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)

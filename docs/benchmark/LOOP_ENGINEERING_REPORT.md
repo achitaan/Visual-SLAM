@@ -3,7 +3,7 @@
 - **Branch**: `feat/loop-engineered-stereo-slam` (branched from `main` @ `91a8a25`)
 - **Evaluated Commit**: `5754212`
 - **Unified Preset**: `--preset improved_stereo` (zero `--config-overrides`, zero per-sequence branching or parameter lookup)
-- **Airgap Integrity**: `ground_truth_used_for_estimation = false` — estimator runs in an isolated subprocess without access to `poses/*.txt`; KITTI evaluator reads ground truth strictly post-shutdown.
+- **Evaluation Isolation**: `ground_truth_used_for_estimation = false` — estimator runs in a separate subprocess with sanitized argv/environment (receiving only `sequence_dir`, never `poses_root`), and ground-truth `poses/*.txt` files are loaded only in the parent evaluator after estimator exit (OS-level filesystem sandboxing is not enforced).
 - **Hardware**: 2-vCPU Linux VM (`--opencv-threads 2`, `seed=0`, `OPENBLAS_NUM_THREADS=1`).
 
 ---

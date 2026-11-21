@@ -115,3 +115,77 @@ def test_cache_hit_holdout_uses_fresh_supported_measurement_not_cached_geometry(
     assert not np.any(evidence.points==999.)
     assert not np.any(evidence.right_u==999.)
     slam.close()
+
+
+def test_verified_baseline_and_improved_stereo_have_distinct_cache_signatures():
+    matrix = np.array([[700.0, 0.0, 320.0], [0.0, 700.0, 120.0], [0.0, 0.0, 1.0]])
+    q = np.eye(4)
+    q[2, 3] = 700.0 * 0.54
+    q[3, 2] = 1.0
+    camera = StereoCamera(cv.StereoSGBM_create(numDisparities=96, blockSize=5), q, 0.54)
+
+    baseline = SharedSlam(
+        matrix, stereo=camera, config=MappingConfig.from_preset('verified_baseline', stereo=True)
+    )
+    improved = SharedSlam(
+        matrix, stereo=camera, config=MappingConfig.from_preset('improved_stereo', stereo=True)
+    )
+    try:
+        sig_baseline = extraction_signature(baseline, cv)
+        sig_improved = extraction_signature(improved, cv)
+        assert sig_baseline != sig_improved
+
+        # Changing effective detector or fast SGBM parameters invalidates the improved signature
+        improved._grid_detector.setContrastThreshold(0.06)
+        assert extraction_signature(improved, cv) != sig_improved
+    finally:
+        baseline.close()
+        improved.close()
+
+
+def test_feature_cache_restores_octaves_and_disparity_on_cache_hit(tmp_path):
+    matrix = np.array([[700.0, 0.0, 160.0], [0.0, 700.0, 120.0], [0.0, 0.0, 1.0]])
+    q = np.eye(4)
+    q[2, 3] = 700.0 * 0.54
+    q[3, 2] = 1.0
+    camera = StereoCamera(cv.StereoSGBM_create(numDisparities=64, blockSize=5), q, 0.54)
+
+    # Build a synthetic textured stereo pair with known horizontal shift so SIFT finds features
+    rng = np.random.default_rng(42)
+    base = rng.integers(0, 255, size=(240, 340), dtype=np.uint8)
+    base = cv.GaussianBlur(base, (3, 3), 0.8)
+    for y in range(20, 220, 30):
+        for x in range(30, 310, 35):
+            cv.rectangle(base, (x, y), (x + 12, y + 10), int((x + y) % 200 + 30), -1)
+    left = base[:, 16:336].copy()
+    right = base[:, 0:320].copy()
+
+    for preset in ('verified_baseline', 'improved_stereo'):
+        slam = SharedSlam(
+            matrix, stereo=camera, config=MappingConfig.from_preset(preset, stereo=True)
+        )
+        try:
+            cache = FeatureCache(tmp_path, extraction_signature(slam, cv))
+            cache.wrap_slam_extract(slam, stereo=True)
+
+            miss_out = slam._extract(left, right)
+            assert cache.misses == 1 and cache.hits == 0
+            expected_octaves = slam._current_octaves.copy()
+            expected_disp = slam.current_disparity.copy()
+            assert len(miss_out[0]) > 0
+            assert expected_octaves.shape == (len(miss_out[0]),)
+            assert expected_octaves.dtype == np.int16
+
+            # Clear state to verify cache hit genuinely restores both disparity and octaves
+            slam._current_octaves = None
+            slam.current_disparity = None
+            hit_out = slam._extract(left, right)
+            assert cache.hits == 1
+            for a, b in zip(miss_out, hit_out):
+                assert np.array_equal(a, b, equal_nan=True)
+            assert slam._current_octaves is not None
+            assert np.array_equal(slam._current_octaves, expected_octaves)
+            assert np.array_equal(slam.current_disparity, expected_disp, equal_nan=True)
+        finally:
+            slam.close()
+

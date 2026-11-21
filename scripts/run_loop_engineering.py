@@ -1,4 +1,4 @@
-"""Airgapped 3-tier loop-engineering benchmark and experiment ledger CLI."""
+"""3-tier loop-engineering benchmark and experiment ledger CLI (sanitized subprocess + post-exit GT eval)."""
 
 from __future__ import annotations
 

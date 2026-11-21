@@ -94,23 +94,30 @@ class IncrementalMapIndex:
             self._conflict_counts[landmark_id] = self._conflict_counts.get(landmark_id, 0) + 1
             self._conflicted_dirty = True
 
+    def _remove_claim_bucket(
+        self,
+        landmark_id: int,
+        bucket_key: tuple[int, tuple[int, int]],
+    ) -> None:
+        bucket = self._pixel_claims.get(bucket_key)
+        if bucket is None or landmark_id not in bucket:
+            return
+        prev_len = len(bucket)
+        bucket.remove(landmark_id)
+        if prev_len >= 2:
+            self._decrement_conflict(landmark_id)
+            if len(bucket) == 1:
+                survivor = next(iter(bucket))
+                self._decrement_conflict(survivor)
+        if not bucket:
+            del self._pixel_claims[bucket_key]
+
     def _remove_claims_for_landmark(self, landmark_id: int) -> None:
         keys = self._landmark_pixel_keys.pop(landmark_id, None)
         if not keys:
             return
         for bucket_key in keys:
-            bucket = self._pixel_claims.get(bucket_key)
-            if bucket is None or landmark_id not in bucket:
-                continue
-            prev_len = len(bucket)
-            bucket.remove(landmark_id)
-            if prev_len >= 2:
-                self._decrement_conflict(landmark_id)
-                if len(bucket) == 1:
-                    survivor = next(iter(bucket))
-                    self._decrement_conflict(survivor)
-            if not bucket:
-                del self._pixel_claims[bucket_key]
+            self._remove_claim_bucket(landmark_id, bucket_key)
 
     def _decrement_conflict(self, landmark_id: int) -> None:
         cnt = self._conflict_counts.get(landmark_id, 0)
@@ -171,6 +178,45 @@ class IncrementalMapIndex:
         pixel = getattr(actual_obs, "pixel", None)
         if pixel is not None:
             self._add_claim(lm_id, kf_id, pixel)
+
+    def on_observation_removed(
+        self,
+        landmark_id: int,
+        keyframe_id: int,
+        obs: Any = None,
+    ) -> None:
+        lm_id = int(landmark_id)
+        kf_id = int(keyframe_id)
+
+        kf_set = self._kf_landmarks.get(kf_id)
+        if kf_set is not None:
+            kf_set.discard(lm_id)
+            if not kf_set:
+                del self._kf_landmarks[kf_id]
+
+        lm_kfs = self._landmark_kfs.get(lm_id)
+        if lm_kfs is not None:
+            lm_kfs.discard(kf_id)
+            if not lm_kfs:
+                del self._landmark_kfs[lm_id]
+
+        lm_keys = self._landmark_pixel_keys.get(lm_id)
+        if lm_keys:
+            matching_keys = [key for key in lm_keys if key[0] == kf_id]
+            for bucket_key in matching_keys:
+                lm_keys.discard(bucket_key)
+                self._remove_claim_bucket(lm_id, bucket_key)
+            if not lm_keys:
+                self._landmark_pixel_keys.pop(lm_id, None)
+        elif obs is not None:
+            pixel = getattr(obs, "pixel", None)
+            if pixel is not None:
+                pkey = _pixel_identity_key(pixel)
+                if pkey is not None:
+                    self._remove_claim_bucket(lm_id, (kf_id, pkey))
+
+        if lm_id in self._found_counts:
+            self._found_counts[lm_id] = max(0, self._found_counts[lm_id] - 1)
 
     def on_landmark_moved(self, landmark_id: int, position: np.ndarray) -> None:
         slot = self._id_to_slot.get(int(landmark_id))

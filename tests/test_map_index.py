@@ -98,3 +98,108 @@ def test_prune_stale_landmarks_preserves_multiview():
     assert multi_id in state.landmarks
     assert young_id in state.landmarks
     assert len(state.index) == 2
+
+
+def test_remove_observation_clears_pixel_conflict_and_reverse_kf_index():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    shared_px = np.array([250.5, 140.25], np.float32)
+    lm0 = state.add_landmark(
+        [0.5, 0.0, 10.0], desc, anchor=0,
+        observations={
+            0: Observation(np.array([240.0, 140.0], np.float32), 200.0),
+            1: Observation(shared_px, 210.0),
+        },
+    )
+    lm1 = state.add_landmark(
+        [0.6, 0.0, 10.2], desc, anchor=0,
+        observations={
+            0: Observation(np.array([260.0, 140.0], np.float32), 220.0),
+            1: Observation(shared_px, 211.0),
+        },
+    )
+    assert state.index.conflicted_landmark_ids() == frozenset({lm0, lm1})
+    assert state.index.landmarks_for_keyframes([1]) == {lm0, lm1}
+
+    # Removing lm0's observation on kf 1 must clear conflict for BOTH landmarks and update kf 1 reverse index
+    removed = state.remove_observation(lm0, 1)
+    assert removed is not None
+    assert 1 not in state.landmarks[lm0].observations
+    assert state.index.conflicted_landmark_ids() == frozenset()
+    assert state.index.landmarks_for_keyframes([1]) == {lm1}
+    assert state.index.landmarks_for_keyframes([0]) == {lm0, lm1}
+
+
+def test_local_bundle_outlier_culling_updates_map_index():
+    from local_bundle import local_bundle_adjustment
+    from slam_state import MappingKeyframe
+
+    K = np.array([[700.0, 0.0, 620.0], [0.0, 700.0, 188.0], [0.0, 0.0, 1.0]])
+    baseline = 0.54
+    fx_b = K[0, 0] * baseline
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    # Create 5 keyframes along +Z with exact ground-truth poses
+    kf_poses = [np.eye(4) for _ in range(5)]
+    for kf_id, pose in enumerate(kf_poses):
+        pose[2, 3] = float(kf_id)
+        state.keyframes[kf_id] = MappingKeyframe(
+            id=kf_id,
+            frame=kf_id * 5,
+            pose=pose.copy(),
+            pixels=np.empty((0, 2), np.float32),
+            descriptors=np.empty((0, 128), np.float32),
+            landmark_ids=np.empty(0, np.int64),
+        )
+        state.record(pose, "tracking", anchor=kf_id)
+
+    def project_obs(pt_w, pose):
+        pc = pose[:3, :3].T @ (pt_w - pose[:3, 3])
+        h = K @ pc
+        uv = h[:2] / h[2]
+        right_u = float(uv[0] - fx_b / pc[2])
+        return Observation(np.asarray(uv, dtype=np.float32), right_u=right_u)
+
+    # Add clean inlier landmarks observed across all 5 keyframes so BA converges cleanly
+    rng = np.random.default_rng(7)
+    for _ in range(18):
+        pt = np.array([rng.uniform(-4.0, 4.0), rng.uniform(-1.5, 1.5), rng.uniform(10.0, 24.0)])
+        obs = {kf_id: project_obs(pt, kf_poses[kf_id]) for kf_id in range(5)}
+        state.add_landmark(pt, desc, anchor=0, observations=obs)
+
+    # Add one clean landmark lm_good and one landmark lm_bad whose kf=4 observation
+    # falsely claims lm_good's exact pixel (both a gross outlier and a pixel conflict).
+    pt_good = np.array([2.5, -0.5, 14.0])
+    good_obs_kf4 = project_obs(pt_good, kf_poses[4])
+    lm_good = state.add_landmark(
+        pt_good, desc, anchor=0,
+        observations={kf_id: project_obs(pt_good, kf_poses[kf_id]) for kf_id in range(5)},
+    )
+
+    pt_bad = np.array([-3.0, 0.8, 17.0])
+    bad_obs = {kf_id: project_obs(pt_bad, kf_poses[kf_id]) for kf_id in range(4)}
+    bad_obs[4] = Observation(good_obs_kf4.pixel.copy(), right_u=good_obs_kf4.right_u)
+    lm_bad = state.add_landmark(pt_bad, desc, anchor=0, observations=bad_obs)
+
+    assert {lm_good, lm_bad}.issubset(state.index.conflicted_landmark_ids())
+    assert lm_bad in state.index.landmarks_for_keyframes([4])
+
+    report = local_bundle_adjustment(
+        state,
+        K,
+        baseline=baseline,
+        window=5,
+        max_landmarks=100,
+        use_analytic_jacobian=True,
+        use_map_index=True,
+        cull_outliers_chi2=True,
+    )
+    assert report["applied"] is True
+    assert report.get("culled_outlier_observations", 0) >= 1
+    assert 4 not in state.landmarks[lm_bad].observations
+    assert lm_bad not in state.index.landmarks_for_keyframes([4])
+    assert lm_good not in state.index.conflicted_landmark_ids()
+    assert lm_bad not in state.index.conflicted_landmark_ids()
+

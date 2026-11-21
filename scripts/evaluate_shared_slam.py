@@ -533,17 +533,7 @@ def main():
     if args.feature_cache:
         signature = extraction_signature(slam, cv)
         cache = FeatureCache(args.feature_cache, signature)
-        extract = slam._extract
-        def cached_extract(image, right_image):
-            key = cache.key(image, right_image)
-            values = cache.get(key)
-            if values is not None:
-                slam.current_disparity = values[4] if args.stereo else None
-                return values[:4]
-            result = extract(image, right_image)
-            cache.put(key, (*result, slam.current_disparity if args.stereo else np.empty((0,0))))
-            return result
-        slam._extract = cached_extract
+        cache.wrap_slam_extract(slam, stereo=bool(args.stereo))
     target = snapshot_target(args.output, args.telemetry_file)
     observer = (
         SnapshotWriter(target, args.sequence, args.output.name, len(paths))

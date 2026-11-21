@@ -1,4 +1,10 @@
-"""Airgapped 3-tier loop-engineering benchmark harness, baseline comparator, and JSONL ledger."""
+"""3-tier loop-engineering benchmark harness, baseline comparator, and JSONL ledger.
+
+Evaluation isolation: estimator workers run in separate subprocesses with sanitized
+argv and environment variables (receiving only `sequence_dir`, never `poses_root`),
+and ground-truth `poses/*.txt` files are loaded only in the parent evaluator after
+the estimator subprocess exits. OS-level filesystem sandboxing is not enforced.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,10 @@ import json
 import math
 import os
 from pathlib import Path
-import resource
+try:
+    import resource
+except ImportError:  # Windows does not provide the Unix resource module
+    resource = None  # type: ignore[assignment]
 import shutil
 import subprocess
 import sys
@@ -55,6 +64,7 @@ TIER_DEFAULTS: dict[str, dict[str, Any]] = {
 
 _SANITIZED_ENV_ALLOWLIST = (
     "PATH",
+    "PATHEXT",
     "HOME",
     "USER",
     "LOGNAME",
@@ -63,7 +73,11 @@ _SANITIZED_ENV_ALLOWLIST = (
     "LD_LIBRARY_PATH",
     "VIRTUAL_ENV",
     "SYSTEMROOT",
+    "SYSTEMDRIVE",
     "WINDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
     "MPLCONFIGDIR",
 )
 
@@ -89,6 +103,47 @@ def _current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     return "unknown"
 
 
+def _windows_peak_rss_mb() -> float:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t)
+                for name in (
+                    "peak",
+                    "working",
+                    "peak_paged",
+                    "paged",
+                    "peak_nonpaged",
+                    "nonpaged",
+                    "pagefile",
+                    "peak_pagefile",
+                )
+            ]
+
+        counters = _ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        kernel32 = ctypes.windll.kernel32
+        psapi = ctypes.windll.psapi
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi.GetProcessMemoryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        process = kernel32.GetCurrentProcess()
+        if psapi.GetProcessMemoryInfo(
+            ctypes.c_void_p(process), ctypes.byref(counters), counters.cb
+        ):
+            return float(counters.peak) / (1024.0 * 1024.0)
+    except (AttributeError, ImportError, OSError, ValueError):
+        pass
+    return 0.0
+
+
 def _self_peak_rss_mb() -> float:
     vm_hwm_mb = 0.0
     status_path = Path("/proc/self/status")
@@ -102,8 +157,13 @@ def _self_peak_rss_mb() -> float:
                     break
         except (OSError, ValueError):
             vm_hwm_mb = 0.0
-    ru_kb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    ru_mb = ru_kb / (1024.0 if sys.platform != "darwin" else (1024.0 * 1024.0))
+    if resource is not None:
+        ru_kb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        ru_mb = ru_kb / (1024.0 if sys.platform != "darwin" else (1024.0 * 1024.0))
+    elif os.name == "nt":
+        ru_mb = _windows_peak_rss_mb()
+    else:
+        ru_mb = 0.0
     return float(max(vm_hwm_mb, ru_mb))
 
 
@@ -321,7 +381,10 @@ def run_airgapped_estimator_subprocess(
 
     run_payload = json.loads(run_json_path.read_text(encoding="utf-8"))
     run_payload["peak_rss_mb"] = float(max(float(run_payload.get("peak_rss_mb", 0.0)), wait4_rss_mb))
-    run_payload["airgap_verified"] = True
+    run_payload["isolation_mode"] = "subprocess_argv_env_sanitized_posthoc_eval"
+    run_payload["argv_env_sanitized"] = True
+    run_payload["posthoc_gt_evaluation"] = True
+    run_payload["filesystem_sandbox_enforced"] = False
     run_payload["ground_truth_used_for_estimation"] = False
     run_payload["estimator_argv"] = command
     run_payload["estimator_env_keys"] = sorted(env.keys())
@@ -1142,7 +1205,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
     if TIER_DEFAULTS[args.tier]["run_pytest"]:
         pytest_info = run_tier1_pytest_suite(output_dir, REPO_ROOT)
 
-    # Phase 1: Strictly Airgapped Estimation Subprocesses (poses_root is NEVER opened here)
+    # Phase 1: Estimation Subprocesses with sanitized argv/env (parent does not open poses_root yet)
     run_payloads: dict[str, dict[str, Any]] = {}
     for seq in args.resolved_sequences:
         seq_max_frames = args.resolved_max_frames_map.get(seq)
@@ -1158,7 +1221,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             max_frames=seq_max_frames,
         )
 
-    # Phase 2: Post-Shutdown Evaluation (only AFTER all estimator subprocesses have exited)
+    # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
     sequences_summary: dict[str, dict[str, Any]] = {}
     for seq in args.resolved_sequences:
         seq_max_frames = args.resolved_max_frames_map.get(seq)
@@ -1215,6 +1278,12 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "preset": args.preset,
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,
+        "evaluation_isolation": {
+            "mode": "subprocess_argv_env_sanitized_posthoc_eval",
+            "argv_env_sanitized": True,
+            "posthoc_gt_evaluation": True,
+            "filesystem_sandbox_enforced": False,
+        },
         "seed": int(args.seed),
         "config_overrides": effective_overrides,
         "configuration": asdict(resolved_cfg),

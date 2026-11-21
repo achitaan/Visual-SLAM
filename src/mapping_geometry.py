@@ -145,9 +145,16 @@ def match_descriptors(first, second, ratio=0.7):
         and second.ndim == 2
         and first.shape[1] == second.shape[1]
         and 0.0 < ratio < 1.0
-        and 16384 <= len(first) * len(second) <= 8_000_000
     ):
-        return _match_descriptors_gemm_l2(first, second, ratio)
+        prod = len(first) * len(second)
+        if first.shape[1] == 128 and prod >= 16384:
+            from native_accel import match_sift_mutual_vnni
+
+            vnni_pairs = match_sift_mutual_vnni(first, second, ratio)
+            if vnni_pairs is not None:
+                return vnni_pairs
+        if 16384 <= prod <= 8_000_000:
+            return _match_descriptors_gemm_l2(first, second, ratio)
     return _match_descriptors_bf(first, second, ratio)
 
 

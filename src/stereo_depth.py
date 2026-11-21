@@ -307,6 +307,17 @@ def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_b
         finite_idx = np.flatnonzero(finite_mask)
         if not len(finite_idx):
             return result, counters
+        from native_accel import verify_stereo_zncc_avx512
+
+        native_out = verify_stereo_zncc_avx512(
+            left, right, pixels[finite_idx], config, disparity_bounds
+        )
+        if native_out is not None:
+            out_u, reason_counts = native_out
+            result[finite_idx] = out_u
+            for key, val in reason_counts.items():
+                counters[key] = counters.get(key, 0) + int(val)
+            return result, counters
         xr, fwd_reasons = _batch_search(
             left, right, pixels[finite_idx], -1, config, disparity_bounds
         )

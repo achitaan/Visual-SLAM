@@ -22,20 +22,32 @@ class Landmark:
     descriptor: np.ndarray
     anchor: int
     observations: dict[int, Observation] = field(default_factory=dict)
+    _misses: int = field(default=0, init=False, repr=False, compare=False)
     misses: int = 0
     octave: int = 0
     is_far: bool = False
     _high_miss_set: set[int] | None = field(default=None, init=False, repr=False, compare=False)
 
-    def __setattr__(self, name, value):
-        object.__setattr__(self, name, value)
-        if name == "misses":
-            hms = self.__dict__.get("_high_miss_set")
-            if hms is not None:
-                if value >= 5:
-                    hms.add(self.id)
-                else:
-                    hms.discard(self.id)
+    def __post_init__(self):
+        # Preserve dataclass field init semantics while syncing _high_miss_set if attached later.
+        self._misses = int(self._misses)
+
+
+def _lm_get_misses(self) -> int:
+    return self._misses
+
+
+def _lm_set_misses(self, value: int) -> None:
+    self._misses = value
+    hms = getattr(self, "_high_miss_set", None)
+    if hms is not None:
+        if value >= 5:
+            hms.add(self.id)
+        else:
+            hms.discard(self.id)
+
+
+Landmark.misses = property(_lm_get_misses, _lm_set_misses)  # type: ignore[assignment]
 
 
 @dataclass
@@ -238,8 +250,12 @@ class MapState:
             if not propagate_landmarks:
                 if landmark_updates is not None:
                     for ident, raw_pos in landmark_updates.items():
-                        pos = np.asarray(raw_pos, float).reshape(3).copy()
-                        if not np.isfinite(pos).all():
+                        if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                and raw_pos.shape == (3,)):
+                            pos = raw_pos.copy()
+                        else:
+                            pos = np.asarray(raw_pos, float).reshape(3).copy()
+                        if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
             else:
@@ -247,28 +263,50 @@ class MapState:
                     affected_ids = self.index.landmarks_for_anchors(moved_kfs)
                     if landmark_updates is not None:
                         affected_ids = affected_ids | set(landmark_updates)
+                    by_anchor: dict[int, list[int]] = {}
                     for ident in affected_ids:
                         landmark = self.landmarks.get(ident)
                         if landmark is None:
                             continue
                         if landmark_updates is not None and ident in landmark_updates:
-                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                            raw_pos = landmark_updates[ident]
+                            if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                    and raw_pos.shape == (3,)):
+                                pos = raw_pos.copy()
+                            else:
+                                pos = np.asarray(raw_pos, float).reshape(3).copy()
+                            if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                                raise ValueError("Nonfinite corrected landmark")
+                            positions[ident] = pos
                         else:
-                            rotation, scale, translation = corrections[landmark.anchor]
-                            pos = scale * rotation @ landmark.position + translation
-                        if not np.isfinite(pos).all():
-                            raise ValueError("Nonfinite corrected landmark")
-                        positions[ident] = pos
+                            by_anchor.setdefault(landmark.anchor, []).append(ident)
+                    for anchor_id, id_list in by_anchor.items():
+                        rotation, scale, translation = corrections[anchor_id]
+                        if len(id_list) >= 8:
+                            pts_arr = np.array([self.landmarks[i].position for i in id_list], dtype=np.float64)
+                            new_arr = (scale * (pts_arr @ rotation.T)) + translation
+                            if not np.isfinite(new_arr).all():
+                                raise ValueError("Nonfinite corrected landmark")
+                            for i, row in zip(id_list, new_arr):
+                                positions[i] = row
+                        else:
+                            for i in id_list:
+                                pos = scale * rotation @ self.landmarks[i].position + translation
+                                if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
+                                    raise ValueError("Nonfinite corrected landmark")
+                                positions[i] = pos
                 else:
                     for ident, landmark in self.landmarks.items():
                         if landmark_updates is not None and ident in landmark_updates:
-                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                            raw_pos = landmark_updates[ident]
+                            pos = (raw_pos.copy() if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64 and raw_pos.shape == (3,))
+                                   else np.asarray(raw_pos, float).reshape(3).copy())
                         elif landmark.anchor in moved_kfs:
                             rotation, scale, translation = corrections[landmark.anchor]
                             pos = scale * rotation @ landmark.position + translation
                         else:
                             continue
-                        if not np.isfinite(pos).all():
+                        if not (np.isfinite(pos[0]) and np.isfinite(pos[1]) and np.isfinite(pos[2])):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
             poses = list(self.poses)

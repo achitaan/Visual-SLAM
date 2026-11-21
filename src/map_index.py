@@ -97,6 +97,9 @@ class IncrementalMapIndex:
         pkey = _pixel_identity_key(pixel)
         if pkey is None:
             return
+        self._add_claim_key(landmark_id, keyframe_id, pkey)
+
+    def _add_claim_key(self, landmark_id: int, keyframe_id: int, pkey: tuple[int, int]) -> None:
         bucket_key = (int(keyframe_id), pkey)
         lm_keys = self._landmark_pixel_keys.setdefault(landmark_id, set())
         if bucket_key in lm_keys:
@@ -229,9 +232,13 @@ class IncrementalMapIndex:
             if kf_id > self._max_obs_kf[slot]:
                 self._max_obs_kf[slot] = kf_id
         self._found_counts[lm_id] = self._found_counts.get(lm_id, 0) + 1
-        pixel = getattr(actual_obs, "pixel", None)
-        if pixel is not None:
-            self._add_claim(lm_id, kf_id, pixel)
+        pid_i32 = getattr(actual_obs, "_pixel_id_i32", None)
+        if pid_i32 is not None and getattr(actual_obs, "_identity_owned", False):
+            self._add_claim_key(lm_id, kf_id, pid_i32)
+        else:
+            pixel = getattr(actual_obs, "pixel", None)
+            if pixel is not None:
+                self._add_claim(lm_id, kf_id, pixel)
         self._struct_version += 1
 
     def on_observation_removed(

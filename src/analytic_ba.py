@@ -594,6 +594,55 @@ def solve_schur_local_bundle(
     else:
         w_rec = np.ones((len(record_cameras), 3), dtype=np.float64)
 
+    try:
+        from native_accel import solve_schur_local_bundle_cpp
+        base_cams = camera_poses_for(x)
+        native_res = solve_schur_local_bundle_cpp(
+            base_cams,
+            free_camera_indices,
+            x[free_offsets].reshape(-1),
+            x[point_offset:point_limit],
+            record_cameras,
+            record_points,
+            measured_pixels,
+            measured_right,
+            rec_mask,
+            w_rec,
+            held_cameras,
+            held_points,
+            held_pixels,
+            held_right,
+            held_mask,
+            K_arr,
+            float(baseline),
+            doff,
+            bool(metric),
+            delta_h,
+            int(max_iter),
+        )
+        if native_res is not None:
+            fp_out, xp_out, st_out, nfev_out, cost_out, opt_out = native_res
+            x[free_offsets] = fp_out.reshape(n_free, 6)
+            x[point_offset:point_limit] = xp_out
+            msg_map = {
+                -1: "nonfinite_gradient",
+                0: "max_iter",
+                1: "gtol_converged",
+                2: "ftol_xtol_converged",
+                3: "no_further_decrease",
+            }
+            return SchurBAResult(
+                x=x,
+                success=bool(st_out >= 0),
+                status=int(st_out),
+                message=msg_map.get(st_out, "converged"),
+                nfev=int(nfev_out),
+                cost=float(cost_out),
+                optimality=float(opt_out),
+            )
+    except Exception:
+        pass
+
     def _eval_block(pts_w, cams, cam_idx, pixels, right_u, mask, weights):
         m = len(cam_idx)
         if m == 0:

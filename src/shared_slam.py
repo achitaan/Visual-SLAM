@@ -2045,36 +2045,74 @@ class SharedSlam:
                 flow_visible[np.array(tracked_ids)[valid]] = True
             flow_visibility_rejections = int((~flow_visible).sum())
             lk_levels = 4 if getattr(self.config, "use_projective_tracking", False) else 3
-            flowed, ok, _ = cv.calcOpticalFlowPyrLK(
-                self.previous_gray,
-                self.current_gray,
-                old_pixels,
-                predicted_pixels,
-                winSize=(21, 21),
-                maxLevel=lk_levels,
-                flags=cv.OPTFLOW_USE_INITIAL_FLOW,
-            )
-            if flowed is not None:
-                if lk_levels >= 4:
-                    rev_init = old_pixels.copy()
-                    reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
-                        self.current_gray,
-                        self.previous_gray,
-                        flowed,
-                        rev_init,
-                        winSize=(21, 21),
-                        maxLevel=lk_levels,
-                        flags=cv.OPTFLOW_USE_INITIAL_FLOW,
-                    )
-                else:
-                    reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
-                        self.current_gray,
-                        self.previous_gray,
-                        flowed,
-                        None,
-                        winSize=(21, 21),
-                        maxLevel=lk_levels,
-                    )
+            flowed = None
+            ok = None
+            reversed_pixels = None
+            back_ok = None
+            used_fast_lk = False
+            if cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK:
+                try:
+                    from native_accel import build_lk_pyramid_avx512, track_lk_pyramids_avx512
+                    prev_pyr = getattr(self, "previous_lk_pyramid", None)
+                    curr_pyr = getattr(self, "current_lk_pyramid", None)
+                    if (prev_pyr is None or prev_pyr.source_gray is not self.previous_gray
+                            or prev_pyr.max_level < lk_levels):
+                        prev_pyr = build_lk_pyramid_avx512(self.previous_gray, max_level=lk_levels)
+                        self.previous_lk_pyramid = prev_pyr
+                    if (curr_pyr is None or curr_pyr.source_gray is not self.current_gray
+                            or curr_pyr.max_level < lk_levels):
+                        curr_pyr = build_lk_pyramid_avx512(self.current_gray, max_level=lk_levels)
+                        self.current_lk_pyramid = curr_pyr
+                    if prev_pyr is not None and curr_pyr is not None:
+                        res_fwd = track_lk_pyramids_avx512(
+                            prev_pyr, curr_pyr, old_pixels, predicted_pixels,
+                            max_level=lk_levels, use_initial_flow=True,
+                        )
+                        if res_fwd is not None:
+                            flowed, ok = res_fwd
+                            res_bwd = track_lk_pyramids_avx512(
+                                curr_pyr, prev_pyr, flowed,
+                                old_pixels if lk_levels >= 4 else None,
+                                max_level=lk_levels, use_initial_flow=(lk_levels >= 4),
+                            )
+                            if res_bwd is not None:
+                                reversed_pixels, back_ok = res_bwd
+                                used_fast_lk = True
+                except Exception:
+                    used_fast_lk = False
+
+            if not used_fast_lk:
+                flowed, ok, _ = cv.calcOpticalFlowPyrLK(
+                    self.previous_gray,
+                    self.current_gray,
+                    old_pixels,
+                    predicted_pixels,
+                    winSize=(21, 21),
+                    maxLevel=lk_levels,
+                    flags=cv.OPTFLOW_USE_INITIAL_FLOW,
+                )
+                if flowed is not None:
+                    if lk_levels >= 4:
+                        rev_init = old_pixels.copy()
+                        reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
+                            self.current_gray,
+                            self.previous_gray,
+                            flowed,
+                            rev_init,
+                            winSize=(21, 21),
+                            maxLevel=lk_levels,
+                            flags=cv.OPTFLOW_USE_INITIAL_FLOW,
+                        )
+                    else:
+                        reversed_pixels, back_ok, _ = cv.calcOpticalFlowPyrLK(
+                            self.current_gray,
+                            self.previous_gray,
+                            flowed,
+                            None,
+                            winSize=(21, 21),
+                            maxLevel=lk_levels,
+                        )
+            if flowed is not None and reversed_pixels is not None:
                 flowed_pts = flowed[:, 0]
                 fb_err = np.linalg.norm(reversed_pixels[:, 0] - old_pixels[:, 0], axis=1)
                 lk_valid = (
@@ -6545,6 +6583,7 @@ class SharedSlam:
                     f"ExtractedFrame index {extracted.index} does not match frame {index}"
                 )
             self.current_gray = extracted.gray
+            self.current_lk_pyramid = getattr(extracted, "lk_pyramid", None)
             self.current_left_gray = extracted.left_gray_f32
             self.current_right_gray = extracted.right_gray_f32
             self.stereo_depth_verification = dict(extracted.stereo_depth_verification)
@@ -7428,7 +7467,14 @@ class SharedSlam:
             self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
                 status, associations, pixels, right_u, arbitration_report, info)
         if info["tracking_ok"]:
-            self.previous_gray = self.current_gray.copy()
+            prev_pyr = getattr(self, "current_lk_pyramid", None)
+            if prev_pyr is not None and prev_pyr.source_gray is self.current_gray:
+                self.previous_gray = self.current_gray.copy()
+                prev_pyr.source_gray = self.previous_gray
+                self.previous_lk_pyramid = prev_pyr
+            else:
+                self.previous_gray = self.current_gray.copy()
+                self.previous_lk_pyramid = None
             tracks = {}
             if anchor is not None and self.map.keyframes[anchor].frame == index:
                 for j, lid in enumerate(self.map.keyframes[anchor].landmark_ids):
@@ -7938,3 +7984,4 @@ class SharedSlam:
 
 
 _ORIGINAL_PHYSICAL_PIXEL_KEY = SharedSlam._physical_pixel_key
+_ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK = cv.calcOpticalFlowPyrLK

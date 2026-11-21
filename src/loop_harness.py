@@ -580,8 +580,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     started = time.perf_counter()
     try:
         if pipeline is not None:
-            def _load_pair(idx: int):
-                return vo.Images_1[idx], vo.Images_2[idx]
+            _load_pair = (vo.Images_1.__getitem__, vo.Images_2.__getitem__)
 
             submit_times: dict[int, float] = {}
             prefetch_depth = min(max(1, int(args.pipeline_buffer)), total_frames)

@@ -40,6 +40,7 @@ class ExtractedFrame:
     stereo_depth_verification: dict[str, int]
     io_elapsed_s: float = 0.0
     extract_elapsed_s: float = 0.0
+    lk_pyramid: Any = None
 
 
 def _clone_sgbm(src: Any) -> Any:
@@ -396,6 +397,14 @@ def extract_frame_owned(
             capture_supported=capture_supported,
         )
 
+    lk_pyramid = None
+    try:
+        from native_accel import build_lk_pyramid_avx512
+        lk_levels = 4 if getattr(config, "use_projective_tracking", False) else 3
+        lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
+    except Exception:
+        lk_pyramid = None
+
     extract_elapsed_s = max(time.perf_counter() - t0, 0.0)
     return ExtractedFrame(
         index=int(index),
@@ -413,6 +422,7 @@ def extract_frame_owned(
         stereo_depth_verification=verification_counts,
         io_elapsed_s=float(io_elapsed_s),
         extract_elapsed_s=float(extract_elapsed_s),
+        lk_pyramid=lk_pyramid,
     )
 
 
@@ -484,7 +494,17 @@ class FrontendExtractionPipeline:
                     io_dt = 0.0
                     if loader is not None:
                         t_io = time.perf_counter()
-                        image, right = loader(index)
+                        if isinstance(loader, tuple) and len(loader) == 2:
+                            left_loader, right_loader = loader
+                            if self._sgbm_executor is not None and right_loader is not None:
+                                r_fut = self._sgbm_executor.submit(right_loader, index)
+                                image = left_loader(index)
+                                right = r_fut.result()
+                            else:
+                                image = left_loader(index)
+                                right = right_loader(index) if right_loader is not None else None
+                        else:
+                            image, right = loader(index)
                         io_dt = max(time.perf_counter() - t_io, 0.0)
                     extracted = extract_frame_owned(
                         index,

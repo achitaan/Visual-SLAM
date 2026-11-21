@@ -57,7 +57,67 @@ void make_gaussian_kernel(float sigma, float half_w[25], int32_t& rad) {
     for (int32_t k = 0; k <= rad; ++k) half_w[k] *= inv_sum;
 }
 
-inline void blur_row_h_avx512(const float* srow, float* trow, int32_t w, const float* hw, int32_t rad) {
+// Compile-time unrolled horizontal AVX-512 Gaussian blur with all tap weights
+// kept live in ZMM registers (zero per-iteration broadcasts or loop counters).
+template <int32_t RAD>
+inline void blur_row_h_fixed_avx512(const float* __restrict srow, float* __restrict trow,
+                                    int32_t w, const float* __restrict hw) {
+    const int32_t x_left_end = std::min(RAD, w);
+    for (int32_t x = 0; x < x_left_end; ++x) {
+        float acc = hw[0] * srow[x];
+        for (int32_t k = 1; k <= RAD; ++k) {
+            int32_t xl = (x - k < 0) ? 0 : (x - k);
+            int32_t xr = (x + k >= w) ? (w - 1) : (x + k);
+            acc += hw[k] * (srow[xl] + srow[xr]);
+        }
+        trow[x] = acc;
+    }
+
+    __m512 vw[RAD + 1];
+    for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_ps(hw[k]);
+
+    int32_t x = RAD;
+    const int32_t x_mid_end = w - RAD;
+    for (; x + 31 < x_mid_end; x += 32) {
+        __m512 a0 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(srow + x));
+        __m512 a1 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(srow + x + 16));
+        #pragma GCC unroll 12
+        for (int32_t k = 1; k <= RAD; ++k) {
+            a0 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(srow + x - k),
+                                                      _mm512_loadu_ps(srow + x + k)), a0);
+            a1 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(srow + x + 16 - k),
+                                                      _mm512_loadu_ps(srow + x + 16 + k)), a1);
+        }
+        _mm512_storeu_ps(trow + x, a0);
+        _mm512_storeu_ps(trow + x + 16, a1);
+    }
+    for (; x + 15 < x_mid_end; x += 16) {
+        __m512 a0 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(srow + x));
+        #pragma GCC unroll 12
+        for (int32_t k = 1; k <= RAD; ++k) {
+            a0 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(srow + x - k),
+                                                      _mm512_loadu_ps(srow + x + k)), a0);
+        }
+        _mm512_storeu_ps(trow + x, a0);
+    }
+    for (; x < x_mid_end; ++x) {
+        float acc = hw[0] * srow[x];
+        for (int32_t k = 1; k <= RAD; ++k) acc += hw[k] * (srow[x - k] + srow[x + k]);
+        trow[x] = acc;
+    }
+    for (; x < w; ++x) {
+        float acc = hw[0] * srow[x];
+        for (int32_t k = 1; k <= RAD; ++k) {
+            int32_t xl = (x - k < 0) ? 0 : (x - k);
+            int32_t xr = (x + k >= w) ? (w - 1) : (x + k);
+            acc += hw[k] * (srow[xl] + srow[xr]);
+        }
+        trow[x] = acc;
+    }
+}
+
+inline void blur_row_h_generic_avx512(const float* __restrict srow, float* __restrict trow,
+                                      int32_t w, const float* __restrict hw, int32_t rad) {
     const int32_t x_left_end = std::min(rad, w);
     for (int32_t x = 0; x < x_left_end; ++x) {
         float acc = hw[0] * srow[x];
@@ -106,13 +166,100 @@ inline void blur_row_h_avx512(const float* srow, float* trow, int32_t w, const f
     }
 }
 
-// L2-cache-fused ring-buffer separable 2D Gaussian blur!
-// Never allocates or streams a full-frame `tmp` buffer to DRAM: keeps only a tiny
-// (2*rad + 1) rolling window of horizontally-blurred rows (~200 KB) 100% inside L2 cache!
+// L2-fused ring-buffer separable 2D Gaussian blur with fused DoG subtraction!
+// - If `dst != nullptr`, writes the blurred Gaussian image to `dst`.
+// - If `dog_dst != nullptr`, simultaneously writes `blurred - src` to `dog_dst`
+//   while `src` is still warm in L2 cache, eliminating the separate DoG DRAM pass.
+template <int32_t RAD, bool WRITE_G, bool WRITE_DOG>
+void gaussian_blur_ring_fixed_avx512(
+    const float* __restrict src,
+    float* __restrict dst,
+    float* __restrict dog_dst,
+    float* __restrict ring_buf,
+    int32_t h,
+    int32_t w,
+    const float* __restrict hw
+) {
+    constexpr int32_t RING_SZ = 2 * RAD + 2;
+    auto ring_ptr = [&](int32_t ry) -> float* {
+        int32_t clamped = (ry < 0) ? 0 : (ry >= h ? h - 1 : ry);
+        return ring_buf + static_cast<size_t>(clamped % RING_SZ) * w;
+    };
+
+    int32_t h_done = -1;
+    const int32_t init_end = std::min(RAD, h - 1);
+    for (int32_t ry = 0; ry <= init_end; ++ry) {
+        blur_row_h_fixed_avx512<RAD>(src + static_cast<size_t>(ry) * w, ring_ptr(ry), w, hw);
+        h_done = ry;
+    }
+
+    __m512 vw[RAD + 1];
+    for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_ps(hw[k]);
+
+    for (int32_t y = 0; y < h; ++y) {
+        const int32_t need_ry = std::min(y + RAD, h - 1);
+        while (h_done < need_ry) {
+            ++h_done;
+            blur_row_h_fixed_avx512<RAD>(src + static_cast<size_t>(h_done) * w, ring_ptr(h_done), w, hw);
+        }
+
+        const float* r0 = ring_ptr(y);
+        const float* r_up[RAD + 1];
+        const float* r_dn[RAD + 1];
+        #pragma GCC unroll 12
+        for (int32_t k = 1; k <= RAD; ++k) {
+            r_up[k] = ring_ptr(y - k);
+            r_dn[k] = ring_ptr(y + k);
+        }
+        const size_t row_off = static_cast<size_t>(y) * w;
+        const float* srow = WRITE_DOG ? (src + row_off) : nullptr;
+        float* drow = WRITE_G ? (dst + row_off) : nullptr;
+        float* dogrow = WRITE_DOG ? (dog_dst + row_off) : nullptr;
+
+        int32_t x = 0;
+        for (; x + 31 < w; x += 32) {
+            __m512 a0 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(r0 + x));
+            __m512 a1 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(r0 + x + 16));
+            #pragma GCC unroll 12
+            for (int32_t k = 1; k <= RAD; ++k) {
+                a0 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x),
+                                                          _mm512_loadu_ps(r_dn[k] + x)), a0);
+                a1 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x + 16),
+                                                          _mm512_loadu_ps(r_dn[k] + x + 16)), a1);
+            }
+            if constexpr (WRITE_G) {
+                _mm512_storeu_ps(drow + x, a0);
+                _mm512_storeu_ps(drow + x + 16, a1);
+            }
+            if constexpr (WRITE_DOG) {
+                _mm512_storeu_ps(dogrow + x, _mm512_sub_ps(a0, _mm512_loadu_ps(srow + x)));
+                _mm512_storeu_ps(dogrow + x + 16, _mm512_sub_ps(a1, _mm512_loadu_ps(srow + x + 16)));
+            }
+        }
+        for (; x + 15 < w; x += 16) {
+            __m512 a0 = _mm512_mul_ps(vw[0], _mm512_loadu_ps(r0 + x));
+            #pragma GCC unroll 12
+            for (int32_t k = 1; k <= RAD; ++k) {
+                a0 = _mm512_fmadd_ps(vw[k], _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x),
+                                                          _mm512_loadu_ps(r_dn[k] + x)), a0);
+            }
+            if constexpr (WRITE_G) _mm512_storeu_ps(drow + x, a0);
+            if constexpr (WRITE_DOG) _mm512_storeu_ps(dogrow + x, _mm512_sub_ps(a0, _mm512_loadu_ps(srow + x)));
+        }
+        for (; x < w; ++x) {
+            float acc = hw[0] * r0[x];
+            for (int32_t k = 1; k <= RAD; ++k) acc += hw[k] * (r_up[k][x] + r_dn[k][x]);
+            if constexpr (WRITE_G) drow[x] = acc;
+            if constexpr (WRITE_DOG) dogrow[x] = acc - srow[x];
+        }
+    }
+}
+
 void gaussian_blur_ring_avx512(
-    const float* src,
-    float* dst,
-    float* ring_buf,  // [64 * w]
+    const float* __restrict src,
+    float* __restrict dst,
+    float* __restrict dog_dst,
+    float* __restrict ring_buf,
     int32_t h,
     int32_t w,
     float sigma
@@ -120,74 +267,104 @@ void gaussian_blur_ring_avx512(
     float hw[25];
     int32_t rad = 0;
     make_gaussian_kernel(sigma, hw, rad);
-    const int32_t ring_sz = 2 * rad + 2;  // power-friendly rolling slot count (<= 42)
-    auto ring_ptr = [&](int32_t ry) -> float* {
-        int32_t clamped = (ry < 0) ? 0 : (ry >= h ? h - 1 : ry);
-        return ring_buf + static_cast<size_t>(clamped % ring_sz) * w;
+
+    auto dispatch = [&](auto write_g_tag, auto write_dog_tag) {
+        constexpr bool WG = decltype(write_g_tag)::value;
+        constexpr bool WD = decltype(write_dog_tag)::value;
+        switch (rad) {
+            case 3: gaussian_blur_ring_fixed_avx512<3, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 4: gaussian_blur_ring_fixed_avx512<4, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 5: gaussian_blur_ring_fixed_avx512<5, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 6: gaussian_blur_ring_fixed_avx512<6, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 7: gaussian_blur_ring_fixed_avx512<7, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 8: gaussian_blur_ring_fixed_avx512<8, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 9: gaussian_blur_ring_fixed_avx512<9, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            case 10: gaussian_blur_ring_fixed_avx512<10, WG, WD>(src, dst, dog_dst, ring_buf, h, w, hw); return;
+            default: break;
+        }
+        const int32_t ring_sz = 2 * rad + 2;
+        auto ring_ptr = [&](int32_t ry) -> float* {
+            int32_t clamped = (ry < 0) ? 0 : (ry >= h ? h - 1 : ry);
+            return ring_buf + static_cast<size_t>(clamped % ring_sz) * w;
+        };
+        int32_t h_done = -1;
+        const int32_t init_end = std::min(rad, h - 1);
+        for (int32_t ry = 0; ry <= init_end; ++ry) {
+            blur_row_h_generic_avx512(src + static_cast<size_t>(ry) * w, ring_ptr(ry), w, hw, rad);
+            h_done = ry;
+        }
+        const __m512 w0 = _mm512_set1_ps(hw[0]);
+        for (int32_t y = 0; y < h; ++y) {
+            const int32_t need_ry = std::min(y + rad, h - 1);
+            while (h_done < need_ry) {
+                ++h_done;
+                blur_row_h_generic_avx512(src + static_cast<size_t>(h_done) * w, ring_ptr(h_done), w, hw, rad);
+            }
+            const float* r0 = ring_ptr(y);
+            const float* r_up[25];
+            const float* r_dn[25];
+            for (int32_t k = 1; k <= rad; ++k) {
+                r_up[k] = ring_ptr(y - k);
+                r_dn[k] = ring_ptr(y + k);
+            }
+            const size_t row_off = static_cast<size_t>(y) * w;
+            const float* srow = WD ? (src + row_off) : nullptr;
+            float* drow = WG ? (dst + row_off) : nullptr;
+            float* dogrow = WD ? (dog_dst + row_off) : nullptr;
+            int32_t x = 0;
+            for (; x + 15 < w; x += 16) {
+                __m512 a0 = _mm512_mul_ps(w0, _mm512_loadu_ps(r0 + x));
+                for (int32_t k = 1; k <= rad; ++k) {
+                    a0 = _mm512_fmadd_ps(_mm512_set1_ps(hw[k]),
+                                         _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x), _mm512_loadu_ps(r_dn[k] + x)), a0);
+                }
+                if constexpr (WG) _mm512_storeu_ps(drow + x, a0);
+                if constexpr (WD) _mm512_storeu_ps(dogrow + x, _mm512_sub_ps(a0, _mm512_loadu_ps(srow + x)));
+            }
+            for (; x < w; ++x) {
+                float acc = hw[0] * r0[x];
+                for (int32_t k = 1; k <= rad; ++k) acc += hw[k] * (r_up[k][x] + r_dn[k][x]);
+                if constexpr (WG) drow[x] = acc;
+                if constexpr (WD) dogrow[x] = acc - srow[x];
+            }
+        }
     };
 
-    // Prime horizontal blur for rows [0 .. min(rad, h-1)]
-    int32_t h_done = -1;
-    const int32_t init_end = std::min(rad, h - 1);
-    for (int32_t ry = 0; ry <= init_end; ++ry) {
-        blur_row_h_avx512(src + static_cast<size_t>(ry) * w, ring_ptr(ry), w, hw, rad);
-        h_done = ry;
-    }
-
-    const __m512 w0 = _mm512_set1_ps(hw[0]);
-    for (int32_t y = 0; y < h; ++y) {
-        const int32_t need_ry = std::min(y + rad, h - 1);
-        while (h_done < need_ry) {
-            ++h_done;
-            blur_row_h_avx512(src + static_cast<size_t>(h_done) * w, ring_ptr(h_done), w, hw, rad);
-        }
-
-        const float* r0 = ring_ptr(y);
-        const float* r_up[25];
-        const float* r_dn[25];
-        for (int32_t k = 1; k <= rad; ++k) {
-            r_up[k] = ring_ptr(y - k);
-            r_dn[k] = ring_ptr(y + k);
-        }
-        float* drow = dst + static_cast<size_t>(y) * w;
-
-        int32_t x = 0;
-        for (; x + 31 < w; x += 32) {
-            __m512 a0 = _mm512_mul_ps(w0, _mm512_loadu_ps(r0 + x));
-            __m512 a1 = _mm512_mul_ps(w0, _mm512_loadu_ps(r0 + x + 16));
-            for (int32_t k = 1; k <= rad; ++k) {
-                __m512 wk = _mm512_set1_ps(hw[k]);
-                a0 = _mm512_fmadd_ps(wk, _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x), _mm512_loadu_ps(r_dn[k] + x)), a0);
-                a1 = _mm512_fmadd_ps(wk, _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x + 16), _mm512_loadu_ps(r_dn[k] + x + 16)), a1);
-            }
-            _mm512_storeu_ps(drow + x, a0);
-            _mm512_storeu_ps(drow + x + 16, a1);
-        }
-        for (; x + 15 < w; x += 16) {
-            __m512 a0 = _mm512_mul_ps(w0, _mm512_loadu_ps(r0 + x));
-            for (int32_t k = 1; k <= rad; ++k) {
-                a0 = _mm512_fmadd_ps(_mm512_set1_ps(hw[k]),
-                                     _mm512_add_ps(_mm512_loadu_ps(r_up[k] + x), _mm512_loadu_ps(r_dn[k] + x)), a0);
-            }
-            _mm512_storeu_ps(drow + x, a0);
-        }
-        for (; x < w; ++x) {
-            float acc = hw[0] * r0[x];
-            for (int32_t k = 1; k <= rad; ++k) acc += hw[k] * (r_up[k][x] + r_dn[k][x]);
-            drow[x] = acc;
-        }
+    if (dst != nullptr && dog_dst != nullptr) {
+        dispatch(std::true_type{}, std::true_type{});
+    } else if (dst != nullptr) {
+        dispatch(std::true_type{}, std::false_type{});
+    } else if (dog_dst != nullptr) {
+        dispatch(std::false_type{}, std::true_type{});
     }
 }
 
-void upsample_2x_avx512(const uint8_t* src, int32_t h, int32_t w, float* dst, float* row_tmp) {
+void upsample_2x_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
+                        float* __restrict dst, float* __restrict row_tmp) {
     const int32_t dh = h * 2;
     const int32_t dw = w * 2;
+    const __m512 v075 = _mm512_set1_ps(0.75f);
+    const __m512 v025 = _mm512_set1_ps(0.25f);
+    const __m512i idx_lo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23);
+    const __m512i idx_hi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
+
     for (int32_t y = 0; y < h; ++y) {
         const uint8_t* sr = src + static_cast<size_t>(y) * w;
         float* tr = row_tmp + static_cast<size_t>(y) * dw;
         tr[0] = static_cast<float>(sr[0]);
         tr[1] = 0.75f * sr[0] + 0.25f * sr[std::min(1, w - 1)];
-        for (int32_t x = 1; x < w - 1; ++x) {
+        int32_t x = 1;
+        for (; x + 16 < w; x += 16) {
+            const __m512 vc = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sr + x))));
+            const __m512 vl = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sr + x - 1))));
+            const __m512 vr = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sr + x + 1))));
+            const __m512 c075 = _mm512_mul_ps(v075, vc);
+            const __m512 even = _mm512_fmadd_ps(v025, vl, c075);
+            const __m512 odd  = _mm512_fmadd_ps(v025, vr, c075);
+            _mm512_storeu_ps(tr + 2 * x,      _mm512_permutex2var_ps(even, idx_lo, odd));
+            _mm512_storeu_ps(tr + 2 * x + 16, _mm512_permutex2var_ps(even, idx_hi, odd));
+        }
+        for (; x < w - 1; ++x) {
             const float c = static_cast<float>(sr[x]);
             tr[2 * x]     = 0.75f * c + 0.25f * static_cast<float>(sr[x - 1]);
             tr[2 * x + 1] = 0.75f * c + 0.25f * static_cast<float>(sr[x + 1]);
@@ -197,8 +374,6 @@ void upsample_2x_avx512(const uint8_t* src, int32_t h, int32_t w, float* dst, fl
             tr[2 * (w - 1) + 1] = static_cast<float>(sr[w - 1]);
         }
     }
-    const __m512 v075 = _mm512_set1_ps(0.75f);
-    const __m512 v025 = _mm512_set1_ps(0.25f);
     for (int32_t dy = 0; dy < dh; ++dy) {
         const int32_t sy = dy >> 1;
         const int32_t sy_other = (dy & 1) ? std::min(sy + 1, h - 1) : std::max(sy - 1, 0);
@@ -206,6 +381,14 @@ void upsample_2x_avx512(const uint8_t* src, int32_t h, int32_t w, float* dst, fl
         const float* r_oth  = row_tmp + static_cast<size_t>(sy_other) * dw;
         float* dr = dst + static_cast<size_t>(dy) * dw;
         int32_t x = 0;
+        for (; x + 31 < dw; x += 32) {
+            __m512 v0 = _mm512_fmadd_ps(v075, _mm512_loadu_ps(r_main + x),
+                                        _mm512_mul_ps(v025, _mm512_loadu_ps(r_oth + x)));
+            __m512 v1 = _mm512_fmadd_ps(v075, _mm512_loadu_ps(r_main + x + 16),
+                                        _mm512_mul_ps(v025, _mm512_loadu_ps(r_oth + x + 16)));
+            _mm512_storeu_ps(dr + x, v0);
+            _mm512_storeu_ps(dr + x + 16, v1);
+        }
         for (; x + 15 < dw; x += 16) {
             __m512 v = _mm512_fmadd_ps(v075, _mm512_loadu_ps(r_main + x),
                                        _mm512_mul_ps(v025, _mm512_loadu_ps(r_oth + x)));
@@ -215,11 +398,20 @@ void upsample_2x_avx512(const uint8_t* src, int32_t h, int32_t w, float* dst, fl
     }
 }
 
-void downsample_2x(const float* src, int32_t sh, int32_t sw, float* dst, int32_t dh, int32_t dw) {
+void downsample_2x(const float* __restrict src, int32_t sh, int32_t sw,
+                   float* __restrict dst, int32_t dh, int32_t dw) {
+    (void)sh;
+    const __m512i even_idx = _mm512_setr_epi32(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30);
     for (int32_t y = 0; y < dh; ++y) {
         const float* sr = src + static_cast<size_t>(y * 2) * sw;
         float* dr = dst + static_cast<size_t>(y) * dw;
-        for (int32_t x = 0; x < dw; ++x) dr[x] = sr[x * 2];
+        int32_t x = 0;
+        for (; x + 15 < dw; x += 16) {
+            __m512 a = _mm512_loadu_ps(sr + 2 * x);
+            __m512 b = _mm512_loadu_ps(sr + 2 * x + 16);
+            _mm512_storeu_ps(dr + x, _mm512_permutex2var_ps(a, even_idx, b));
+        }
+        for (; x < dw; ++x) dr[x] = sr[x * 2];
     }
 }
 
@@ -255,17 +447,13 @@ inline bool solve3x3(const float A[3][3], const float b[3], float sol[3]) {
     return std::isfinite(sol[0]) && std::isfinite(sol[1]) && std::isfinite(sol[2]);
 }
 
-// Precomputed constant 16x16 = 256-sample rotated SIFT descriptor grid!
-// Each sample sits at canonical descriptor coordinates (r_rot, c_rot) in [-2, 2]^2
-// corresponding to 4x4 spatial bins x 4x4 sub-samples per bin.
-// Gaussian weights and 4 bilinear spatial bin weights are 100% keypoint-independent!
 struct DescGridLUT {
     static constexpr int32_t N = 256;
-    alignas(64) float u[N];        // col offset in hist_width units: [-1.875 .. +1.875]
-    alignas(64) float v[N];        // row offset in hist_width units: [-1.875 .. +1.875]
-    alignas(64) float gauss[N];    // exp(-(u^2 + v^2) / 8.0)
-    int16_t idx00[N], idx01[N], idx10[N], idx11[N];  // base indices into 6x6x10 padded hist
-    float w00[N], w01[N], w10[N], w11[N];            // gauss * bilinear spatial weights
+    alignas(64) float u[N];
+    alignas(64) float v[N];
+    alignas(64) float gauss[N];
+    int16_t idx00[N], idx01[N], idx10[N], idx11[N];
+    float w00[N], w01[N], w10[N], w11[N];
 
     DescGridLUT() {
         constexpr int32_t d = 4;
@@ -273,7 +461,7 @@ struct DescGridLUT {
         int32_t k = 0;
         for (int32_t ri = 0; ri < 16; ++ri) {
             const float r_rot = -1.875f + 0.25f * static_cast<float>(ri);
-            const float rb = r_rot + 1.5f;  // [-0.375 .. 3.375]
+            const float rb = r_rot + 1.5f;
             const int32_t r0 = static_cast<int32_t>(std::floor(rb));
             const float dr = rb - static_cast<float>(r0);
             for (int32_t ci = 0; ci < 16; ++ci) {
@@ -301,7 +489,6 @@ struct DescGridLUT {
     }
 };
 
-// Precomputed 11x11 = 121-sample scaled grid for 36-bin orientation histogram (padded to 128).
 struct OriGridLUT {
     static constexpr int32_t N = 128;
     static constexpr int32_t N_VALID = 121;
@@ -311,7 +498,6 @@ struct OriGridLUT {
 
     OriGridLUT() {
         int32_t k = 0;
-        // Span [-3.0, +3.0] in units of ori_sigma = 1.5 * scl_octv (step 0.6 * ori_sigma)
         for (int32_t ri = -5; ri <= 5; ++ri) {
             const float fy = 0.6f * static_cast<float>(ri);
             for (int32_t ci = -5; ci <= 5; ++ci) {
@@ -329,9 +515,8 @@ struct OriGridLUT {
 const DescGridLUT g_desc_lut;
 const OriGridLUT g_ori_lut;
 
-// Ultra-fast AVX-512 36-bin orientation histogram using fixed 121-sample scaled grid (8 AVX-512 iterations!).
 float calc_orientation_hist_grid_avx512(
-    const float* gimg,
+    const float* __restrict gimg,
     int32_t h,
     int32_t w,
     float ptx,
@@ -347,6 +532,8 @@ float calc_orientation_hist_grid_avx512(
     const __m512 v_sig = _mm512_set1_ps(ori_sig);
     const __m512 v_bscale = _mm512_set1_ps(36.0f / 360.0f);
     const __m512i v_one = _mm512_set1_epi32(1);
+    const __m512i v_zero = _mm512_setzero_si512();
+    const __m512i v_36 = _mm512_set1_epi32(36);
     const __m512i v_w_m2 = _mm512_set1_epi32(w - 2);
     const __m512i v_h_m2 = _mm512_set1_epi32(h - 2);
     const __m512i v_w = _mm512_set1_epi32(w);
@@ -381,15 +568,14 @@ float calc_orientation_hist_grid_avx512(
         const __m512 mag = _mm512_sqrt_ps(_mm512_fmadd_ps(gx, gx, _mm512_mul_ps(gy, gy)));
         const __m512 wt = _mm512_maskz_mul_ps(in_m, mag, _mm512_load_ps(g_ori_lut.gauss + k));
         const __m512 ori = fast_atan2_deg_avx512(gy, gx);
-        const __m512i bins = _mm512_cvtps_epi32(_mm512_mul_ps(ori, v_bscale));
+        __m512i bins = _mm512_cvtps_epi32(_mm512_mul_ps(ori, v_bscale));
+        bins = _mm512_mask_sub_epi32(bins, _mm512_cmp_epi32_mask(bins, v_36, _MM_CMPINT_GE), bins, v_36);
+        bins = _mm512_mask_add_epi32(bins, _mm512_cmp_epi32_mask(bins, v_zero, _MM_CMPINT_LT), bins, v_36);
 
         _mm512_store_si512(bin_buf, bins);
         _mm512_store_ps(w_buf, wt);
         for (int32_t lane = 0; lane < 16; ++lane) {
-            int32_t b = bin_buf[lane];
-            if (b >= 36) b -= 36;
-            if (b < 0) b += 36;
-            temphist[b + 2] += w_buf[lane];
+            temphist[bin_buf[lane] + 2] += w_buf[lane];
         }
     }
 
@@ -409,17 +595,15 @@ float calc_orientation_hist_grid_avx512(
     return max_val;
 }
 
-// Ultra-fast AVX-512 128-dim SIFT descriptor using the precomputed 256-sample rotated grid!
-// Exactly 16 AVX-512 gather+grad+atan2 iterations per keypoint regardless of scale!
 void calc_sift_descriptor_grid_avx512(
-    const float* gimg,
+    const float* __restrict gimg,
     int32_t h,
     int32_t w,
     float ptx,
     float pty,
     float ori_deg,
     float scl,
-    float* dst_desc
+    float* __restrict dst_desc
 ) {
     constexpr int32_t d = 4;
     constexpr int32_t n = 8;
@@ -427,9 +611,6 @@ void calc_sift_descriptor_grid_avx512(
     const float cos_s = std::cos(ori_deg * DEG2RAD) * hist_width;
     const float sin_s = std::sin(ori_deg * DEG2RAD) * hist_width;
 
-    // Coordinate transform from canonical (c_rot=u, r_rot=v) to image (x, y):
-    // In standard SIFT: c_rot = (j*cos + i*sin)/hw, r_rot = (i*cos - j*sin)/hw
-    // Inverse: j = hw * (u*cos - v*sin), i = hw * (u*sin + v*cos)
     const __m512 v_ptx = _mm512_set1_ps(ptx);
     const __m512 v_pty = _mm512_set1_ps(pty);
     const __m512 v_cos = _mm512_set1_ps(cos_s);
@@ -437,6 +618,7 @@ void calc_sift_descriptor_grid_avx512(
     const __m512 v_ori = _mm512_set1_ps(ori_deg);
     const __m512 v_bpd = _mm512_set1_ps(static_cast<float>(n) / 360.0f);
     const __m512i v_one = _mm512_set1_epi32(1);
+    const __m512i v_seven = _mm512_set1_epi32(7);
     const __m512i v_w_m2 = _mm512_set1_epi32(w - 2);
     const __m512i v_h_m2 = _mm512_set1_epi32(h - 2);
     const __m512i v_w = _mm512_set1_epi32(w);
@@ -445,7 +627,8 @@ void calc_sift_descriptor_grid_avx512(
     std::memset(hist, 0, sizeof(hist));
 
     alignas(64) float buf_mag[16];
-    alignas(64) float buf_ob[16];
+    alignas(64) float buf_dob[16];
+    alignas(64) int32_t buf_o0[16];
 
     for (int32_t k = 0; k < DescGridLUT::N; k += 16) {
         const __m512 vu = _mm512_load_ps(g_desc_lut.u + k);
@@ -477,30 +660,31 @@ void calc_sift_descriptor_grid_avx512(
         const __m512 mag = _mm512_maskz_sqrt_ps(in_m, _mm512_fmadd_ps(gx, gx, _mm512_mul_ps(gy, gy)));
         const __m512 ori = fast_atan2_deg_avx512(gy, gx);
         const __m512 ob = _mm512_mul_ps(_mm512_sub_ps(ori, v_ori), v_bpd);
+        const __m512 ob_fl = _mm512_roundscale_ps(ob, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+        const __m512 dob = _mm512_sub_ps(ob, ob_fl);
+        const __m512i o0 = _mm512_and_si512(_mm512_cvttps_epi32(ob_fl), v_seven);
 
         _mm512_store_ps(buf_mag, mag);
-        _mm512_store_ps(buf_ob, ob);
+        _mm512_store_ps(buf_dob, dob);
+        _mm512_store_si512(buf_o0, o0);
 
         for (int32_t lane = 0; lane < 16; ++lane) {
             const float m = buf_mag[lane];
             if (m == 0.0f) continue;
             const int32_t sk = k + lane;
-            const float obf = buf_ob[lane];
-            int32_t o0 = static_cast<int32_t>(std::floor(obf));
-            const float dob = obf - static_cast<float>(o0);
-            const float o1w = dob;
-            const float o0w = 1.0f - dob;
-            o0 &= 7;  // since n == 8, ((o0 % 8) + 8) % 8 == o0 & 7!
+            const int32_t bin0 = buf_o0[lane];
+            const float o1w = buf_dob[lane];
+            const float o0w = 1.0f - o1w;
 
             const float m00 = m * g_desc_lut.w00[sk];
             const float m01 = m * g_desc_lut.w01[sk];
             const float m10 = m * g_desc_lut.w10[sk];
             const float m11 = m * g_desc_lut.w11[sk];
 
-            const int32_t p00 = g_desc_lut.idx00[sk] + o0;
-            const int32_t p01 = g_desc_lut.idx01[sk] + o0;
-            const int32_t p10 = g_desc_lut.idx10[sk] + o0;
-            const int32_t p11 = g_desc_lut.idx11[sk] + o0;
+            const int32_t p00 = g_desc_lut.idx00[sk] + bin0;
+            const int32_t p01 = g_desc_lut.idx01[sk] + bin0;
+            const int32_t p10 = g_desc_lut.idx10[sk] + bin0;
+            const int32_t p11 = g_desc_lut.idx11[sk] + bin0;
 
             hist[p00] += m00 * o0w; hist[p00 + 1] += m00 * o1w;
             hist[p01] += m01 * o0w; hist[p01 + 1] += m01 * o1w;
@@ -509,33 +693,38 @@ void calc_sift_descriptor_grid_avx512(
         }
     }
 
-    float raw[128];
-    float nrm2 = 0.0f;
+    alignas(64) float raw[128];
     for (int32_t i = 0; i < d; ++i) {
         for (int32_t j = 0; j < d; ++j) {
             const int32_t idx = ((i + 1) * (d + 2) + (j + 1)) * (n + 2);
             hist[idx] += hist[idx + n];
             hist[idx + 1] += hist[idx + n + 1];
-            for (int32_t k = 0; k < n; ++k) {
-                float val = hist[idx + k];
-                raw[(i * d + j) * n + k] = val;
-                nrm2 += val * val;
-            }
+            float* out_cell = raw + (i * d + j) * n;
+            for (int32_t k = 0; k < n; ++k) out_cell[k] = hist[idx + k];
         }
     }
-    const float thr = std::sqrt(nrm2) * 0.2f;
-    float nrm2_clipped = 0.0f;
-    for (int32_t k = 0; k < 128; ++k) {
-        float val = std::min(raw[k], thr);
-        raw[k] = val;
-        nrm2_clipped += val * val;
+
+    // Vectorized 128-float L2 norm -> 0.2 clip -> L2 norm -> [0, 255] round
+    __m512 acc0 = _mm512_setzero_ps();
+    for (int32_t k = 0; k < 128; k += 16) {
+        __m512 v = _mm512_load_ps(raw + k);
+        acc0 = _mm512_fmadd_ps(v, v, acc0);
     }
-    const float scale = 512.0f / std::max(std::sqrt(nrm2_clipped), 1e-6f);
-    for (int32_t k = 0; k < 128; ++k) {
-        int32_t iv = static_cast<int32_t>(std::round(raw[k] * scale));
-        if (iv < 0) iv = 0;
-        else if (iv > 255) iv = 255;
-        dst_desc[k] = static_cast<float>(iv);
+    const __m512 v_thr = _mm512_set1_ps(std::sqrt(_mm512_reduce_add_ps(acc0)) * 0.2f);
+    __m512 acc1 = _mm512_setzero_ps();
+    for (int32_t k = 0; k < 128; k += 16) {
+        __m512 v = _mm512_min_ps(_mm512_load_ps(raw + k), v_thr);
+        _mm512_store_ps(raw + k, v);
+        acc1 = _mm512_fmadd_ps(v, v, acc1);
+    }
+    const __m512 v_scale = _mm512_set1_ps(512.0f / std::max(std::sqrt(_mm512_reduce_add_ps(acc1)), 1e-6f));
+    const __m512 v_zero = _mm512_setzero_ps();
+    const __m512 v_255 = _mm512_set1_ps(255.0f);
+    for (int32_t k = 0; k < 128; k += 16) {
+        __m512 v = _mm512_roundscale_ps(_mm512_mul_ps(_mm512_load_ps(raw + k), v_scale),
+                                        _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        v = _mm512_min_ps(v_255, _mm512_max_ps(v_zero, v));
+        _mm512_storeu_ps(dst_desc + k, v);
     }
 }
 
@@ -563,9 +752,9 @@ struct SiftWorkspace {
             oct_h[o] = (o == 0) ? base_h : (oct_h[o - 1] / 2);
             oct_w[o] = (o == 0) ? base_w : (oct_w[o - 1] / 2);
             const size_t npix = static_cast<size_t>(oct_h[o]) * oct_w[o];
-            gpyr[o].resize(6);
+            gpyr[o].resize(5);  // layer 5 only contributes to dogpyr[o][4], never stored!
             dogpyr[o].resize(5);
-            for (int32_t i = 0; i < 6; ++i) gpyr[o][i].resize(npix);
+            for (int32_t i = 0; i < 5; ++i) gpyr[o][i].resize(npix);
             for (int32_t i = 0; i < 5; ++i) dogpyr[o][i].resize(npix);
         }
         ring_buf.resize(static_cast<size_t>(48) * base_w);
@@ -603,7 +792,6 @@ int32_t extract_sift_grid_avx512(
 
     constexpr int32_t nOctaveLayers = 3;
     constexpr int32_t nG = nOctaveLayers + 3;
-    constexpr int32_t nD = nOctaveLayers + 2;
     constexpr float sigma = 1.6f;
     constexpr float edgeThreshold = 10.0f;
     constexpr int32_t img_border = 5;
@@ -620,7 +808,16 @@ int32_t extract_sift_grid_avx512(
         sig[i] = static_cast<float>(std::sqrt(sig_total * sig_total - sig_prev * sig_prev));
     }
 
-    // 1. L2-fused Gaussian + DoG pyramid
+    const float pre_thresh = std::floor(0.5f * contrast_threshold / nOctaveLayers * 255.0f);
+    const float final_thresh = (contrast_threshold / nOctaveLayers) * 255.0f;
+    const __m512 v_pre_thresh = _mm512_set1_ps(pre_thresh);
+    const __m512 v_abs_mask = _mm512_set1_ps(-0.0f);
+    const __m512 v_zero = _mm512_setzero_ps();
+
+    std::vector<RawExtremum> raw_ext;
+    raw_ext.reserve(8192);
+
+    // 1+2. Per-octave fused Gaussian + DoG pyramid followed IMMEDIATELY by L2/L3-warm extrema scan!
     for (int32_t o = 0; o < n_octaves; ++o) {
         const int32_t oh = g_ws.oct_h[o];
         const int32_t ow = g_ws.oct_w[o];
@@ -631,44 +828,33 @@ int32_t extract_sift_grid_avx512(
                 upsample_2x_avx512(gray, h, w, g_ws.base_raw.data(), g_ws.row_tmp.data());
                 sig_diff = std::sqrt(std::max(sigma * sigma - 4.0f * 0.25f, 0.01f));
             } else {
-                for (size_t idx = 0; idx < npix; ++idx) g_ws.base_raw[idx] = static_cast<float>(gray[idx]);
+                size_t idx = 0;
+                for (; idx + 15 < npix; idx += 16) {
+                    _mm512_storeu_ps(g_ws.base_raw.data() + idx,
+                                     _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(
+                                         _mm_loadu_si128(reinterpret_cast<const __m128i*>(gray + idx)))));
+                }
+                for (; idx < npix; ++idx) g_ws.base_raw[idx] = static_cast<float>(gray[idx]);
                 sig_diff = std::sqrt(std::max(sigma * sigma - 0.25f, 0.01f));
             }
-            gaussian_blur_ring_avx512(g_ws.base_raw.data(), g_ws.gpyr[0][0].data(), g_ws.ring_buf.data(), oh, ow, sig_diff);
+            gaussian_blur_ring_avx512(g_ws.base_raw.data(), g_ws.gpyr[0][0].data(), nullptr,
+                                      g_ws.ring_buf.data(), oh, ow, sig_diff);
         } else {
             downsample_2x(g_ws.gpyr[o - 1][nOctaveLayers].data(), g_ws.oct_h[o - 1], g_ws.oct_w[o - 1],
                           g_ws.gpyr[o][0].data(), oh, ow);
         }
 
-        for (int32_t i = 1; i < nG; ++i) {
-            gaussian_blur_ring_avx512(g_ws.gpyr[o][i - 1].data(), g_ws.gpyr[o][i].data(), g_ws.ring_buf.data(),
+        // Layers 1..4 write both gpyr[o][i] and fused dogpyr[o][i-1] = gpyr[o][i] - gpyr[o][i-1]
+        for (int32_t i = 1; i < nG - 1; ++i) {
+            gaussian_blur_ring_avx512(g_ws.gpyr[o][i - 1].data(), g_ws.gpyr[o][i].data(),
+                                      g_ws.dogpyr[o][i - 1].data(), g_ws.ring_buf.data(),
                                       oh, ow, sig[i]);
         }
+        // Layer 5 only writes dogpyr[o][4] = blur(gpyr[o][4]) - gpyr[o][4] (skips unused gpyr[o][5] store!)
+        gaussian_blur_ring_avx512(g_ws.gpyr[o][nG - 2].data(), nullptr,
+                                  g_ws.dogpyr[o][nG - 2].data(), g_ws.ring_buf.data(),
+                                  oh, ow, sig[nG - 1]);
 
-        for (int32_t i = 0; i < nD; ++i) {
-            const float* g0 = g_ws.gpyr[o][i].data();
-            const float* g1 = g_ws.gpyr[o][i + 1].data();
-            float* dg = g_ws.dogpyr[o][i].data();
-            size_t idx = 0;
-            for (; idx + 15 < npix; idx += 16) {
-                _mm512_storeu_ps(dg + idx, _mm512_sub_ps(_mm512_loadu_ps(g1 + idx), _mm512_loadu_ps(g0 + idx)));
-            }
-            for (; idx < npix; ++idx) dg[idx] = g1[idx] - g0[idx];
-        }
-    }
-
-    // 2. AVX-512 3x3x3 Extrema detection (with 6-neighbor + 2-scale SIMD pre-filter)
-    const float pre_thresh = std::floor(0.5f * contrast_threshold / nOctaveLayers * 255.0f);
-    const float final_thresh = (contrast_threshold / nOctaveLayers) * 255.0f;
-    const __m512 v_pre_thresh = _mm512_set1_ps(pre_thresh);
-    const __m512 v_abs_mask = _mm512_set1_ps(-0.0f);
-
-    std::vector<RawExtremum> raw_ext;
-    raw_ext.reserve(8192);
-
-    for (int32_t o = 0; o < n_octaves; ++o) {
-        const int32_t oh = g_ws.oct_h[o];
-        const int32_t ow = g_ws.oct_w[o];
         if (oh <= 2 * img_border || ow <= 2 * img_border) continue;
         const int32_t actual_oct = o + first_octave;
         const float oct_scale = (actual_oct >= 0)
@@ -695,7 +881,6 @@ int32_t extract_sift_grid_avx512(
                     __mmask16 cand = _mm512_cmp_ps_mask(av, v_pre_thresh, _CMP_GT_OQ);
                     if (!cand) continue;
 
-                    // 6-neighbor SIMD filter (left, right, up, down, prev_scale, next_scale)
                     const __m512 vl = _mm512_loadu_ps(rc + c - 1);
                     const __m512 vr = _mm512_loadu_ps(rc + c + 1);
                     const __m512 vu = _mm512_loadu_ps(rp + c);
@@ -711,7 +896,7 @@ int32_t extract_sift_grid_avx512(
                         _mm512_min_ps(_mm512_min_ps(vl, vr), _mm512_min_ps(vu, vd)),
                         _mm512_min_ps(vs_p, vs_n)
                     );
-                    const __mmask16 is_pos = _mm512_cmp_ps_mask(vc, _mm512_setzero_ps(), _CMP_GT_OQ);
+                    const __mmask16 is_pos = _mm512_cmp_ps_mask(vc, v_zero, _CMP_GT_OQ);
                     const __mmask16 ok_max = is_pos & _mm512_cmp_ps_mask(vc, nmax, _CMP_GE_OQ);
                     const __mmask16 ok_min = (~is_pos) & _mm512_cmp_ps_mask(vc, nmin, _CMP_LE_OQ);
                     cand &= (ok_max | ok_min);

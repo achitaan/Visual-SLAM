@@ -409,18 +409,17 @@ def local_bundle_adjustment(
             ]
         else:
             window_landmark_pool = list(state.landmarks.values())
-        landmarks = [
-            l
-            for l in window_landmark_pool
-            if sum(k in selected_set for k in l.observations) >= 2
-        ]
-        landmarks.sort(
-            key=lambda l: (
-                sum(k in selected_set for k in l.observations),
-                max(l.observations),
-            ),
-            reverse=True,
-        )
+        scored_landmarks = []
+        for l in window_landmark_pool:
+            obs = l.observations
+            cnt = 0
+            for k in obs:
+                if k in selected_set:
+                    cnt += 1
+            if cnt >= 2:
+                scored_landmarks.append((cnt, max(obs), l))
+        scored_landmarks.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        landmarks = [item[2] for item in scored_landmarks]
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
         if state.metric and use_heteroscedastic_weights and len(landmarks) > max_landmarks:
             stereo_lms = [
@@ -736,10 +735,12 @@ def local_bundle_adjustment(
         motion_checks = []
         diagnostic_motion_checks = [] if snapshot_enabled else None
         for (first, second), measurement in state.stereo_motion.items():
-            anchors = (state.pose_anchors[first], state.pose_anchors[second])
+            a0 = state.pose_anchors[first]
+            a1 = state.pose_anchors[second]
             # A shared rigid correction preserves relative motion within one anchor.
-            if anchors[0] == anchors[1] or not any(a in free for a in anchors):
+            if a0 == a1 or (a0 not in free_set and a1 not in free_set):
                 continue
+            anchors = (a0, a1)
             motion_checks.append((measurement.copy(), anchors,
                                   (state.poses[first].copy(), state.poses[second].copy())))
             if snapshot_enabled:

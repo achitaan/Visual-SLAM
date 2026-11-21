@@ -2740,11 +2740,15 @@ def local_bundle_adjustment(
             })
     if not np.isfinite(held_after) or not after+held_after < before+held_before:
         return attach_diagnostic_errors({**report, "reason": "affected_observations_worsened"})
-    if any(
-        np.any(project(points[i : i + 1], poses[k], matrix)[1] <= 0)
-        for i, k, _ in records
-    ):
-        return attach_diagnostic_errors(report)
+    if records:
+        rec_by_cam: dict[int, list[int]] = {}
+        for i, k, _ in records:
+            rec_by_cam.setdefault(k, []).append(i)
+        for k, p_idxs in rec_by_cam.items():
+            pose_k = poses[k]
+            depths_k = (points[p_idxs] - pose_k[:3, 3]) @ pose_k[:3, 2]
+            if np.any(depths_k <= 0):
+                return attach_diagnostic_errors(report)
     if owned_training_rows is not None:
         endpoint_poses = training_endpoint_poses(result.x, poses)
         training_world = points[owned_training_rows["point_indices"]]

@@ -660,46 +660,185 @@ def estimate_stereo_reference(
 
 
 def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):
-    """Refine one relative pose using independently verified observations in both views."""
-    from scipy.optimize import least_squares
+    """Refine one relative pose using independently verified observations in both views.
 
-    initial = np.r_[cv.Rodrigues(pose[:3, :3])[0].ravel(), pose[:3, 3]]
+    Uses exact analytic 6-DoF Huber-IRLS Levenberg-Marquardt in left-tangent SE(3)
+    chart, preserving the exact bidirectional reprojection objective and acceptance gates.
+    """
+    src_pts = np.asarray(source_points, dtype=np.float64).reshape(-1, 3)
+    tgt_pix = np.asarray(target_pixels, dtype=np.float64).reshape(-1, 2)
+    tgt_pts = np.asarray(target_points, dtype=np.float64).reshape(-1, 3)
+    src_pix = np.asarray(source_pixels, dtype=np.float64).reshape(-1, 2)
+    K = np.asarray(matrix, dtype=np.float64)
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    n1, n2 = len(src_pts), len(tgt_pts)
+    f_scale = 1.5
 
-    def unpack(value):
-        camera = np.eye(4)
-        camera[:3, :3] = cv.Rodrigues(value[:3])[0]
-        camera[:3, 3] = value[3:]
-        return camera
+    def _eval(R, t):
+        # Forward: p_c1 = R^T @ (X_s - t) (camera = pose = T_s_t)
+        d1 = src_pts - t
+        c1 = d1 @ R  # [n1, 3]
+        z1 = c1[:, 2]
+        inv_z1 = 1.0 / np.maximum(z1, 1e-9)
+        u1 = fx * c1[:, 0] * inv_z1 + cx
+        v1 = fy * c1[:, 1] * inv_z1 + cy
+        e1 = np.empty((n1, 2), dtype=np.float64)
+        e1[:, 0] = u1 - tgt_pix[:, 0]
+        e1[:, 1] = v1 - tgt_pix[:, 1]
+        if np.any(z1 <= 0.0):
+            e1[z1 <= 0.0] = 1e4
+        # Reverse: inv(pose) has R_inv = R^T, t_inv = -R^T @ t
+        # project(X_t, inv(pose)): (X_t - t_inv) @ R_inv = (X_t + R^T t) @ R^T = X_t @ R^T + t
+        c2 = tgt_pts @ R.T + t  # [n2, 3]
+        z2 = c2[:, 2]
+        inv_z2 = 1.0 / np.maximum(z2, 1e-9)
+        u2 = fx * c2[:, 0] * inv_z2 + cx
+        v2 = fy * c2[:, 1] * inv_z2 + cy
+        e2 = np.empty((n2, 2), dtype=np.float64)
+        e2[:, 0] = u2 - src_pix[:, 0]
+        e2[:, 1] = v2 - src_pix[:, 1]
+        if np.any(z2 <= 0.0):
+            e2[z2 <= 0.0] = 1e4
+        return c1, c2, e1, e2, z1, z2
 
-    def errors(camera):
-        first, z1 = project(source_points, camera, matrix)
-        second, z2 = project(target_points, np.linalg.inv(camera), matrix)
-        first -= target_pixels
-        second -= source_pixels
-        first[z1 <= 0] = 1e4
-        second[z2 <= 0] = 1e4
-        return first, second, z1, z2
+    def _cost(e1, e2):
+        r1 = np.clip(e1.ravel(), -1e4, 1e4)
+        r2 = np.clip(e2.ravel(), -1e4, 1e4)
+        a1 = np.abs(r1)
+        a2 = np.abs(r2)
+        c1_v = float(np.sum(np.where(a1 <= f_scale, 0.5 * r1 * r1, f_scale * (a1 - 0.5 * f_scale))))
+        c2_v = float(np.sum(np.where(a2 <= f_scale, 0.5 * r2 * r2, f_scale * (a2 - 0.5 * f_scale))))
+        return c1_v + c2_v
 
-    def residual(value):
-        first, second, _, _ = errors(unpack(value))
-        return np.clip(np.r_[first.ravel(), second.ravel()], -1e4, 1e4)
+    R = np.asarray(pose[:3, :3], dtype=np.float64).copy()
+    t = np.asarray(pose[:3, 3], dtype=np.float64).copy()
+    c1, c2, e1, e2, z1, z2 = _eval(R, t)
+    before = _cost(e1, e2)
+    cur_cost = before
 
-    def objective(value):
-        r = residual(value);a = np.abs(r)
-        return float(np.sum(np.where(a <= 1.5, .5*r*r, 1.5*(a-.75))))
+    # Perturbation chart: R' = R @ exp([dw]_x), t' = t + R @ dt
+    # Then:
+    #   c1' = R'^T (X_s - t') = exp(-[dw]_x) (c1 - dt)  => dc1/dw = +[c1]_x,  dc1/dt = -I_3
+    #   c2' = R' X_t + t' = R exp([dw]_x) X_t + t + R dt => dc2/dw = -R [X_t]_x, dc2/dt = +R
+    lam = 1e-3
+    for _ in range(15):
+        H = np.zeros((6, 6), dtype=np.float64)
+        g = np.zeros(6, dtype=np.float64)
 
-    before = objective(initial)
-    solved = least_squares(residual, initial, loss='huber', f_scale=1.5, max_nfev=20)
-    report = {'applied': False, 'initial_cost': before, 'final_cost': objective(solved.x),
-              'forward_observations': len(source_points), 'reverse_observations': len(target_points)}
-    if not np.isfinite(solved.x).all() or not report['final_cost'] < before:
+        # Forward Jacobian wrt [dw, dt]
+        if n1:
+            r1 = np.clip(e1, -1e4, 1e4)
+            ok1 = (z1 > 1e-9) & (np.abs(e1[:, 0]) < 1e4) & (np.abs(e1[:, 1]) < 1e4)
+            if np.any(ok1):
+                c1v = c1[ok1]
+                r1v = r1[ok1]
+                x, y, z = c1v[:, 0], c1v[:, 1], c1v[:, 2]
+                iz = 1.0 / z
+                iz2 = iz * iz
+                # d(u,v)/dc1 = [[fx/z, 0, -fx*x/z^2], [0, fy/z, -fy*y/z^2]]
+                # dc1/dw = [c1]_x = [[0, -z, y], [z, 0, -x], [-y, x, 0]]
+                # dc1/dt = -I
+                a1 = np.abs(r1v)
+                w1 = np.where(a1 <= f_scale, 1.0, f_scale / np.maximum(a1, 1e-12))
+                Ju = np.empty((len(c1v), 6), dtype=np.float64)
+                Ju[:, 0] = fx * (x * y * iz2)
+                Ju[:, 1] = -fx * (1.0 + x * x * iz2)
+                Ju[:, 2] = fx * y * iz
+                Ju[:, 3] = -fx * iz
+                Ju[:, 4] = 0.0
+                Ju[:, 5] = fx * x * iz2
+
+                Jv = np.empty((len(c1v), 6), dtype=np.float64)
+                Jv[:, 0] = fy * (1.0 + y * y * iz2)
+                Jv[:, 1] = -fy * (x * y * iz2)
+                Jv[:, 2] = -fy * x * iz
+                Jv[:, 3] = 0.0
+                Jv[:, 4] = -fy * iz
+                Jv[:, 5] = fy * y * iz2
+
+                wu = w1[:, 0]
+                wv = w1[:, 1]
+                H += (Ju * wu[:, None]).T @ Ju + (Jv * wv[:, None]).T @ Jv
+                g += Ju.T @ (wu * r1v[:, 0]) + Jv.T @ (wv * r1v[:, 1])
+
+        # Reverse Jacobian wrt [dw, dt]
+        if n2:
+            r2 = np.clip(e2, -1e4, 1e4)
+            ok2 = (z2 > 1e-9) & (np.abs(e2[:, 0]) < 1e4) & (np.abs(e2[:, 1]) < 1e4)
+            if np.any(ok2):
+                c2v = c2[ok2]
+                xtv = tgt_pts[ok2]
+                r2v = r2[ok2]
+                x, y, z = c2v[:, 0], c2v[:, 1], c2v[:, 2]
+                iz = 1.0 / z
+                iz2 = iz * iz
+                # du/dc2 = [fx/z, 0, -fx*x/z^2], dv/dc2 = [0, fy/z, -fy*y/z^2]
+                # dc2/dt = R => d(u)/dt = du/dc2 @ R
+                # dc2/dw = -R [X_t]_x => d(u)/dw = -(du/dc2 @ R) [X_t]_x = (du/dc2 @ R) x X_t
+                du_dc = np.column_stack((fx * iz, np.zeros_like(iz), -fx * x * iz2))
+                dv_dc = np.column_stack((np.zeros_like(iz), fy * iz, -fy * y * iz2))
+                du_dt = du_dc @ R  # [m, 3]
+                dv_dt = dv_dc @ R  # [m, 3]
+                # For row vector v = du_dt: -v @ [X]_x = X x v = -(v x X)
+                # Check: ([X]_x w) = X x w, so -v . (X x w) = -(v x X) . w = (X x v) . w
+                du_dw = np.cross(xtv, du_dt)
+                dv_dw = np.cross(xtv, dv_dt)
+
+                Ju2 = np.hstack((du_dw, du_dt))
+                Jv2 = np.hstack((dv_dw, dv_dt))
+                a2 = np.abs(r2v)
+                w2 = np.where(a2 <= f_scale, 1.0, f_scale / np.maximum(a2, 1e-12))
+                wu2 = w2[:, 0]
+                wv2 = w2[:, 1]
+                H += (Ju2 * wu2[:, None]).T @ Ju2 + (Jv2 * wv2[:, None]).T @ Jv2
+                g += Ju2.T @ (wu2 * r2v[:, 0]) + Jv2.T @ (wv2 * r2v[:, 1])
+
+        if float(np.max(np.abs(g))) < 1e-9:
+            break
+
+        diag = np.maximum(np.diag(H), 1e-6)
+        accepted = False
+        for _try in range(6):
+            H_d = H + lam * np.diag(diag)
+            try:
+                step = -np.linalg.solve(H_d, g)
+            except np.linalg.LinAlgError:
+                lam *= 10.0
+                continue
+            if not np.isfinite(step).all():
+                lam *= 10.0
+                continue
+            dR, _ = cv.Rodrigues(step[:3])
+            R_cand = R @ dR
+            t_cand = t + R @ step[3:]
+            c1n, c2n, e1n, e2n, z1n, z2n = _eval(R_cand, t_cand)
+            new_cost = _cost(e1n, e2n)
+            if new_cost < cur_cost:
+                gain = cur_cost - new_cost
+                R, t = R_cand, t_cand
+                c1, c2, e1, e2, z1, z2 = c1n, c2n, e1n, e2n, z1n, z2n
+                cur_cost = new_cost
+                lam = max(lam * 0.3, 1e-7)
+                accepted = True
+                if gain <= 1e-8 * max(1.0, cur_cost) and float(np.linalg.norm(step)) < 1e-6:
+                    lam = -1.0  # signal converged
+                break
+            lam *= 5.0
+        if not accepted or lam < 0.0:
+            break
+
+    report = {'applied': False, 'initial_cost': before, 'final_cost': cur_cost,
+              'forward_observations': n1, 'reverse_observations': n2}
+    if not (np.isfinite(R).all() and np.isfinite(t).all()) or not cur_cost < before:
         return pose, report
-    candidate = unpack(solved.x)
-    first, second, z1, z2 = errors(candidate)
     if (np.any(z1 <= 0) or np.any(z2 <= 0) or
-            np.median(np.linalg.norm(first, axis=1)) > 1.5 or
-            np.median(np.linalg.norm(second, axis=1)) > 1.5):
+            np.median(np.linalg.norm(e1, axis=1)) > 1.5 or
+            np.median(np.linalg.norm(e2, axis=1)) > 1.5):
         return pose, report
+    candidate = np.eye(4)
+    candidate[:3, :3] = R
+    candidate[:3, 3] = t
     report['applied'] = True
     return candidate, report
 

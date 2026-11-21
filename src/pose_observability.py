@@ -223,47 +223,120 @@ def original_image_pose_observability(
         )
         active_count = int(sm.sum()) + int(em.sum())
 
-        by_point = [[] for _ in range(len(points))]
-        for row in range(len(sc)):
-            active = np.flatnonzero(sm[row])
-            if not len(active):
-                continue
-            camera_index, point_index = int(sc[row]), int(sp[row])
-            pose_block = np.zeros((len(active), npose), dtype=np.float64)
-            slot = int(cam_to_slot[camera_index])
-            if slot >= 0:
-                pose_block[:, 6 * slot:6 * slot + 6] = Jpose_s[row, active] * pose_scale[slot]
-            point_block = Jpt_s[row, active] * point_scale[point_index]
-            by_point[point_index].append((pose_block, point_block))
-
-        reduced = []
-        rank_histogram = {}
         eps = np.finfo(np.float64).eps
-        for blocks in by_point:
-            if not blocks:
-                rank_histogram["0"] = rank_histogram.get("0", 0) + 1
-                continue
-            A = np.vstack([block[0] for block in blocks])
-            B = np.vstack([block[1] for block in blocks])
-            U, singular, _vh = np.linalg.svd(B, full_matrices=True)
-            smax = float(singular[0]) if len(singular) else 0.0
-            tol = eps * max(B.shape) * smax
-            point_rank = int(np.count_nonzero(singular > tol))
-            rank_histogram[str(point_rank)] = rank_histogram.get(str(point_rank), 0) + 1
-            if point_rank < U.shape[1]:
-                reduced.append(U[:, point_rank:].T @ A)
+        rank_histogram: dict[str, int] = {}
+        reduced = []
+        n_pts = len(points)
+
+        if len(sc) and n_pts:
+            # Flatten active rows across all selected observations once (zero per-obs np.zeros)
+            obs_ids, comp_ids = np.nonzero(sm)
+            n_act_s = len(obs_ids)
+            if n_act_s:
+                pt_of_row = sp[obs_ids]
+                cam_of_row = sc[obs_ids]
+                slots_of_row = cam_to_slot[cam_of_row]
+                Jpt_rows = Jpt_s[obs_ids, comp_ids, :] * point_scale[pt_of_row]  # [R, 3]
+                Jpose_rows = Jpose_s[obs_ids, comp_ids, :]  # [R, 6]
+                free_r = slots_of_row >= 0
+                if np.any(free_r):
+                    Jpose_rows = Jpose_rows.copy()
+                    Jpose_rows[free_r] *= pose_scale[slots_of_row[free_r]]
+
+                # Group rows by point_index via stable argsort
+                order = np.argsort(pt_of_row, kind="mergesort")
+                sorted_pts = pt_of_row[order]
+                counts = np.bincount(sorted_pts, minlength=n_pts)
+                zero_cnt = int(np.count_nonzero(counts == 0))
+                if zero_cnt:
+                    rank_histogram["0"] = zero_cnt
+
+                starts = np.zeros(n_pts, dtype=np.int64)
+                if n_pts > 1:
+                    np.cumsum(counts[:-1], out=starts[1:])
+
+                # Group non-empty points by their exact row count m so we run ONE batched
+                # np.linalg.svd per distinct m instead of hundreds of individual SVD calls.
+                by_m: dict[int, list[int]] = {}
+                for pid in np.flatnonzero(counts > 0).tolist():
+                    by_m.setdefault(int(counts[pid]), []).append(pid)
+
+                for m_rows, pids in by_m.items():
+                    g = len(pids)
+                    # Gather [g, m_rows] row indices in `order`
+                    base = starts[pids]  # [g]
+                    row_idx_2d = order[base[:, None] + np.arange(m_rows, dtype=np.int64)[None, :]]  # [g, m_rows]
+                    B_batch = Jpt_rows[row_idx_2d]  # [g, m_rows, 3]
+                    if m_rows <= 3:
+                        # No nullspace rows possible when rank == m_rows; check rare rank deficiency
+                        svals = np.linalg.svd(B_batch, compute_uv=False)  # [g, m_rows]
+                        tols = eps * max(m_rows, 3) * svals[:, 0:1]
+                        pranks = np.count_nonzero(svals > tols, axis=1)
+                        u_r, c_r = np.unique(pranks, return_counts=True)
+                        for rv, cv_cnt in zip(u_r.tolist(), c_r.tolist()):
+                            rank_histogram[str(rv)] = rank_histogram.get(str(rv), 0) + cv_cnt
+                        defic = np.flatnonzero(pranks < m_rows)
+                        if len(defic):
+                            U_d, s_d, _ = np.linalg.svd(B_batch[defic], full_matrices=True)
+                            for di, bi in enumerate(defic.tolist()):
+                                pr = int(pranks[bi])
+                                r_ids = row_idx_2d[bi]
+                                A_mat = np.zeros((m_rows, npose), dtype=np.float64)
+                                sl = slots_of_row[r_ids]
+                                for lr in range(m_rows):
+                                    s_lr = int(sl[lr])
+                                    if s_lr >= 0:
+                                        A_mat[lr, 6 * s_lr:6 * s_lr + 6] = Jpose_rows[r_ids[lr]]
+                                reduced.append(U_d[di, :, pr:].T @ A_mat)
+                    else:
+                        U_batch, svals, _ = np.linalg.svd(B_batch, full_matrices=True)  # U: [g, m, m]
+                        tols = eps * max(m_rows, 3) * svals[:, 0:1]
+                        pranks = np.count_nonzero(svals > tols, axis=1)
+                        u_r, c_r = np.unique(pranks, return_counts=True)
+                        for rv, cv_cnt in zip(u_r.tolist(), c_r.tolist()):
+                            rank_histogram[str(rv)] = rank_histogram.get(str(rv), 0) + cv_cnt
+
+                        # Build batched A_batch [g, m_rows, npose]
+                        A_batch = np.zeros((g, m_rows, npose), dtype=np.float64)
+                        sl_2d = slots_of_row[row_idx_2d]  # [g, m_rows]
+                        fg, fm = np.nonzero(sl_2d >= 0)
+                        if len(fg):
+                            sl_vals = sl_2d[fg, fm]
+                            jp_vals = Jpose_rows[row_idx_2d[fg, fm]]  # [K, 6]
+                            cols_6 = (6 * sl_vals)[:, None] + np.arange(6, dtype=np.intp)[None, :]
+                            A_batch[fg[:, None], fm[:, None], cols_6] = jp_vals
+
+                        # Fast path: all points in this bucket have full rank 3 (99%+ of stereo points)
+                        if np.all(pranks == 3):
+                            # U[:, :, 3:]^T @ A_batch -> [g, m_rows - 3, npose]
+                            proj = np.einsum("gmr,gmp->grp", U_batch[:, :, 3:], A_batch)
+                            reduced.append(proj.reshape(-1, npose))
+                        else:
+                            for bi in range(g):
+                                pr = int(pranks[bi])
+                                if pr < m_rows:
+                                    reduced.append(U_batch[bi, :, pr:].T @ A_batch[bi])
+            else:
+                if n_pts:
+                    rank_histogram["0"] = n_pts
+        elif n_pts:
+            rank_histogram["0"] = n_pts
 
         if len(ec):
             Jpose_e, _Jpt_e = _batch_jacobians(ec, fixed_points, epix, em)
-            for row in range(len(ec)):
-                active = np.flatnonzero(em[row])
-                if not len(active):
-                    continue
-                slot = int(cam_to_slot[int(ec[row])])
-                if slot >= 0:
-                    block = np.zeros((len(active), npose), dtype=np.float64)
-                    block[:, 6 * slot:6 * slot + 6] = Jpose_e[row, active] * pose_scale[slot]
-                    reduced.append(block)
+            e_obs, e_comp = np.nonzero(em)
+            if len(e_obs):
+                e_slots = cam_to_slot[ec[e_obs]]
+                e_free = np.flatnonzero(e_slots >= 0)
+                if len(e_free):
+                    f_slots = e_slots[e_free]
+                    e_block = np.zeros((len(e_free), npose), dtype=np.float64)
+                    cols_6 = (6 * f_slots)[:, None] + np.arange(6, dtype=np.intp)[None, :]
+                    e_rows = np.arange(len(e_free), dtype=np.intp)[:, None]
+                    e_block[e_rows, cols_6] = (
+                        Jpose_e[e_obs[e_free], e_comp[e_free], :] * pose_scale[f_slots]
+                    )
+                    reduced.append(e_block)
 
         C = (np.vstack(reduced) if reduced else np.empty((0, npose), dtype=np.float64))
         if not np.isfinite(C).all():

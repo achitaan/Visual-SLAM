@@ -1204,16 +1204,29 @@ class SharedSlam:
                 if group_id in blocked_groups or any(
                         frame.landmark_ids[feature] >= 0 for feature in members):
                     continue
-                values = map_points[members]
-                rights = map_right_u[members]
-                finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
-                verified_group = (
-                    finite.all()
-                    and np.allclose(values, values[0], rtol=1e-6, atol=1e-6)
-                    and np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6)
-                )
-                seed_values = values
-                seed_right = float(rights[0]) if verified_group else None
+                if len(members) == 1:
+                    f0 = members[0]
+                    v0 = map_points[f0]
+                    r0 = float(map_right_u[f0])
+                    verified_group = bool(
+                        np.isfinite(v0[0]) and np.isfinite(v0[1]) and np.isfinite(v0[2])
+                        and np.isfinite(r0)
+                    )
+                    values = map_points[f0:f0 + 1]
+                    rights = map_right_u[f0:f0 + 1]
+                    seed_values = values
+                    seed_right = r0 if verified_group else None
+                else:
+                    values = map_points[members]
+                    rights = map_right_u[members]
+                    finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
+                    verified_group = bool(
+                        finite.all()
+                        and np.allclose(values, values[0], rtol=1e-6, atol=1e-6)
+                        and np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6)
+                    )
+                    seed_values = values
+                    seed_right = float(rights[0]) if verified_group else None
                 if not verified_group:
                     # Only an all-NaN provider abstention may use the fresh
                     # current-frame extraction as a point seed. Partial/Inf
@@ -1387,6 +1400,9 @@ class SharedSlam:
                         position - previous.pose[:3, 3]
                     )
                     frame.depth_points[current_groups[current_group_ids[ib]]] = pose[:3, :3].T @ (position - pose[:3, 3])
+        if self.last_keyframe is not None:
+            self._invalidate_kf_descriptor_cache(self.last_keyframe)
+        self._invalidate_kf_descriptor_cache(ident)
         self.last_keyframe = ident
         self.map.revision += 1
         return ident
@@ -2494,17 +2510,32 @@ class SharedSlam:
         finite = np.isfinite(pixels).all(axis=1)
         use_fast_key = (cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
         if use_fast_key:
-            coords = pixels.tolist()
+            all_finite = bool(finite.all())
+            u64 = np.ascontiguousarray(pixels + np.float32(0.0), np.float32).view(np.uint64).ravel()
+            vals = u64.tolist()
+            if all_finite:
+                if len(set(vals)) == n:
+                    return [[i] for i in range(n)], np.arange(n, dtype=int)
+                row_groups_list = [0] * n
+                for row, key in enumerate(vals):
+                    group = keys.get(key)
+                    if group is None:
+                        group = len(groups)
+                        keys[key] = group
+                        groups.append([row])
+                    else:
+                        groups[group].append(row)
+                    row_groups_list[row] = group
+                return groups, np.asarray(row_groups_list, int)
             finite_list = finite.tolist()
-            for row in range(n):
+            row_groups_list = [0] * n
+            for row, key in enumerate(vals):
                 if not finite_list[row]:
                     # Invalid coordinates are never evidence of shared identity.
                     group = len(groups)
                     groups.append([row])
-                    row_groups[row] = group
+                    row_groups_list[row] = group
                     continue
-                xy = coords[row]
-                key = (xy[0], xy[1])
                 group = keys.get(key)
                 if group is None:
                     group = len(groups)
@@ -2512,8 +2543,8 @@ class SharedSlam:
                     groups.append([row])
                 else:
                     groups[group].append(row)
-                row_groups[row] = group
-            return groups, row_groups
+                row_groups_list[row] = group
+            return groups, np.asarray(row_groups_list, int)
         for row, pixel in enumerate(pixels):
             if not finite[row]:
                 # Invalid coordinates are never evidence of shared identity.
@@ -2862,26 +2893,46 @@ class SharedSlam:
                 kept[landmark_id] = (pixel, -1)
         return kept
 
+    def _invalidate_kf_descriptor_cache(self, kf_id=None):
+        cache = getattr(self, "_kf_landmark_row_cache", None)
+        gen = getattr(self, "_kf_landmark_row_gen", None)
+        lm_cache = getattr(self, "_lm_desc_cache", None)
+        if kf_id is None:
+            if cache is not None:
+                cache.clear()
+            if gen is not None:
+                gen.clear()
+            if lm_cache is not None:
+                lm_cache.clear()
+            return
+        if cache is not None:
+            cache.pop(kf_id, None)
+        if gen is not None:
+            gen[kf_id] = gen.get(kf_id, 0) + 1
+
     def _landmark_descriptor_bank(self, landmarks):
         """Use anchor/latest linked SIFT rows without retaining a dense map copy."""
         keyframes = self.map.keyframes
         cache = getattr(self, "_kf_landmark_row_cache", None)
+        gen = getattr(self, "_kf_landmark_row_gen", None)
         lm_cache = getattr(self, "_lm_desc_cache", None)
-        cache_rev = getattr(self, "_kf_landmark_row_cache_rev", None)
-        cur_rev = (self.map.revision, len(keyframes), len(self.map.landmarks))
-        if cache is None or lm_cache is None or cache_rev != cur_rev:
+        cache_map_id = getattr(self, "_kf_landmark_row_map_id", None)
+        cur_map_id = id(self.map)
+        if cache is None or gen is None or lm_cache is None or cache_map_id != cur_map_id:
             cache = {}
+            gen = {}
             lm_cache = {}
             self._kf_landmark_row_cache = cache
+            self._kf_landmark_row_gen = gen
             self._lm_desc_cache = lm_cache
-            self._kf_landmark_row_cache_rev = cur_rev
+            self._kf_landmark_row_map_id = cur_map_id
 
         def _kf_row_map(frame_id):
-            row_map = cache.get(frame_id)
-            if row_map is not None:
-                return row_map
             keyframe = keyframes[frame_id]
             lm_ids = keyframe.landmark_ids
+            entry = cache.get(frame_id)
+            if entry is not None and entry[0] == id(keyframe) and entry[1] == id(lm_ids):
+                return entry[2]
             pos = np.flatnonzero(lm_ids >= 0)
             row_map = {}
             if len(pos):
@@ -2891,7 +2942,7 @@ class SharedSlam:
                         row_map[lid] = [row]
                     else:
                         bucket.append(row)
-            cache[frame_id] = row_map
+            cache[frame_id] = (id(keyframe), id(lm_ids), row_map)
             return row_map
 
         descriptors, identifiers = [], []
@@ -2899,10 +2950,27 @@ class SharedSlam:
             lid = int(landmark.id)
             anchor = landmark.anchor
             obs = landmark.observations
-            lkey = (lid, anchor, len(obs))
-            cached = lm_cache.get(lkey)
-            if cached is None:
-                latest = max(obs, default=anchor)
+            n_obs = len(obs)
+            if n_obs == 0:
+                latest = anchor
+            elif n_obs == 1:
+                latest = next(iter(obs))
+            else:
+                latest = max(obs)
+            g_a = gen.get(anchor, 0)
+            g_l = gen.get(latest, 0)
+            entry = lm_cache.get(lid)
+            if (
+                entry is not None
+                and entry[0] == id(landmark)
+                and entry[1] == anchor
+                and entry[2] == n_obs
+                and entry[3] == latest
+                and entry[4] == g_a
+                and entry[5] == g_l
+            ):
+                cached = entry[6]
+            else:
                 cand_descs = []
                 if anchor in keyframes:
                     rows = _kf_row_map(anchor).get(lid)
@@ -2931,7 +2999,7 @@ class SharedSlam:
                         seen_descriptors.add(signature)
                         dedup.append(descriptor)
                     cached = tuple(dedup)
-                lm_cache[lkey] = cached
+                lm_cache[lid] = (id(landmark), anchor, n_obs, latest, g_a, g_l, cached)
             if len(cached) == 1:
                 descriptors.append(cached[0])
                 identifiers.append(lid)
@@ -3201,23 +3269,30 @@ class SharedSlam:
             source_group in competing_source or target_group in competing_target
             for source_group, target_group in edge_matches))
 
-        def valid_group(frame_pixels, frame_points, frame_right, image_size, groups, group_id):
+        def _row_valid_mask(frame_pixels, frame_points, frame_right, image_size):
+            return (
+                np.isfinite(frame_pixels).all(axis=1)
+                & (frame_pixels[:, 0] >= 0) & (frame_pixels[:, 0] < image_size[0])
+                & (frame_pixels[:, 1] >= 0) & (frame_pixels[:, 1] < image_size[1])
+                & np.isfinite(frame_points).all(axis=1)
+                & (frame_points[:, 2] > 0)
+                & np.isfinite(frame_right)
+                & (frame_right >= 0) & (frame_right < image_size[0])
+            ).tolist()
+
+        source_row_valid = _row_valid_mask(source_pixels, source_points, source_right, source_size)
+        target_row_valid = _row_valid_mask(target_pixels, target_points, target_right, target_size)
+
+        def valid_group(frame_points, frame_right, row_valid, groups, group_id):
             members = groups[group_id]
-            pixels = frame_pixels[members]
+            if len(members) == 1:
+                return bool(row_valid[members[0]])
+            if not all(row_valid[m] for m in members):
+                return False
             points = frame_points[members]
             right = frame_right[members]
-            inside = (
-                np.isfinite(pixels).all(axis=1)
-                & (pixels[:, 0] >= 0) & (pixels[:, 0] < image_size[0])
-                & (pixels[:, 1] >= 0) & (pixels[:, 1] < image_size[1])
-            )
             return bool(
-                np.all(inside)
-                and np.isfinite(points).all()
-                and np.all(points[:, 2] > 0)
-                and np.isfinite(right).all()
-                and np.all((right >= 0) & (right < image_size[0]))
-                and np.allclose(points, points[0], rtol=1e-6, atol=1e-6)
+                np.allclose(points, points[0], rtol=1e-6, atol=1e-6)
                 and np.allclose(right, right[0], rtol=1e-6, atol=1e-6)
             )
 
@@ -3229,11 +3304,11 @@ class SharedSlam:
                 continue
             if source_group not in valid_source:
                 valid_source[source_group] = valid_group(
-                    source_pixels, source_points, source_right, source_size,
+                    source_points, source_right, source_row_valid,
                     source_groups, source_group)
             if target_group not in valid_target:
                 valid_target[target_group] = valid_group(
-                    target_pixels, target_points, target_right, target_size,
+                    target_points, target_right, target_row_valid,
                     target_groups, target_group)
             if not valid_source[source_group]:
                 report["dropped_invalid_source_groups"] += 1
@@ -6657,6 +6732,7 @@ class SharedSlam:
                         second.depth_points[second_rows] = pose[:3, :3].T @ (
                             position - pose[:3, 3]
                         )
+                    self._invalidate_kf_descriptor_cache()
                     self.last_keyframe = anchor = 1
                     self.map.revision += 1
                     self.map.pose_anchors[start] = 0
@@ -7768,12 +7844,19 @@ class SharedSlam:
         # landmarks remain available to geometric relocalization and loop correction.
         dropped = self.map.high_miss_landmarks(5)
         if dropped:
+            lm_cache = getattr(self, "_lm_desc_cache", None)
             for lid in dropped:
                 self.map.remove_landmark(lid)
+                if lm_cache is not None:
+                    lm_cache.pop(lid, None)
         removed = False
         affected = ({k for l in dropped.values() for k in l.observations}
                     if self.performance.cpu_optimizations else set(self.map.keyframes))
-        for keyframe in (self.map.keyframes[k] for k in sorted(affected) if k in self.map.keyframes):
+        row_cache = getattr(self, "_kf_landmark_row_cache", None)
+        for k in sorted(affected):
+            keyframe = self.map.keyframes.get(k)
+            if keyframe is None:
+                continue
             stale = np.array(
                 [
                     lid >= 0 and lid not in self.map.landmarks
@@ -7783,6 +7866,12 @@ class SharedSlam:
             if stale.any():
                 keyframe.landmark_ids[stale] = -1
                 removed = True
+                if row_cache is not None:
+                    entry = row_cache.get(k)
+                    if entry is not None:
+                        rm = entry[2]
+                        for lid in dropped:
+                            rm.pop(lid, None)
         if removed:
             self.map.revision += 1
             self.map.geometry_revision += 1

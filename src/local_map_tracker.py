@@ -374,50 +374,45 @@ def triangulate_far_stereo_landmarks(
     # Far points shift very little from H_inf prediction (e.g., < 45 px even at 20 m & 3 m motion)
     search_rad = max(25.0, min(80.0, 20.0 + 10.0 * cam_dist))
     rad_sq = search_rad * search_rad
-    grid2, inv_cell = _build_spatial_grid(px2.astype(np.float32), search_rad)
 
     pairs: list[tuple[int, int]] = []
     used_curr: set[int] = set()
     cos_min = 0.72
+    r2_thresh = float(ratio * ratio)
 
-    for i1 in range(len(prev_unassigned)):
-        if not valid_h[i1]:
-            continue
-        ux, uy = float(pred2[i1, 0]), float(pred2[i1, 1])
-        cx, cy = int(np.floor(ux * inv_cell)), int(np.floor(uy * inv_cell))
-        cands: list[int] = []
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                b = grid2.get((cx + dx, cy + dy))
-                if b:
-                    cands.extend(b)
-        if not cands:
-            continue
-        c_arr = np.asarray(cands, dtype=np.intp)
-        diff = px2[c_arr] - pred2[i1]
-        in_r = (diff[:, 0] * diff[:, 0] + diff[:, 1] * diff[:, 1]) <= rad_sq
-        if not np.any(in_r):
-            continue
-        c_arr = c_arr[in_r]
-        sims = d2[c_arr] @ d1[i1]
-        # Convert cosine similarity to squared L2 on unit sphere: d2 = 2 - 2*sim
-        d2_vals = np.maximum(0.0, 2.0 - 2.0 * sims)
-        if len(d2_vals) == 1:
-            b_idx = 0
-            if float(sims[0]) < cos_min:
-                continue
-        else:
-            part = np.argpartition(d2_vals, 1)
-            b_idx = int(part[0])
-            s_idx = int(part[1])
-            if float(sims[b_idx]) < cos_min:
-                continue
-            if d2_vals[s_idx] > 1e-12 and d2_vals[b_idx] >= (ratio * ratio) * d2_vals[s_idx]:
-                continue
-        i2 = int(c_arr[b_idx])
-        if i2 not in used_curr:
-            used_curr.add(i2)
-            pairs.append((i1, i2))
+    # Single BLAS SGEMM for all normalized descriptor similarities + vectorized distance mask
+    valid_i1 = np.flatnonzero(valid_h)
+    if len(valid_i1):
+        p_sub = pred2[valid_i1]  # [M, 2]
+        dx = p_sub[:, 0:1] - px2[None, :, 0]
+        dy = p_sub[:, 1:2] - px2[None, :, 1]
+        in_rad = (dx * dx + dy * dy) <= rad_sq
+        row_has = in_rad.any(axis=1)
+        act = np.flatnonzero(row_has)
+        if len(act):
+            act_i1 = valid_i1[act]
+            sims_all = np.ascontiguousarray(d1[act_i1], np.float32) @ np.ascontiguousarray(d2, np.float32).T
+            in_rad_act = in_rad[act]
+            masked_sims = np.where(in_rad_act, sims_all, np.float32(-2.0))
+            best_j = np.argmax(masked_sims, axis=1)
+            rows_a = np.arange(len(act))
+            best_s = masked_sims[rows_a, best_j]
+            masked_sims[rows_a, best_j] = np.float32(-2.0)
+            second_s = np.max(masked_sims, axis=1)
+            counts = in_rad_act.sum(axis=1)
+            for idx_a in range(len(act)):
+                bs = float(best_s[idx_a])
+                if bs < cos_min:
+                    continue
+                if counts[idx_a] > 1:
+                    d1_sq = max(0.0, 2.0 - 2.0 * bs)
+                    d2_sq = max(0.0, 2.0 - 2.0 * float(second_s[idx_a]))
+                    if d2_sq > 1e-12 and d1_sq >= r2_thresh * d2_sq:
+                        continue
+                i2 = int(best_j[idx_a])
+                if i2 not in used_curr:
+                    used_curr.add(i2)
+                    pairs.append((int(act_i1[idx_a]), i2))
 
     if not pairs:
         return []

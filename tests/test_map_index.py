@@ -315,3 +315,36 @@ def test_sparse_apply_corrections_matches_dense_and_preserves_atomicity():
     np.testing.assert_array_equal(state.keyframes[5].pose, pose5_before)
 
 
+def test_high_miss_landmarks_incremental_and_fallback():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+    ids = [
+        state.add_landmark([float(i), 0.0, 10.0], desc, anchor=0, observations={})
+        for i in range(6)
+    ]
+    assert state.high_miss_landmarks(5) == {}
+
+    # Set misses >= 5 out of order; result must preserve ascending ID order
+    state.landmarks[ids[4]].misses = 5
+    state.landmarks[ids[1]].misses = 7
+    state.landmarks[ids[3]].misses = 5
+    state.landmarks[ids[2]].misses = 4
+    dropped = state.high_miss_landmarks(5)
+    assert list(dropped.keys()) == [ids[1], ids[3], ids[4]]
+
+    # Lowering misses removes landmark from high-miss set
+    state.landmarks[ids[3]].misses = 0
+    assert list(state.high_miss_landmarks(5).keys()) == [ids[1], ids[4]]
+
+    # Removing landmark cleans tracking cleanly
+    state.remove_landmark(ids[1])
+    assert list(state.high_miss_landmarks(5).keys()) == [ids[4]]
+
+    # Direct dict injection bypasses add_landmark -> automatic fallback to full scan
+    injected = Landmark(999, np.array([1.0, 0.0, 10.0]), desc, 0, {}, misses=6)
+    state.landmarks[999] = injected
+    dropped_fb = state.high_miss_landmarks(5)
+    assert set(dropped_fb.keys()) == {ids[4], 999}
+
+
+

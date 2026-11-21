@@ -775,12 +775,66 @@ class SharedSlam:
         if not np.isfinite(bounds).all() or not bounds[0] < bounds[1]:
             counters['invalid_calibration'] = counters.get('invalid_calibration', 0) + int(len(ids))
             return points, right_u
-        measured, result_counts = self.profile.call(
-            'stereo_map_depth_verification', verify_stereo_depth_candidates,
-            self.current_left_gray, self.current_right_gray, pixels[ids],
-            self.stereo_search_config, bounds)
-        for key, value in result_counts.items():
-            counters[key] = counters.get(key, 0) + int(value)
+        cache_scope = (
+            id(self.current_left_gray),
+            id(self.current_right_gray),
+            bounds,
+            self.stereo_search_config,
+            id(verify_stereo_depth_candidates),
+        )
+        frame_cache = getattr(self, "_frame_verified_right_cache", None)
+        if frame_cache is not None and isinstance(frame_cache, dict):
+            scope_cache = frame_cache.get(cache_scope)
+            if scope_cache is None:
+                scope_cache = {}
+                frame_cache[cache_scope] = scope_cache
+            query_px = pixels[ids]
+            measured = np.full(len(ids), np.nan, dtype=np.float64)
+            miss_positions: list[int] = []
+            miss_keys: list[tuple[float, float]] = []
+            miss_key_to_idx: dict[tuple[float, float], int] = {}
+            miss_backmap: list[tuple[int, int]] = []
+            hit_verified = 0
+            for pos, (px_x, px_y) in enumerate(query_px.tolist()):
+                key = (px_x, px_y)
+                cached = scope_cache.get(key)
+                if cached is not None:
+                    measured[pos] = cached
+                    if np.isfinite(cached):
+                        hit_verified += 1
+                else:
+                    uidx = miss_key_to_idx.get(key)
+                    if uidx is None:
+                        uidx = len(miss_keys)
+                        miss_key_to_idx[key] = uidx
+                        miss_keys.append(key)
+                        miss_positions.append(pos)
+                    miss_backmap.append((pos, uidx))
+            if miss_positions:
+                unique_pts = query_px[miss_positions]
+                unique_measured, result_counts = self.profile.call(
+                    'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                    self.current_left_gray, self.current_right_gray, unique_pts,
+                    self.stereo_search_config, bounds)
+                for key, val in zip(miss_keys, unique_measured.tolist()):
+                    scope_cache[key] = float(val)
+                for pos, uidx in miss_backmap:
+                    measured[pos] = unique_measured[uidx]
+                for key, value in result_counts.items():
+                    if key not in ('candidates', 'verified'):
+                        counters[key] = counters.get(key, 0) + int(value)
+                counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
+                counters['verified'] = counters.get('verified', 0) + int(np.isfinite(measured).sum())
+            else:
+                counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
+                counters['verified'] = counters.get('verified', 0) + int(hit_verified)
+        else:
+            measured, result_counts = self.profile.call(
+                'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                self.current_left_gray, self.current_right_gray, pixels[ids],
+                self.stereo_search_config, bounds)
+            for key, value in result_counts.items():
+                counters[key] = counters.get(key, 0) + int(value)
         disparity = pixels[ids, 0] - measured
         denominator = q[3, 2] * disparity + q[3, 3]
         depth = np.divide(q[2, 3], denominator,
@@ -1527,27 +1581,46 @@ class SharedSlam:
             if live_excluded_pixels != snapshot['excluded_pixel_keys']:
                 return False
             current_pixels = np.asarray(pixels, np.float32).reshape(-1, 2)
+            n_curr_px = len(current_pixels)
+            use_fast_key = (self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
+            excl_lms = snapshot['excluded_landmarks']
+            excl_tgts = snapshot['excluded_targets']
+            excl_px = snapshot['excluded_pixel_keys']
             seen_ids, seen_features, seen_pixels = set(), set(), set()
             with self.map.lock:
                 if (int(self.map.revision) != snapshot['map_revision']
                         or int(self.map.geometry_revision) != snapshot['geometry_revision']):
                     return False
+                landmarks_map = self.map.landmarks
                 for landmark_id, state in snapshot['states'].items():
-                    live = self.map.landmarks.get(landmark_id)
-                    if (live is not state['landmark'] or live is None
-                            or not np.array_equal(np.asarray(live.position, float),
-                                                  state['position'])):
+                    live = landmarks_map.get(landmark_id)
+                    if live is not state['landmark'] or live is None:
+                        return False
+                    lp = live.position
+                    sp = state['position']
+                    if (type(lp) is np.ndarray and lp.dtype == np.float64 and lp.shape == (3,)
+                            and type(sp) is np.ndarray and sp.shape == (3,)):
+                        if lp[0] != sp[0] or lp[1] != sp[1] or lp[2] != sp[2]:
+                            return False
+                    elif not np.array_equal(np.asarray(lp, float), sp):
                         return False
                 for row in snapshot['descriptor_rows']:
                     landmark_id, feature = row['landmark_id'], row['feature']
-                    key = self._physical_pixel_key(row['pixel'])
+                    rp = row['pixel']
                     if (landmark_id in seen_ids or feature in seen_features
-                            or key in seen_pixels or feature < 0
-                            or feature >= len(current_pixels)
-                            or not np.array_equal(current_pixels[feature], row['pixel'])
-                            or landmark_id in snapshot['excluded_landmarks']
-                            or feature in snapshot['excluded_targets']
-                            or key in snapshot['excluded_pixel_keys']):
+                            or feature < 0 or feature >= n_curr_px
+                            or landmark_id in excl_lms or feature in excl_tgts):
+                        return False
+                    cp = current_pixels[feature]
+                    if (type(rp) is np.ndarray and rp.dtype == np.float32 and rp.shape == (2,)):
+                        if cp[0] != rp[0] or cp[1] != rp[1]:
+                            return False
+                        key = (float(rp[0]), float(rp[1])) if use_fast_key else self._physical_pixel_key(rp)
+                    else:
+                        if not np.array_equal(cp, rp):
+                            return False
+                        key = self._physical_pixel_key(rp)
+                    if key in seen_pixels or key in excl_px:
                         return False
                     seen_ids.add(landmark_id)
                     seen_features.add(feature)
@@ -1655,18 +1728,17 @@ class SharedSlam:
     ):
         """Validate map links, optionally retrying only the owned descriptor pool."""
         snapshot = self._descriptor_association_retry_snapshot
-        if (self.config.stereo_descriptor_association_retry and snapshot is not None
-                and not self._descriptor_association_retry_snapshot_is_current(
-                    snapshot, pixels, frame_token, arbitration, pose, retention_context)):
-            return self._reject_descriptor_retry_transaction(
-                snapshot, previous_inlier_misses, frame_token,
-                'descriptor_retry_snapshot_changed')
-        use_retry = (
-            self.config.stereo_descriptor_association_retry
-            and snapshot is not None
-            and snapshot['descriptor_pool_count'] >= self.config.min_inliers
-            and self._descriptor_association_retry_snapshot_is_current(
+        snapshot_current = False
+        if self.config.stereo_descriptor_association_retry and snapshot is not None:
+            snapshot_current = self._descriptor_association_retry_snapshot_is_current(
                 snapshot, pixels, frame_token, arbitration, pose, retention_context)
+            if not snapshot_current:
+                return self._reject_descriptor_retry_transaction(
+                    snapshot, previous_inlier_misses, frame_token,
+                    'descriptor_retry_snapshot_changed')
+        use_retry = (
+            snapshot_current
+            and snapshot['descriptor_pool_count'] >= self.config.min_inliers
         )
         if not use_retry:
             return self._validate_stereo_associations_at_pose(
@@ -1980,36 +2052,66 @@ class SharedSlam:
                         winSize=(21, 21),
                         maxLevel=lk_levels,
                     )
-                for j, (lid, _) in enumerate(previous_tracks):
-                    p = flowed[j, 0]
-                    if (
-                        lid in self.map.landmarks
-                        and flow_visible[j]
-                        and ok[j]
-                        and back_ok[j]
-                        and np.linalg.norm(reversed_pixels[j, 0] - old_pixels[j, 0])
-                        < 1.0
-                        and 0 <= p[0] < size[0]
-                        and 0 <= p[1] < size[1]
-                    ):
+                flowed_pts = flowed[:, 0]
+                fb_err = np.linalg.norm(reversed_pixels[:, 0] - old_pixels[:, 0], axis=1)
+                lk_valid = (
+                    flow_visible
+                    & ok.ravel().astype(bool)
+                    & back_ok.ravel().astype(bool)
+                    & (fb_err < 1.0)
+                    & (flowed_pts[:, 0] >= 0)
+                    & (flowed_pts[:, 0] < size[0])
+                    & (flowed_pts[:, 1] >= 0)
+                    & (flowed_pts[:, 1] < size[1])
+                )
+                valid_j = np.flatnonzero(lk_valid)
+                if len(valid_j):
+                    landmarks_map = self.map.landmarks
+                    n_pixels = len(pixels)
+                    if n_pixels:
+                        px_order = np.argsort(pixels[:, 0], kind="mergesort")
+                        px_sx = pixels[px_order, 0]
+                        px_sy = pixels[px_order, 1]
+                    excl_targets = arbitration['excluded_targets'] if arbitration is not None else None
+                    excl_pixels = arbitration['excluded_target_pixels'] if arbitration is not None else None
+                    use_fast_key = (self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
+                    for j in valid_j.tolist():
+                        lid = previous_tracks[j][0]
+                        if lid not in landmarks_map:
+                            continue
+                        p = flowed_pts[j]
                         descriptor_match = candidates.get(lid)
-                        if (
-                            descriptor_match is not None
-                            and np.linalg.norm(p - descriptor_match[0]) > 3.0
-                        ):
-                            # Forward/backward flow can consistently follow the
-                            # wrong repeat on railings or lane markings. It must
-                            # not overwrite an independent mutual descriptor match.
-                            flow_conflicts += 1
-                            continue
-                        distances = np.linalg.norm(pixels - p, axis=1)
-                        feature = int(np.argmin(distances)) if len(distances) else -1
-                        if feature >= 0 and distances[feature] > 3:
-                            feature = -1
-                        if arbitration is not None and (
-                                feature in arbitration['excluded_targets']
-                                or self._physical_pixel_key(p) in arbitration['excluded_target_pixels']):
-                            continue
+                        if descriptor_match is not None:
+                            dm = descriptor_match[0]
+                            dx_m = float(p[0]) - float(dm[0])
+                            dy_m = float(p[1]) - float(dm[1])
+                            if (dx_m * dx_m + dy_m * dy_m) > 9.0:
+                                # Forward/backward flow can consistently follow the
+                                # wrong repeat on railings or lane markings. It must
+                                # not overwrite an independent mutual descriptor match.
+                                flow_conflicts += 1
+                                continue
+                        feature = -1
+                        if n_pixels:
+                            px0 = float(p[0])
+                            py0 = float(p[1])
+                            lo = int(np.searchsorted(px_sx, px0 - 3.001, side="left"))
+                            hi = int(np.searchsorted(px_sx, px0 + 3.001, side="right"))
+                            if hi > lo:
+                                sub_y = px_sy[lo:hi]
+                                in_y = np.flatnonzero(np.abs(sub_y - py0) <= 3.001)
+                                if len(in_y):
+                                    cand_idx = px_order[lo + in_y]
+                                    if len(cand_idx) > 1:
+                                        cand_idx = np.sort(cand_idx)
+                                    dists = np.linalg.norm(pixels[cand_idx] - p, axis=1)
+                                    best_k = int(np.argmin(dists))
+                                    if dists[best_k] <= 3.0:
+                                        feature = int(cand_idx[best_k])
+                        if arbitration is not None:
+                            pkey = (float(p[0]), float(p[1])) if use_fast_key else self._physical_pixel_key(p)
+                            if feature in excl_targets or pkey in excl_pixels:
+                                continue
                         candidates[lid] = (p, feature)
         candidates = self._collapse_track_candidates(candidates, pixels)
         if len(candidates) < self.config.min_inliers:
@@ -2757,11 +2859,14 @@ class SharedSlam:
         """Use anchor/latest linked SIFT rows without retaining a dense map copy."""
         keyframes = self.map.keyframes
         cache = getattr(self, "_kf_landmark_row_cache", None)
+        lm_cache = getattr(self, "_lm_desc_cache", None)
         cache_rev = getattr(self, "_kf_landmark_row_cache_rev", None)
         cur_rev = (self.map.revision, len(keyframes), len(self.map.landmarks))
-        if cache is None or cache_rev != cur_rev:
+        if cache is None or lm_cache is None or cache_rev != cur_rev:
             cache = {}
+            lm_cache = {}
             self._kf_landmark_row_cache = cache
+            self._lm_desc_cache = lm_cache
             self._kf_landmark_row_cache_rev = cur_rev
 
         def _kf_row_map(frame_id):
@@ -2786,35 +2891,46 @@ class SharedSlam:
         for landmark in landmarks:
             lid = int(landmark.id)
             anchor = landmark.anchor
-            latest = max(landmark.observations, default=anchor)
-            cand_descs = []
-            if anchor in keyframes:
-                rows = _kf_row_map(anchor).get(lid)
-                if rows:
-                    kf_desc = keyframes[anchor].descriptors
-                    for row in rows:
-                        cand_descs.append(kf_desc[row])
-            if latest != anchor and latest in keyframes:
-                rows = _kf_row_map(latest).get(lid)
-                if rows:
-                    kf_desc = keyframes[latest].descriptors
-                    for row in rows:
-                        cand_descs.append(kf_desc[row])
-            n_cand = len(cand_descs)
-            if n_cand == 0:
-                descriptors.append(landmark.descriptor)
-                identifiers.append(lid)
-            elif n_cand == 1:
-                descriptors.append(cand_descs[0])
+            obs = landmark.observations
+            lkey = (lid, anchor, len(obs))
+            cached = lm_cache.get(lkey)
+            if cached is None:
+                latest = max(obs, default=anchor)
+                cand_descs = []
+                if anchor in keyframes:
+                    rows = _kf_row_map(anchor).get(lid)
+                    if rows:
+                        kf_desc = keyframes[anchor].descriptors
+                        for row in rows:
+                            cand_descs.append(kf_desc[row])
+                if latest != anchor and latest in keyframes:
+                    rows = _kf_row_map(latest).get(lid)
+                    if rows:
+                        kf_desc = keyframes[latest].descriptors
+                        for row in rows:
+                            cand_descs.append(kf_desc[row])
+                n_cand = len(cand_descs)
+                if n_cand == 0:
+                    cached = (landmark.descriptor,)
+                elif n_cand == 1:
+                    cached = (cand_descs[0],)
+                else:
+                    seen_descriptors = set()
+                    dedup = []
+                    for descriptor in cand_descs:
+                        signature = (descriptor.dtype.str, descriptor.shape, descriptor.tobytes())
+                        if signature in seen_descriptors:
+                            continue
+                        seen_descriptors.add(signature)
+                        dedup.append(descriptor)
+                    cached = tuple(dedup)
+                lm_cache[lkey] = cached
+            if len(cached) == 1:
+                descriptors.append(cached[0])
                 identifiers.append(lid)
             else:
-                seen_descriptors = set()
-                for descriptor in cand_descs:
-                    signature = (descriptor.dtype.str, descriptor.shape, descriptor.tobytes())
-                    if signature in seen_descriptors:
-                        continue
-                    seen_descriptors.add(signature)
-                    descriptors.append(descriptor)
+                for d in cached:
+                    descriptors.append(d)
                     identifiers.append(lid)
         if not descriptors:
             return np.empty((0, 128), np.float32), np.empty(0, int)
@@ -3610,73 +3726,105 @@ class SharedSlam:
         errors_by_id = {}
         retained_pixels = []
         retained_ids = []
-        valid_ids = []
-        observed_pixels = []
-        predicted_left = []
-        predicted_right = []
+        cand_valid_ids = []
+        cand_obs = []
+        cand_world = []
+        n_pixels = len(pixels)
+        w_lim, h_lim = float(size[0]), float(size[1])
         with self.map.lock:
+            landmarks_map = self.map.landmarks
             for landmark_id in candidate_ids:
-                landmark = self.map.landmarks.get(landmark_id)
+                landmark = landmarks_map.get(landmark_id)
                 if landmark is None:
                     rejected['missing_landmark'] += 1
                     continue
-                if landmark_id in track_pixels:
-                    observed = track_pixels[landmark_id]
-                else:
+                observed = track_pixels.get(landmark_id)
+                if observed is None:
                     feature = feature_for_landmark.get(landmark_id, -1)
-                    if feature < 0 or feature >= len(pixels):
+                    if feature < 0 or feature >= n_pixels:
                         rejected['invalid_observation'] += 1
                         continue
                     observed = np.asarray(pixels[feature], float)
                 world = np.asarray(landmark.position, float)
-                if (observed.shape != (2,) or not np.isfinite(observed).all()
-                        or world.shape != (3,) or not np.isfinite(world).all()
-                        or observed[0] < 0 or observed[0] >= size[0]
-                        or observed[1] < 0 or observed[1] >= size[1]):
+                if (observed.shape != (2,) or world.shape != (3,)
+                        or not (np.isfinite(observed[0]) and np.isfinite(observed[1])
+                                and np.isfinite(world[0]) and np.isfinite(world[1]) and np.isfinite(world[2]))
+                        or observed[0] < 0 or observed[0] >= w_lim
+                        or observed[1] < 0 or observed[1] >= h_lim):
                     rejected['invalid_observation'] += 1
                     continue
-                camera = (world - pose[:3, 3]) @ pose[:3, :3]
-                if not np.isfinite(camera).all() or camera[2] <= 0:
-                    rejected['behind_camera'] += 1
-                    continue
-                homogeneous = self.K @ camera
-                projected = homogeneous[:2] / homogeneous[2]
-                right = (projected[0] - self.K[0, 0] * self.stereo.baseline / camera[2]
-                         - self.stereo.disparity_offset)
-                if (not np.isfinite(projected).all() or not np.isfinite(right)
-                        or projected[0] < 0 or projected[0] >= size[0]
-                        or projected[1] < 0 or projected[1] >= size[1]
-                        or right < 0 or right >= size[0]):
-                    rejected['outside_image'] += 1
-                    continue
-                valid_ids.append(landmark_id)
-                observed_pixels.append(observed)
-                predicted_left.append(projected)
-                predicted_right.append(right)
+                cand_valid_ids.append(landmark_id)
+                cand_obs.append(observed)
+                cand_world.append(world)
 
-        if observed_pixels:
-            observed_array = np.asarray(observed_pixels, float)
+        valid_ids = []
+        observed_array = np.empty((0, 2), dtype=float)
+        predicted_left_arr = np.empty((0, 2), dtype=float)
+        predicted_right_arr = np.empty(0, dtype=float)
+        if cand_valid_ids:
+            obs_arr = np.asarray(cand_obs, dtype=float)
+            world_arr = np.asarray(cand_world, dtype=float)
+            cam_arr = (world_arr - pose[:3, 3]) @ pose[:3, :3]
+            cam_ok = np.isfinite(cam_arr).all(axis=1) & (cam_arr[:, 2] > 0.0)
+            rejected['behind_camera'] += int(len(cand_valid_ids) - int(cam_ok.sum()))
+            if np.any(cam_ok):
+                ok_idx = np.flatnonzero(cam_ok)
+                cam_ok_pts = cam_arr[ok_idx]
+                hom = cam_ok_pts @ self.K.T
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    proj = hom[:, :2] / hom[:, 2:3]
+                    right_pred = (
+                        proj[:, 0]
+                        - self.K[0, 0] * self.stereo.baseline / cam_ok_pts[:, 2]
+                        - self.stereo.disparity_offset
+                    )
+                in_img = (
+                    np.isfinite(proj).all(axis=1)
+                    & np.isfinite(right_pred)
+                    & (proj[:, 0] >= 0.0) & (proj[:, 0] < w_lim)
+                    & (proj[:, 1] >= 0.0) & (proj[:, 1] < h_lim)
+                    & (right_pred >= 0.0) & (right_pred < w_lim)
+                )
+                rejected['outside_image'] += int(len(ok_idx) - int(in_img.sum()))
+                if np.any(in_img):
+                    keep_sub = np.flatnonzero(in_img)
+                    keep_orig = ok_idx[keep_sub]
+                    valid_ids = [cand_valid_ids[i] for i in keep_orig.tolist()]
+                    observed_array = obs_arr[keep_orig]
+                    predicted_left_arr = proj[keep_sub]
+                    predicted_right_arr = right_pred[keep_sub]
+
+        if len(valid_ids):
             sampled_points, sampled_right = self._measure_supported_stereo_pixels(observed_array)
-            for i, landmark_id in enumerate(valid_ids):
-                if (not np.isfinite(sampled_points[i]).all()
-                        or not np.isfinite(sampled_right[i])
-                        or sampled_right[i] < 0 or sampled_right[i] >= size[0]):
-                    rejected['invalid_stereo_measurement'] += 1
-                    continue
-                left_error = float(np.linalg.norm(predicted_left[i] - observed_array[i]))
-                right_error = float(abs(predicted_right[i] - sampled_right[i]))
-                if left_error > 2.0:
-                    rejected['left_residual'] += 1
-                    continue
-                if right_error > 2.0:
-                    rejected['right_residual'] += 1
-                    continue
-                retained_ids.append(landmark_id)
-                retained_pixels.append(observed_array[i])
-                left_errors.append(left_error)
-                right_errors.append(right_error)
-                errors_by_id[int(landmark_id)] = (
-                    observed_array[i].copy(), left_error, right_error)
+            stereo_ok = (
+                np.isfinite(sampled_points).all(axis=1)
+                & np.isfinite(sampled_right)
+                & (sampled_right >= 0.0)
+                & (sampled_right < w_lim)
+            )
+            rejected['invalid_stereo_measurement'] += int(len(valid_ids) - int(stereo_ok.sum()))
+            if np.any(stereo_ok):
+                s_idx = np.flatnonzero(stereo_ok)
+                left_err = np.linalg.norm(predicted_left_arr[s_idx] - observed_array[s_idx], axis=1)
+                right_err = np.abs(predicted_right_arr[s_idx] - sampled_right[s_idx])
+                left_ok = left_err <= 2.0
+                rejected['left_residual'] += int(len(s_idx) - int(left_ok.sum()))
+                right_ok = left_ok & (right_err <= 2.0)
+                rejected['right_residual'] += int(int(left_ok.sum()) - int(right_ok.sum()))
+                if np.any(right_ok):
+                    r_sub = np.flatnonzero(right_ok)
+                    r_orig = s_idx[r_sub]
+                    retained_ids = [valid_ids[i] for i in r_orig.tolist()]
+                    retained_pixels = observed_array[r_orig]
+                    left_errors = left_err[r_sub]
+                    right_errors = right_err[r_sub]
+                    for pos_k, orig_i in enumerate(r_orig.tolist()):
+                        lid = valid_ids[orig_i]
+                        errors_by_id[int(lid)] = (
+                            observed_array[orig_i].copy(),
+                            float(left_errors[pos_k]),
+                            float(right_errors[pos_k]),
+                        )
 
         retained_ids = set(retained_ids)
         retained_pixels = np.asarray(retained_pixels, float).reshape(-1, 2)
@@ -7214,12 +7362,17 @@ class SharedSlam:
                 status, associations, pixels, right_u, arbitration_report, info)
         if arbitration_report is not None:
             info['stereo_pose_arbitration'] = arbitration_report
+        before_bundle = None
+        before_bundle_revision = None
+        before_bundle_pose = None
         if arbitration_measurement is not None and info['tracking_ok']:
             # This diagnostic does not withhold rows from later BA or protect
             # against subsequent corrections. Sample the two poses atomically.
             with self.map.lock:
+                before_bundle_revision = self.map.revision
+                before_bundle_pose = self.map.poses[-1].copy()
                 before_bundle = self._arbitrate_supported_pose(
-                    self._arbitration_context, self.map.poses[-1], arbitration_measurement)
+                    self._arbitration_context, before_bundle_pose, arbitration_measurement)
             info['stereo_pose_arbitration_before_bundle'] = before_bundle['map']
             if getattr(self.config, 'stereo_bundle_holdout_guard', False):
                 self._arbitration_context['selected_arbitration_report'] = _owned_diagnostic_value(arbitration_report)
@@ -7584,10 +7737,18 @@ class SharedSlam:
                 self._tracking_trace_frame_state(index, include_landmarks=True,
                                                  stage="cohort_map_after_ba"))
         if arbitration_measurement is not None and info['tracking_ok']:
-            with self.map.lock:
-                after_bundle = self._arbitrate_supported_pose(
-                    self._arbitration_context, self.map.poses[-1], arbitration_measurement)
-            info['stereo_pose_arbitration_after_bundle'] = after_bundle['map']
+            if (
+                not bundle_called
+                and before_bundle is not None
+                and before_bundle_revision == self.map.revision
+                and np.array_equal(self.map.poses[-1], before_bundle_pose)
+            ):
+                info['stereo_pose_arbitration_after_bundle'] = dict(before_bundle['map'])
+            else:
+                with self.map.lock:
+                    after_bundle = self._arbitrate_supported_pose(
+                        self._arbitration_context, self.map.poses[-1], arbitration_measurement)
+                info['stereo_pose_arbitration_after_bundle'] = after_bundle['map']
         if info["tracking_ok"] and self.stereo is not None:
             self.previous_stereo_geometry = (
                 StereoLoopFrame(pixels.copy(), points.copy(), desc.copy(), size),
@@ -7598,7 +7759,7 @@ class SharedSlam:
                     self.current_supported_stereo, associations)
         # Bound the tracking working set, not the persistent map. Old, valid
         # landmarks remain available to geometric relocalization and loop correction.
-        dropped = {i: l for i, l in self.map.landmarks.items() if l.misses >= 5}
+        dropped = self.map.high_miss_landmarks(5)
         if dropped:
             for lid in dropped:
                 self.map.remove_landmark(lid)

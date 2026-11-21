@@ -25,6 +25,17 @@ class Landmark:
     misses: int = 0
     octave: int = 0
     is_far: bool = False
+    _high_miss_set: set[int] | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "misses":
+            hms = self.__dict__.get("_high_miss_set")
+            if hms is not None:
+                if value >= 5:
+                    hms.add(self.id)
+                else:
+                    hms.discard(self.id)
 
 
 @dataclass
@@ -60,6 +71,8 @@ class MapState:
         self.next_landmark = 0
         self.lock = RLock()
         self.index = IncrementalMapIndex()
+        self._high_miss_landmarks: set[int] = set()
+        self._high_miss_tracked_count: int = 0
 
     def add_stereo_motion(self, previous, current, measurement):
         """Retain independently verified metric motion between accepted frames."""
@@ -85,9 +98,32 @@ class MapState:
             ident, position.copy(), descriptor.copy(), anchor, observations,
             octave=int(octave), is_far=bool(is_far),
         )
+        landmark._high_miss_set = self._high_miss_landmarks
+        if landmark.misses >= 5:
+            self._high_miss_landmarks.add(ident)
         self.landmarks[ident] = landmark
+        self._high_miss_tracked_count += 1
         self.index.on_landmark_added(landmark)
         return ident
+
+    def high_miss_landmarks(self, min_misses: int = 5) -> dict[int, Landmark]:
+        """Return landmarks with misses >= min_misses in O(|dropped|) when tracked."""
+        if (
+            min_misses == 5
+            and self._high_miss_tracked_count == len(self.landmarks)
+            and len(self.index) == len(self.landmarks)
+        ):
+            if not self._high_miss_landmarks:
+                return {}
+            out: dict[int, Landmark] = {}
+            for ident in sorted(self._high_miss_landmarks):
+                lm = self.landmarks.get(ident)
+                if lm is not None and lm.misses >= 5:
+                    out[ident] = lm
+                else:
+                    self._high_miss_landmarks.discard(ident)
+            return out
+        return {i: l for i, l in self.landmarks.items() if l.misses >= min_misses}
 
     def add_observation(self, landmark_id, keyframe_id, observation):
         with self.lock:
@@ -114,6 +150,10 @@ class MapState:
         with self.lock:
             removed = self.landmarks.pop(landmark_id, None)
             if removed is not None:
+                if removed._high_miss_set is self._high_miss_landmarks:
+                    self._high_miss_tracked_count = max(0, self._high_miss_tracked_count - 1)
+                removed._high_miss_set = None
+                self._high_miss_landmarks.discard(landmark_id)
                 self.index.on_landmark_removed(landmark_id)
             return removed
 

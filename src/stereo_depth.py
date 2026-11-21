@@ -80,6 +80,200 @@ def _search(source, target, pixel, direction, config, disparity_bounds):
     return result, None
 
 
+_ORIGINAL_SEARCH = _search
+_ORIGINAL_MATCH_TEMPLATE = cv.matchTemplate
+
+
+def _sample_rect_batch(image, cx, cy, width_out, height_out):
+    """Sample N subpixel rectangles using a single batched cv.remap call."""
+    n = len(cx)
+    x0 = (cx - (width_out - 1) * 0.5).astype(np.float32)
+    y0 = (cy - (height_out - 1) * 0.5).astype(np.float32)
+    dx = np.arange(width_out, dtype=np.float32)
+    dy = np.arange(height_out, dtype=np.float32)
+    mx = np.broadcast_to(x0[:, None, None] + dx[None, None, :], (n, height_out, width_out))
+    my = np.broadcast_to(y0[:, None, None] + dy[None, :, None], (n, height_out, width_out))
+    remapped = cv.remap(
+        image,
+        np.ascontiguousarray(mx.reshape(n * height_out, width_out)),
+        np.ascontiguousarray(my.reshape(n * height_out, width_out)),
+        cv.INTER_LINEAR,
+        borderMode=cv.BORDER_REPLICATE,
+    )
+    return remapped.reshape(n, height_out, width_out)
+
+
+def _batch_search(source, target, pts, direction, config, disparity_bounds, batch_size=128):
+    """Batched equivalent of _search preserving all photometric/geometric gates."""
+    n_total = len(pts)
+    patch_size = int(config.patch_size)
+    max_disp = int(config.max_disparity)
+    radius = patch_size // 2
+    height, width = source.shape
+    strip_w = patch_size + max_disp
+    n_scores = max_disp + 1
+    patch_area = float(patch_size * patch_size)
+    tolerance = 8.0 * float(np.finfo(np.float32).eps)
+    flat_var_floor = 1e-6 * patch_area
+
+    out_x = np.full(n_total, np.nan, dtype=np.float64)
+    reasons = [None] * n_total
+    offsets = np.arange(n_scores, dtype=np.float64)
+
+    for start in range(0, n_total, batch_size):
+        stop = min(n_total, start + batch_size)
+        sub = pts[start:stop]
+        x = sub[:, 0]
+        y = sub[:, 1]
+        in_bounds = (
+            (x >= radius)
+            & (x <= width - 1 - radius)
+            & (y >= radius)
+            & (y <= height - 1 - radius)
+        )
+        if not in_bounds.all():
+            for li in np.flatnonzero(~in_bounds):
+                reasons[start + int(li)] = 'patch_bounds'
+        idx_b = np.flatnonzero(in_bounds)
+        if not len(idx_b):
+            continue
+
+        xb = x[idx_b]
+        yb = y[idx_b]
+        patches = _sample_rect_batch(source, xb, yb, patch_size, patch_size)
+        p64 = patches.astype(np.float64)
+        p_mean = p64.mean(axis=(1, 2))
+        p_zm = p64 - p_mean[:, None, None]
+        p_ss = np.einsum('bij,bij->b', p_zm, p_zm)
+        p_std = np.sqrt(p_ss / patch_area)
+        ok_tex = p_std >= config.minimum_texture_std
+        if not ok_tex.all():
+            for li in np.flatnonzero(~ok_tex):
+                reasons[start + int(idx_b[li])] = 'low_texture'
+        keep = np.flatnonzero(ok_tex)
+        if not len(keep):
+            continue
+
+        idx_b = idx_b[keep]
+        xb = xb[keep]
+        yb = yb[keep]
+        p_zm = p_zm[keep]
+        p_ss = p_ss[keep]
+        batch_n = len(idx_b)
+
+        strip_center = xb + direction * max_disp * 0.5
+        strips = _sample_rect_batch(target, strip_center, yb, strip_w, patch_size)
+        s64 = strips.astype(np.float64)
+
+        col_s = s64.sum(axis=1)
+        col_sq = np.einsum('bij,bij->bj', s64, s64)
+        cs = np.empty((batch_n, strip_w + 1), dtype=np.float64)
+        cs[:, 0] = 0.0
+        np.cumsum(col_s, axis=1, out=cs[:, 1:])
+        csq = np.empty((batch_n, strip_w + 1), dtype=np.float64)
+        csq[:, 0] = 0.0
+        np.cumsum(col_sq, axis=1, out=csq[:, 1:])
+        win_s = cs[:, patch_size:] - cs[:, :-patch_size]
+        win_sq = csq[:, patch_size:] - csq[:, :-patch_size]
+        win_ss = np.maximum(win_sq - (win_s * win_s) / patch_area, 0.0)
+
+        p_zm_t = np.ascontiguousarray(p_zm.transpose(2, 0, 1))  # (P, B, P)
+        num = np.zeros((batch_n, n_scores), dtype=np.float64)
+        for dx_idx in range(patch_size):
+            num += (p_zm_t[dx_idx][:, None, :] @ s64[:, :, dx_idx:dx_idx + n_scores])[:, 0, :]
+
+        denom = np.sqrt(p_ss[:, None] * win_ss)
+        valid_den = (win_ss > flat_var_floor) & (denom > 0.0)
+        scores = np.where(valid_den, num / np.where(valid_den, denom, 1.0), 0.0)
+        scores = np.clip(scores, -1.0, 1.0)
+
+        positions = (strip_center - max_disp * 0.5)[:, None] + offsets[None, :]
+        disparities = direction * (positions - xb[:, None])
+        valid = (
+            (positions >= radius)
+            & (positions <= width - 1 - radius)
+            & (disparities > disparity_bounds[0])
+            & (disparities < disparity_bounds[1])
+            & np.isfinite(scores)
+        )
+
+        any_valid = valid.any(axis=1)
+        masked = np.where(valid, scores, -np.inf)
+        best_idx = np.argmax(masked, axis=1)
+        rows_b = np.arange(batch_n)
+        s_best = scores[rows_b, best_idx]
+        comp = valid & (np.abs(offsets[None, :] - best_idx[:, None]) > 1.0)
+        any_comp = comp.any(axis=1)
+        second_scores = np.max(np.where(comp, scores, -np.inf), axis=1)
+
+        cand_refined = []
+        for bi in range(batch_n):
+            gi = start + int(idx_b[bi])
+            if not any_valid[bi]:
+                reasons[gi] = 'search_bounds'
+                continue
+            sb = float(s_best[bi])
+            if sb < config.minimum_correlation:
+                reasons[gi] = 'correlation'
+                continue
+            if not any_comp[bi]:
+                reasons[gi] = 'insufficient_alternatives'
+                continue
+            sec = float(second_scores[bi])
+            if sb - sec <= tolerance:
+                reasons[gi] = 'near_tie'
+                continue
+            if 1.0 - sb >= config.uniqueness_ratio * (1.0 - sec):
+                reasons[gi] = 'ambiguous'
+                continue
+            best = int(best_idx[bi])
+            if not (0 < best < n_scores - 1 and valid[bi, best - 1] and valid[bi, best + 1]):
+                reasons[gi] = 'unrefinable_peak'
+                continue
+            s_prev = float(scores[bi, best - 1])
+            s_next = float(scores[bi, best + 1])
+            curvature = s_prev - 2.0 * sb + s_next
+            if curvature >= -tolerance:
+                reasons[gi] = 'flat_peak'
+                continue
+            offset = 0.5 * (s_prev - s_next) / curvature
+            if abs(offset) > 0.5:
+                reasons[gi] = 'unstable_peak'
+                continue
+            res_x = float(positions[bi, best] + offset)
+            if not (
+                radius <= res_x <= width - 1 - radius
+                and disparity_bounds[0] < direction * (res_x - xb[bi]) < disparity_bounds[1]
+            ):
+                reasons[gi] = 'refined_bounds'
+                continue
+            cand_refined.append((bi, gi, res_x))
+
+        if cand_refined:
+            r_bi = np.array([c[0] for c in cand_refined], dtype=np.int32)
+            r_rx = np.array([c[2] for c in cand_refined], dtype=np.float64)
+            r_ry = yb[r_bi]
+            actuals = _sample_rect_batch(target, r_rx, r_ry, patch_size, patch_size).astype(np.float64)
+            a_zm = actuals - actuals.mean(axis=(1, 2), keepdims=True)
+            a_ss = np.einsum('bij,bij->b', a_zm, a_zm)
+            a_std = np.sqrt(a_ss / patch_area)
+            ref_zm = p_zm[r_bi]
+            ref_ss = p_ss[r_bi]
+            corr_num = np.einsum('bij,bij->b', a_zm, ref_zm)
+            corr_den = np.sqrt(a_ss * ref_ss)
+            valid_c = (a_ss > flat_var_floor) & (corr_den > 0.0)
+            corrs = np.where(valid_c, corr_num / np.where(valid_c, corr_den, 1.0), 0.0)
+            for k_idx, (_, gi, res_x) in enumerate(cand_refined):
+                if a_std[k_idx] < config.minimum_texture_std:
+                    reasons[gi] = 'low_target_texture'
+                elif not np.isfinite(corrs[k_idx]) or corrs[k_idx] < config.minimum_correlation:
+                    reasons[gi] = 'refined_correlation'
+                else:
+                    out_x[gi] = res_x
+
+    return out_x, reasons
+
+
 def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_bounds=None):
     """Return independently verified right x positions and rejection counts.
 
@@ -103,6 +297,42 @@ def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_b
     left, right = np.asarray(left, np.float32), np.asarray(right, np.float32)
     if not np.isfinite(left).all() or not np.isfinite(right).all():
         raise ValueError('Stereo verification images must be finite')
+    if not len(pixels):
+        return result, counters
+
+    if _search is _ORIGINAL_SEARCH and cv.matchTemplate is _ORIGINAL_MATCH_TEMPLATE:
+        finite_mask = np.isfinite(pixels).all(axis=1)
+        if not finite_mask.all():
+            counters['nonfinite_pixel'] = int((~finite_mask).sum())
+        finite_idx = np.flatnonzero(finite_mask)
+        if not len(finite_idx):
+            return result, counters
+        xr, fwd_reasons = _batch_search(
+            left, right, pixels[finite_idx], -1, config, disparity_bounds
+        )
+        ok_fwd = []
+        for k, reason in enumerate(fwd_reasons):
+            if reason is None:
+                ok_fwd.append(k)
+            else:
+                counters[reason] = counters.get(reason, 0) + 1
+        if ok_fwd:
+            ok_arr = np.asarray(ok_fwd, dtype=np.int32)
+            rev_pts = np.column_stack((xr[ok_arr], pixels[finite_idx[ok_arr], 1]))
+            xl, rev_reasons = _batch_search(
+                right, left, rev_pts, 1, config, disparity_bounds
+            )
+            for m, reason in enumerate(rev_reasons):
+                gi = int(finite_idx[ok_arr[m]])
+                if reason is not None:
+                    counters[reason] = counters.get(reason, 0) + 1
+                elif abs(xl[m] - pixels[gi, 0]) > config.round_trip_px:
+                    counters['round_trip'] = counters.get('round_trip', 0) + 1
+                else:
+                    result[gi] = xr[ok_arr[m]]
+                    counters['verified'] += 1
+        return result, counters
+
     for index, pixel in enumerate(pixels):
         if not np.isfinite(pixel).all():
             reason = 'nonfinite_pixel'

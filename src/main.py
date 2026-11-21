@@ -194,6 +194,10 @@ def parse_main_args(argv=None):
                         help='Experimental finite gauge convention for certified two-bridge stereo graphs')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
+    parser.add_argument('--pipeline-extraction', action='store_true',
+                        help='Overlap background frontend extraction with tracking/mapping')
+    parser.add_argument('--pipeline-buffer', type=int, default=1,
+                        help='Prefetch buffer depth for --pipeline-extraction (default: 1)')
     parser.add_argument('--profile', type=Path)
     parser.add_argument('--bundle-diagnostics-dir', type=Path,
                         help='Owned run-output folder for selected bundle adjustment snapshots')
@@ -282,6 +286,10 @@ def parse_main_args(argv=None):
             parser.error('--bundle-diagnostics-dir must be inside the map output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
+    if args.pipeline_buffer < 1:
+        parser.error('--pipeline-buffer must be positive')
+    if args.pipeline_extraction and not args.slam:
+        parser.error('--pipeline-extraction requires --slam')
     if args.max_frames is not None and args.max_frames < 2:
         parser.error("--max-frames must be at least 2")
     if args.frame_delay_ms < 0:
@@ -357,7 +365,8 @@ def main() -> None:
     last_payload = None
     stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
-                                    cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None)
+                                    cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None,
+                                    pipeline_extraction=bool(args.pipeline_extraction))
     bundle_diagnostic_writer = None
     if args.bundle_diagnostics_dir is not None:
         from bundle_diagnostics import BundleDiagnosticsWriter
@@ -369,13 +378,25 @@ def main() -> None:
                         config=_mapping_config_from_args(args),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
-    if shared is not None:
-        shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
-        vo.poses = shared.map.poses
 
     num_frames = len(vo.Images_1) if use_stereo else len(vo.Images)
     if args.max_frames is not None:
         num_frames = min(num_frames, args.max_frames)
+
+    extraction_pipeline = None
+    next_pipeline_submit = 0
+    def _load_frame_pair(idx: int):
+        if use_stereo:
+            return vo.Images_1[idx], vo.Images_2[idx]
+        return vo.Images[idx], None
+
+    if shared is not None and args.pipeline_extraction:
+        from frontend_pipeline import FrontendExtractionPipeline
+        extraction_pipeline = FrontendExtractionPipeline(shared, buffer_size=args.pipeline_buffer)
+        prefetch_depth = min(args.pipeline_buffer, num_frames)
+        while next_pipeline_submit < prefetch_depth:
+            extraction_pipeline.submit_loader(next_pipeline_submit, _load_frame_pair)
+            next_pipeline_submit += 1
 
     frame_times = None
     if args.realtime and times_path and os.path.isfile(times_path):
@@ -383,6 +404,17 @@ def main() -> None:
             frame_times = [float(line.strip()) for line in f if line.strip()]
 
     try:
+        if shared is not None:
+            if extraction_pipeline is not None:
+                extracted0 = extraction_pipeline.get(0)
+                if next_pipeline_submit < num_frames:
+                    extraction_pipeline.submit_loader(next_pipeline_submit, _load_frame_pair)
+                    next_pipeline_submit += 1
+                shared.process(0, extracted=extracted0)
+            else:
+                shared.process(0, vo.Images_1[0] if use_stereo else vo.Images[0], vo.Images_2[0] if use_stereo else None)
+            vo.poses = shared.map.poses
+
         for i in range(1, num_frames):
 
             mode_is_slam = telemetry_state.mode == "slam"
@@ -391,7 +423,14 @@ def main() -> None:
             use_relocalization = ENABLE_RELOCALIZATION and mode_is_slam
 
             if shared is not None:
-                pose, debug = shared.process(i, vo.Images_1[i] if use_stereo else vo.Images[i], vo.Images_2[i] if use_stereo else None)
+                if extraction_pipeline is not None:
+                    extracted = extraction_pipeline.get(i)
+                    if next_pipeline_submit < num_frames:
+                        extraction_pipeline.submit_loader(next_pipeline_submit, _load_frame_pair)
+                        next_pipeline_submit += 1
+                    pose, debug = shared.process(i, extracted=extracted)
+                else:
+                    pose, debug = shared.process(i, vo.Images_1[i] if use_stereo else vo.Images[i], vo.Images_2[i] if use_stereo else None)
                 vo.poses = shared.map.poses
                 p2 = np.asarray(debug.get('feature_points', []), dtype=np.float32).reshape(-1, 2)
             elif use_stereo:
@@ -537,6 +576,8 @@ def main() -> None:
             elif telemetry and getattr(telemetry, "has_clients", True) and args.frame_delay_ms > 0:
                 time.sleep(args.frame_delay_ms / 1000.0)
     finally:
+        if extraction_pipeline is not None:
+            extraction_pipeline.close()
         if shared is not None:
             shared.close()
             vo.poses = shared.map.poses

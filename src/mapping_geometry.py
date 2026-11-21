@@ -10,9 +10,7 @@ def project(points, pose, matrix):
     return homogeneous[:, :2] / np.maximum(homogeneous[:, 2:], 1e-9), camera[:, 2]
 
 
-def match_descriptors(first, second, ratio=0.7):
-    if first is None or second is None or len(first) < 2 or len(second) < 2:
-        return np.empty((0, 2), int)
+def _match_descriptors_bf(first, second, ratio=0.7):
     matcher = cv.BFMatcher(cv.NORM_HAMMING if first.dtype == np.uint8 else cv.NORM_L2)
 
     def matches(a, b):
@@ -26,6 +24,115 @@ def match_descriptors(first, second, ratio=0.7):
     return np.array(
         [(i, j) for i, j in forward.items() if backward.get(j) == i], int
     ).reshape(-1, 2)
+
+
+def _match_descriptors_gemm_l2(first, second, ratio):
+    """Exact mutual float32 L2 ratio matcher using one BLAS SGEMM and lazy backward check.
+
+    Rows near a nearest-neighbor tie, Lowe ratio boundary, or float32 cancellation
+    bound are re-evaluated by cv.BFMatcher(cv.NORM_L2) so results match BFMatcher exactly.
+    """
+    swapped = len(first) > len(second)
+    a = np.ascontiguousarray(second if swapped else first, dtype=np.float32)
+    b = np.ascontiguousarray(first if swapped else second, dtype=np.float32)
+
+    na = np.einsum("ij,ij->i", a, a)
+    nb = np.einsum("ij,ij->i", b, b)
+    if not (np.isfinite(na).all() and np.isfinite(nb).all()):
+        return _match_descriptors_bf(first, second, ratio)
+
+    r2 = float(ratio * ratio)
+    dist2 = np.multiply(a, np.float32(-2.0)) @ b.T
+    dist2 += na[:, None]
+    dist2 += nb[None, :]
+    np.maximum(dist2, np.float32(0.0), out=dist2)
+
+    rows = np.arange(len(a))
+    best_f = np.argmin(dist2, axis=1)
+    d1_f = dist2[rows, best_f].copy()
+    dist2[rows, best_f] = np.inf
+    d2_f = np.min(dist2, axis=1)
+    dist2[rows, best_f] = d1_f
+
+    eps = float(np.finfo(np.float32).eps)
+    dim_factor = 8.0 * eps * (a.shape[1] + 2)
+    bound_f = dim_factor * (na.astype(np.float64) + float(nb.max()))
+    d1_f64 = d1_f.astype(np.float64)
+    d2_f64 = d2_f.astype(np.float64)
+    ok_f = d1_f64 < r2 * d2_f64
+    ambig_f = (
+        (d2_f64 - d1_f64 <= 2.0 * bound_f)
+        | (np.abs(d1_f64 - r2 * d2_f64) <= 2.0 * bound_f)
+        | (d1_f64 <= bound_f)
+    )
+    amb_rows = np.flatnonzero(ambig_f)
+    bf = None
+    if len(amb_rows):
+        bf = cv.BFMatcher(cv.NORM_L2)
+        for row, pair in zip(amb_rows, bf.knnMatch(a[amb_rows], b, k=2)):
+            ok_f[row] = len(pair) == 2 and pair[0].distance < ratio * pair[1].distance
+            if pair:
+                best_f[row] = pair[0].trainIdx
+
+    cand_i = np.flatnonzero(ok_f)
+    if not len(cand_i):
+        return np.empty((0, 2), int)
+    cand_j = best_f[cand_i]
+
+    # Only evaluate the reverse nearest-neighbor ratio test on columns won in forward pass.
+    uniq_j, inv_j = np.unique(cand_j, return_inverse=True)
+    sub_b = np.ascontiguousarray(dist2[:, uniq_j].T)
+    u_rows = np.arange(len(uniq_j))
+    best_b = np.argmin(sub_b, axis=1)
+    d1_b = sub_b[u_rows, best_b].copy()
+    sub_b[u_rows, best_b] = np.inf
+    d2_b = np.min(sub_b, axis=1)
+
+    bound_b = dim_factor * (nb[uniq_j].astype(np.float64) + float(na.max()))
+    d1_b64 = d1_b.astype(np.float64)
+    d2_b64 = d2_b.astype(np.float64)
+    ok_b = d1_b64 < r2 * d2_b64
+    ambig_b = (
+        (d2_b64 - d1_b64 <= 2.0 * bound_b)
+        | (np.abs(d1_b64 - r2 * d2_b64) <= 2.0 * bound_b)
+        | (d1_b64 <= bound_b)
+    )
+    amb_u = np.flatnonzero(ambig_b)
+    if len(amb_u):
+        if bf is None:
+            bf = cv.BFMatcher(cv.NORM_L2)
+        for u_idx, pair in zip(amb_u, bf.knnMatch(b[uniq_j[amb_u]], a, k=2)):
+            ok_b[u_idx] = len(pair) == 2 and pair[0].distance < ratio * pair[1].distance
+            if pair:
+                best_b[u_idx] = pair[0].trainIdx
+
+    mutual = ok_b[inv_j] & (best_b[inv_j] == cand_i)
+    if not np.any(mutual):
+        return np.empty((0, 2), int)
+    if swapped:
+        pairs = np.column_stack((cand_j[mutual], cand_i[mutual])).astype(int)
+        # Preserve ascending queryIdx order identical to BFMatcher dict iteration
+        order = np.argsort(pairs[:, 0], kind="mergesort")
+        return pairs[order]
+    return np.column_stack((cand_i[mutual], cand_j[mutual])).astype(int)
+
+
+def match_descriptors(first, second, ratio=0.7):
+    if first is None or second is None or len(first) < 2 or len(second) < 2:
+        return np.empty((0, 2), int)
+    if (
+        isinstance(first, np.ndarray)
+        and isinstance(second, np.ndarray)
+        and first.dtype == np.float32
+        and second.dtype == np.float32
+        and first.ndim == 2
+        and second.ndim == 2
+        and first.shape[1] == second.shape[1]
+        and 0.0 < ratio < 1.0
+        and 16384 <= len(first) * len(second) <= 8_000_000
+    ):
+        return _match_descriptors_gemm_l2(first, second, ratio)
+    return _match_descriptors_bf(first, second, ratio)
 
 
 def triangulate(

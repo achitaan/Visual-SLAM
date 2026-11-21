@@ -36,6 +36,9 @@ class IncrementalMapIndex:
         self._ids = np.empty(cap, dtype=np.int64)
         self._positions = np.empty((cap, 3), dtype=np.float64)
         self._is_far = np.zeros(cap, dtype=bool)
+        self._max_obs_kf = np.full(cap, -1, dtype=np.int32)
+        self._num_obs = np.zeros(cap, dtype=np.int32)
+        self._is_conflicted = np.zeros(cap, dtype=bool)
         self._id_to_slot: dict[int, int] = {}
 
         # (keyframe_id, pixel_key) -> set of landmark_ids claiming that exact pixel
@@ -51,6 +54,10 @@ class IncrementalMapIndex:
         self._kf_landmarks: dict[int, set[int]] = {}
         self._landmark_kfs: dict[int, set[int]] = {}
 
+        # Reverse anchor index: anchor_keyframe_id -> set of landmark_ids anchored there
+        self._anchor_landmarks: dict[int, set[int]] = {}
+        self._landmark_anchor: dict[int, int] = {}
+
         # Visibility/found counters for stale single-view pruning
         self._visible_counts: dict[int, int] = {}
         self._found_counts: dict[int, int] = {}
@@ -63,12 +70,21 @@ class IncrementalMapIndex:
         new_ids = np.empty(new_cap, dtype=np.int64)
         new_pos = np.empty((new_cap, 3), dtype=np.float64)
         new_far = np.zeros(new_cap, dtype=bool)
+        new_max_obs = np.full(new_cap, -1, dtype=np.int32)
+        new_num_obs = np.zeros(new_cap, dtype=np.int32)
+        new_conflicted = np.zeros(new_cap, dtype=bool)
         new_ids[: self._size] = self._ids[: self._size]
         new_pos[: self._size] = self._positions[: self._size]
         new_far[: self._size] = self._is_far[: self._size]
+        new_max_obs[: self._size] = self._max_obs_kf[: self._size]
+        new_num_obs[: self._size] = self._num_obs[: self._size]
+        new_conflicted[: self._size] = self._is_conflicted[: self._size]
         self._ids = new_ids
         self._positions = new_pos
         self._is_far = new_far
+        self._max_obs_kf = new_max_obs
+        self._num_obs = new_num_obs
+        self._is_conflicted = new_conflicted
         self._capacity = new_cap
 
     def _add_claim(self, landmark_id: int, keyframe_id: int, pixel: Any) -> None:
@@ -89,9 +105,15 @@ class IncrementalMapIndex:
         if prev_len == 1 and len(bucket) == 2:
             for existing_id in bucket:
                 self._conflict_counts[existing_id] = self._conflict_counts.get(existing_id, 0) + 1
+                slot = self._id_to_slot.get(existing_id)
+                if slot is not None:
+                    self._is_conflicted[slot] = True
             self._conflicted_dirty = True
         elif prev_len >= 2:
             self._conflict_counts[landmark_id] = self._conflict_counts.get(landmark_id, 0) + 1
+            slot = self._id_to_slot.get(landmark_id)
+            if slot is not None:
+                self._is_conflicted[slot] = True
             self._conflicted_dirty = True
 
     def _remove_claim_bucket(
@@ -124,6 +146,9 @@ class IncrementalMapIndex:
         if cnt <= 1:
             if landmark_id in self._conflict_counts:
                 del self._conflict_counts[landmark_id]
+                slot = self._id_to_slot.get(landmark_id)
+                if slot is not None:
+                    self._is_conflicted[slot] = False
                 self._conflicted_dirty = True
         else:
             self._conflict_counts[landmark_id] = cnt - 1
@@ -140,10 +165,26 @@ class IncrementalMapIndex:
             self._size += 1
             self._ids[slot] = lm_id
             self._id_to_slot[lm_id] = slot
+            self._max_obs_kf[slot] = -1
+            self._num_obs[slot] = 0
         self._positions[slot] = pos
         self._is_far[slot] = is_far
+        self._is_conflicted[slot] = lm_id in self._conflict_counts
         self._visible_counts.setdefault(lm_id, 1)
         self._found_counts.setdefault(lm_id, 1)
+
+        anchor = getattr(landmark, "anchor", None)
+        if anchor is not None:
+            anchor_id = int(anchor)
+            prev_anchor = self._landmark_anchor.get(lm_id)
+            if prev_anchor is not None and prev_anchor != anchor_id:
+                prev_set = self._anchor_landmarks.get(prev_anchor)
+                if prev_set is not None:
+                    prev_set.discard(lm_id)
+                    if not prev_set:
+                        del self._anchor_landmarks[prev_anchor]
+            self._landmark_anchor[lm_id] = anchor_id
+            self._anchor_landmarks.setdefault(anchor_id, set()).add(lm_id)
 
         observations = getattr(landmark, "observations", None) or {}
         for kf_id, obs in observations.items():
@@ -173,7 +214,13 @@ class IncrementalMapIndex:
             actual_obs = obs
 
         self._kf_landmarks.setdefault(kf_id, set()).add(lm_id)
-        self._landmark_kfs.setdefault(lm_id, set()).add(kf_id)
+        lm_kfs = self._landmark_kfs.setdefault(lm_id, set())
+        lm_kfs.add(kf_id)
+        slot = self._id_to_slot.get(lm_id)
+        if slot is not None:
+            self._num_obs[slot] = len(lm_kfs)
+            if kf_id > self._max_obs_kf[slot]:
+                self._max_obs_kf[slot] = kf_id
         self._found_counts[lm_id] = self._found_counts.get(lm_id, 0) + 1
         pixel = getattr(actual_obs, "pixel", None)
         if pixel is not None:
@@ -199,6 +246,17 @@ class IncrementalMapIndex:
             lm_kfs.discard(kf_id)
             if not lm_kfs:
                 del self._landmark_kfs[lm_id]
+                lm_kfs = None
+
+        slot = self._id_to_slot.get(lm_id)
+        if slot is not None:
+            if not lm_kfs:
+                self._num_obs[slot] = 0
+                self._max_obs_kf[slot] = -1
+            else:
+                self._num_obs[slot] = len(lm_kfs)
+                if kf_id == self._max_obs_kf[slot]:
+                    self._max_obs_kf[slot] = max(lm_kfs)
 
         lm_keys = self._landmark_pixel_keys.get(lm_id)
         if lm_keys:
@@ -224,10 +282,12 @@ class IncrementalMapIndex:
             self._positions[slot] = np.asarray(position, dtype=np.float64).reshape(3)
 
     def on_landmarks_bulk_moved(self, positions_by_id: dict[int, np.ndarray]) -> None:
+        id_to_slot = self._id_to_slot
+        positions = self._positions
         for lm_id, pos in positions_by_id.items():
-            slot = self._id_to_slot.get(int(lm_id))
+            slot = id_to_slot.get(int(lm_id))
             if slot is not None:
-                self._positions[slot] = np.asarray(pos, dtype=np.float64).reshape(3)
+                positions[slot] = pos
 
     def on_landmark_removed(self, landmark_id: int) -> None:
         lm_id = int(landmark_id)
@@ -239,6 +299,9 @@ class IncrementalMapIndex:
                 self._ids[slot] = moved_id
                 self._positions[slot] = self._positions[last]
                 self._is_far[slot] = self._is_far[last]
+                self._max_obs_kf[slot] = self._max_obs_kf[last]
+                self._num_obs[slot] = self._num_obs[last]
+                self._is_conflicted[slot] = self._is_conflicted[last]
                 self._id_to_slot[moved_id] = slot
             self._size = last
 
@@ -251,6 +314,13 @@ class IncrementalMapIndex:
                     kf_set.discard(lm_id)
                     if not kf_set:
                         del self._kf_landmarks[kf_id]
+        anchor = self._landmark_anchor.pop(lm_id, None)
+        if anchor is not None:
+            anc_set = self._anchor_landmarks.get(anchor)
+            if anc_set is not None:
+                anc_set.discard(lm_id)
+                if not anc_set:
+                    del self._anchor_landmarks[anchor]
         self._visible_counts.pop(lm_id, None)
         self._found_counts.pop(lm_id, None)
 
@@ -280,6 +350,14 @@ class IncrementalMapIndex:
                 result.update(lm_set)
         return result
 
+    def landmarks_for_anchors(self, anchor_ids: Any) -> set[int]:
+        result: set[int] = set()
+        for anc_id in anchor_ids:
+            lm_set = self._anchor_landmarks.get(int(anc_id))
+            if lm_set:
+                result.update(lm_set)
+        return result
+
     def query_frustum(
         self,
         T_cw: np.ndarray,
@@ -288,6 +366,9 @@ class IncrementalMapIndex:
         max_depth: float = 80.0,
         margin_px: float = 32.0,
         include_far_bearings: bool = False,
+        *,
+        exclude_conflicted: bool = False,
+        max_landmarks: int | None = None,
     ) -> FrustumQueryResult:
         if self._size == 0:
             return FrustumQueryResult(
@@ -311,30 +392,33 @@ class IncrementalMapIndex:
         pts_w = self._positions[:n]
         R = T[:3, :3]
         t = T[:3, 3]
-        pts_c = pts_w @ R.T + t
-        z = pts_c[:, 2]
+        # Compute camera-frame Z first so points behind the camera skip X/Y matmul.
+        z = pts_w @ R[2] + t[2]
 
         depth_ok = z > 1e-3
         if include_far_bearings:
             depth_ok &= (z <= max_depth) | self._is_far[:n]
         else:
             depth_ok &= z <= max_depth
+        if exclude_conflicted:
+            depth_ok &= ~self._is_conflicted[:n]
 
-        if not np.any(depth_ok):
+        cand_idx = np.flatnonzero(depth_ok)
+        if not len(cand_idx):
             return FrustumQueryResult(
                 landmark_ids=np.empty(0, dtype=np.int64),
                 projected_uv=np.empty((0, 2), dtype=np.float64),
                 depths=np.empty(0, dtype=np.float64),
             )
 
-        cand_idx = np.flatnonzero(depth_ok)
-        cand_c = pts_c[cand_idx]
+        cand_w = pts_w[cand_idx]
+        cand_xy = cand_w @ R[:2].T + t[:2]
         cand_z = z[cand_idx]
         fx, fy = K_arr[0, 0], K_arr[1, 1]
         cx, cy = K_arr[0, 2], K_arr[1, 2]
         inv_z = 1.0 / cand_z
-        u = fx * cand_c[:, 0] * inv_z + cx
-        v = fy * cand_c[:, 1] * inv_z + cy
+        u = fx * cand_xy[:, 0] * inv_z + cx
+        v = fy * cand_xy[:, 1] * inv_z + cy
 
         in_bounds = (
             np.isfinite(u)
@@ -344,18 +428,52 @@ class IncrementalMapIndex:
             & (v >= -margin_px)
             & (v < height + margin_px)
         )
-        if not np.any(in_bounds):
+        in_idx = np.flatnonzero(in_bounds)
+        if not len(in_idx):
             return FrustumQueryResult(
                 landmark_ids=np.empty(0, dtype=np.int64),
                 projected_uv=np.empty((0, 2), dtype=np.float64),
                 depths=np.empty(0, dtype=np.float64),
             )
-        final_idx = cand_idx[in_bounds]
-        uv = np.column_stack((u[in_bounds], v[in_bounds]))
+
+        final_slots = cand_idx[in_idx]
+        u_vis = u[in_idx]
+        v_vis = v[in_idx]
+        z_vis = cand_z[in_idx]
+
+        if max_landmarks is not None and len(final_slots) > int(max_landmarks):
+            k = int(max_landmarks)
+            if k <= 0:
+                return FrustumQueryResult(
+                    landmark_ids=np.empty(0, dtype=np.int64),
+                    projected_uv=np.empty((0, 2), dtype=np.float64),
+                    depths=np.empty(0, dtype=np.float64),
+                )
+            # Exact stable top-k descending by (max_obs_kf, num_obs), preserving
+            # original ascending slot order on ties.
+            keys = (
+                ((self._max_obs_kf[final_slots].astype(np.int64) + 1) << 32)
+                | self._num_obs[final_slots].astype(np.int64)
+            )
+            threshold = int(np.partition(keys, len(keys) - k)[len(keys) - k])
+            above = np.flatnonzero(keys > threshold)
+            need = k - len(above)
+            if need > 0:
+                equal = np.flatnonzero(keys == threshold)[:need]
+                sel = np.concatenate((above, equal))
+            else:
+                sel = above
+            order = sel[np.lexsort((sel, -keys[sel]))]
+            final_slots = final_slots[order]
+            u_vis = u_vis[order]
+            v_vis = v_vis[order]
+            z_vis = z_vis[order]
+
+        uv = np.column_stack((u_vis, v_vis))
         return FrustumQueryResult(
-            landmark_ids=self._ids[final_idx].copy(),
+            landmark_ids=self._ids[final_slots].copy(),
             projected_uv=uv,
-            depths=cand_z[in_bounds].copy(),
+            depths=z_vis.copy(),
         )
 
     def prune_stale_landmarks(
@@ -402,6 +520,8 @@ class IncrementalMapIndex:
         self._conflicted_dirty = False
         self._kf_landmarks.clear()
         self._landmark_kfs.clear()
+        self._anchor_landmarks.clear()
+        self._landmark_anchor.clear()
         self._visible_counts.clear()
         self._found_counts.clear()
         for lm in map_state.landmarks.values():

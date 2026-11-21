@@ -138,7 +138,15 @@ class MapState:
                 return False
             scales = scales or {i: 1.0 for i in corrected}
             for ident, pose in corrected.items():
-                validate_pose(pose)
+                old_pose = self.keyframes[ident].pose
+                if not (
+                    isinstance(pose, np.ndarray)
+                    and pose.dtype == np.float64
+                    and isinstance(old_pose, np.ndarray)
+                    and old_pose.dtype == np.float64
+                    and np.array_equal(pose, old_pose)
+                ):
+                    validate_pose(pose)
                 if (
                     ident not in scales
                     or not np.isfinite(scales[ident])
@@ -172,37 +180,73 @@ class MapState:
                         raise ValueError("Intermediate frame correction must be real")
                     validate_pose(raw)
                     intermediate[int(frame)] = np.asarray(raw, float).copy()
+            moved_kfs = set()
             corrections = {}
             for ident, keyframe in self.keyframes.items():
                 old = keyframe.pose
-                rotation = corrected[ident][:3, :3] @ old[:3, :3].T
+                new_pose = corrected[ident]
                 scale = scales[ident]
-                translation = corrected[ident][:3, 3] - scale * rotation @ old[:3, 3]
+                if scale == 1.0 and np.array_equal(new_pose, old):
+                    continue
+                moved_kfs.add(ident)
+                rotation = new_pose[:3, :3] @ old[:3, :3].T
+                translation = new_pose[:3, 3] - scale * rotation @ old[:3, 3]
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
             if landmark_updates is not None and not set(landmark_updates).issubset(self.landmarks):
                 raise ValueError("Unknown corrected landmark")
-            for ident, landmark in self.landmarks.items():
-                if landmark_updates is not None and ident in landmark_updates:
-                    positions[ident] = np.asarray(landmark_updates[ident], float).reshape(3).copy()
-                elif propagate_landmarks:
-                    rotation, scale, translation = corrections[landmark.anchor]
-                    positions[ident] = scale * rotation @ landmark.position + translation
+            if not propagate_landmarks:
+                if landmark_updates is not None:
+                    for ident, raw_pos in landmark_updates.items():
+                        pos = np.asarray(raw_pos, float).reshape(3).copy()
+                        if not np.isfinite(pos).all():
+                            raise ValueError("Nonfinite corrected landmark")
+                        positions[ident] = pos
+            else:
+                if len(self.index) == len(self.landmarks) and len(moved_kfs) < len(self.keyframes):
+                    affected_ids = self.index.landmarks_for_anchors(moved_kfs)
+                    if landmark_updates is not None:
+                        affected_ids = affected_ids | set(landmark_updates)
+                    for ident in affected_ids:
+                        landmark = self.landmarks.get(ident)
+                        if landmark is None:
+                            continue
+                        if landmark_updates is not None and ident in landmark_updates:
+                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                        else:
+                            rotation, scale, translation = corrections[landmark.anchor]
+                            pos = scale * rotation @ landmark.position + translation
+                        if not np.isfinite(pos).all():
+                            raise ValueError("Nonfinite corrected landmark")
+                        positions[ident] = pos
                 else:
-                    positions[ident] = landmark.position.copy()
-                if not np.isfinite(positions[ident]).all():
-                    raise ValueError("Nonfinite corrected landmark")
-            poses = []
+                    for ident, landmark in self.landmarks.items():
+                        if landmark_updates is not None and ident in landmark_updates:
+                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                        elif landmark.anchor in moved_kfs:
+                            rotation, scale, translation = corrections[landmark.anchor]
+                            pos = scale * rotation @ landmark.position + translation
+                        else:
+                            continue
+                        if not np.isfinite(pos).all():
+                            raise ValueError("Nonfinite corrected landmark")
+                        positions[ident] = pos
+            poses = list(self.poses)
+            moved_frames = []
             for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
-                updated = pose.copy()
-                if anchor is not None:
-                    rotation, scale, translation = corrections[anchor]
-                    updated[:3, :3] = rotation @ pose[:3, :3]
-                    updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
                 if frame in intermediate:
                     updated = intermediate[frame].copy()
-                validate_pose(updated)
-                poses.append(updated)
+                    validate_pose(updated)
+                    poses[frame] = updated
+                    moved_frames.append(frame)
+                elif anchor in moved_kfs:
+                    rotation, scale, translation = corrections[anchor]
+                    updated = pose.copy()
+                    updated[:3, :3] = rotation @ pose[:3, :3]
+                    updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                    validate_pose(updated)
+                    poses[frame] = updated
+                    moved_frames.append(frame)
             retained_registry = None
             if retained_source_updates is not None:
                 if not isinstance(retained_source_updates, dict):
@@ -230,7 +274,7 @@ class MapState:
                     if (not isinstance(raw_record, dict)
                             or not isinstance(raw_record.get("frame_id"), (int, np.integer))
                             or isinstance(raw_record.get("frame_id"), (bool, np.bool_))
-                            or int(raw_record.get("frame_id")) != frame
+                            or int(raw_record["frame_id"]) != frame
                             or not isinstance(raw_record.get("calibration_identity"), str)
                             or not raw_record.get("calibration_identity")
                             or raw_record.get("measurement_role") != "tracking_fit_consumed"):
@@ -312,18 +356,32 @@ class MapState:
                         "relative_pose": relative,
                         "rows": copied_rows,
                     }
-            for ident, position in positions.items():
-                self.landmarks[ident].position = position
-            self.index.on_landmarks_bulk_moved(positions)
-            for ident, pose in corrected.items():
-                self.keyframes[ident].pose = pose.copy()
+            if positions:
+                for ident, position in positions.items():
+                    self.landmarks[ident].position = position
+                self.index.on_landmarks_bulk_moved(positions)
+            for ident in moved_kfs:
+                self.keyframes[ident].pose = corrected[ident].copy()
                 if not self.metric and self.keyframes[ident].depth_points is not None:
                     self.keyframes[ident].depth_points *= scales[ident]
             self.poses = poses
-            self.relative_poses = [
-                np.linalg.inv(self.keyframes[a].pose) @ p if a is not None else p.copy()
-                for p, a in zip(poses, self.pose_anchors)
-            ]
+            if len(self.relative_poses) == len(poses):
+                kf_inv_cache = {}
+                for frame in moved_frames:
+                    a = self.pose_anchors[frame]
+                    if a is None:
+                        self.relative_poses[frame] = poses[frame].copy()
+                    else:
+                        inv_kf = kf_inv_cache.get(a)
+                        if inv_kf is None:
+                            inv_kf = np.linalg.inv(self.keyframes[a].pose)
+                            kf_inv_cache[a] = inv_kf
+                        self.relative_poses[frame] = inv_kf @ poses[frame]
+            else:
+                self.relative_poses = [
+                    np.linalg.inv(self.keyframes[a].pose) @ p if a is not None else p.copy()
+                    for p, a in zip(poses, self.pose_anchors)
+                ]
             if retained_registry is not None:
                 self.retained_source_observations = retained_registry
             self.revision += 1

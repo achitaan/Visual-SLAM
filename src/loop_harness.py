@@ -235,6 +235,9 @@ def build_airgapped_estimator_invocation(
     seed: int,
     opencv_threads: int,
     max_frames: int | None,
+    pipeline_extraction: bool = False,
+    pipeline_buffer: int = 1,
+    openblas_threads: int = 1,
 ) -> tuple[list[str], dict[str, str], Path]:
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
@@ -271,9 +274,10 @@ def build_airgapped_estimator_invocation(
         if val is not None:
             env[key] = val
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
-    env["OPENBLAS_NUM_THREADS"] = "1"
+    blas_t = str(max(1, int(openblas_threads)))
+    env["OPENBLAS_NUM_THREADS"] = blas_t
     env["OMP_NUM_THREADS"] = "1"
-    env["MKL_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = blas_t
     env["NUMEXPR_NUM_THREADS"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".mpl-cache"))
@@ -300,6 +304,9 @@ def build_airgapped_estimator_invocation(
     ]
     if max_frames is not None:
         command.extend(["--max-frames", str(int(max_frames))])
+    if pipeline_extraction:
+        command.append("--pipeline-extraction")
+        command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
 
     forbidden_tokens = {
         str(poses_dir),
@@ -332,6 +339,9 @@ def run_airgapped_estimator_subprocess(
     seed: int,
     opencv_threads: int,
     max_frames: int | None,
+    pipeline_extraction: bool = False,
+    pipeline_buffer: int = 1,
+    openblas_threads: int = 1,
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +355,9 @@ def run_airgapped_estimator_subprocess(
         seed=seed,
         opencv_threads=opencv_threads,
         max_frames=max_frames,
+        pipeline_extraction=pipeline_extraction,
+        pipeline_buffer=pipeline_buffer,
+        openblas_threads=openblas_threads,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -392,7 +405,28 @@ def run_airgapped_estimator_subprocess(
     return run_payload
 
 
-def _count_loop_metrics(slam: Any) -> tuple[int, int]:
+def _summarize_latencies_ms(values_s: list[float]) -> dict[str, Any]:
+    if not values_s:
+        return {
+            "count": 0,
+            "mean_ms": None,
+            "p50_ms": None,
+            "p95_ms": None,
+            "p99_ms": None,
+            "max_ms": None,
+        }
+    arr = np.asarray(values_s, dtype=np.float64) * 1000.0
+    return {
+        "count": int(len(arr)),
+        "mean_ms": float(np.mean(arr)),
+        "p50_ms": float(np.percentile(arr, 50)),
+        "p95_ms": float(np.percentile(arr, 95)),
+        "p99_ms": float(np.percentile(arr, 99)),
+        "max_ms": float(np.max(arr)),
+    }
+
+
+def _summarize_loop_events(slam: Any) -> dict[str, Any]:
     verified_pairs: set[tuple[int, int]] = set()
     for edge in getattr(slam.loop_worker, "verified", ()):
         i = getattr(edge, "first_keyframe", None)
@@ -400,19 +434,49 @@ def _count_loop_metrics(slam: Any) -> tuple[int, int]:
         if i is not None and j is not None:
             verified_pairs.add((int(i), int(j)))
     applied_loops = 0
+    events_by_type: Counter[str] = Counter()
     for event in getattr(slam.loop_worker, "events", ()):
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "loop_verification":
+        etype = str(event.get("type", "unknown"))
+        events_by_type[etype] += 1
+        if etype == "loop_verification":
             for attempt in event.get("attempts", ()):
                 if isinstance(attempt, dict) and attempt.get("geometrically_verified"):
                     i = attempt.get("first_keyframe")
                     j = attempt.get("second_keyframe")
                     if i is not None and j is not None:
                         verified_pairs.add((int(i), int(j)))
-        elif event.get("type") == "loop_applied":
+        elif etype == "loop_applied":
             applied_loops = int(event.get("loops", applied_loops))
-    return len(verified_pairs), applied_loops
+    return {
+        "verified_loops": int(len(verified_pairs)),
+        "applied_loops": int(applied_loops),
+        "discarded_loops": int(events_by_type.get("loop_discarded", 0)),
+        "failed_loops": int(events_by_type.get("loop_failed", 0)),
+        "skipped_loops": int(events_by_type.get("loop_skipped", 0)),
+        "events_by_type": dict(sorted(events_by_type.items())),
+    }
+
+
+def _count_loop_metrics(slam: Any) -> tuple[int, int]:
+    summary = _summarize_loop_events(slam)
+    return summary["verified_loops"], summary["applied_loops"]
+
+
+def _trajectory_translation_delta(
+    poses_a: list[np.ndarray],
+    poses_b: list[np.ndarray],
+) -> dict[str, float]:
+    if len(poses_a) != len(poses_b) or not poses_a:
+        return {"rmse_m": 0.0, "max_m": 0.0}
+    ta = np.asarray([p[:3, 3] for p in poses_a], dtype=np.float64)
+    tb = np.asarray([p[:3, 3] for p in poses_b], dtype=np.float64)
+    norms = np.linalg.norm(ta - tb, axis=1)
+    return {
+        "rmse_m": float(np.sqrt(np.mean(norms * norms))),
+        "max_m": float(np.max(norms)),
+    }
 
 
 def _estimator_worker_main(argv: list[str]) -> int:
@@ -426,6 +490,8 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--opencv-threads", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--pipeline-extraction", action="store_true")
+    parser.add_argument("--pipeline-buffer", type=int, default=2)
     args = parser.parse_args(argv)
 
     import cv2 as cv
@@ -443,6 +509,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         matching_backend="cpu",
         cpu_optimizations=True,
         profile=True,
+        pipeline_extraction=bool(args.pipeline_extraction),
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -465,12 +532,102 @@ def _estimator_worker_main(argv: list[str]) -> int:
     stereo_cam = StereoCamera(vo.stereo, vo.Q, vo.baseline)
     slam = SharedSlam(vo.K1, stereo=stereo_cam, config=cfg, performance=perf)
 
+    online_first_poses: list[np.ndarray] = []
+    online_end_poses: list[np.ndarray] = []
+    frame_latencies_s: list[float] = []
+    service_intervals_s: list[float] = []
+    process_latencies_s: list[float] = []
+    keyframe_latencies_s: list[float] = []
+    non_keyframe_latencies_s: list[float] = []
+    io_elapsed_s = 0.0
+    slam_process_elapsed_s = 0.0
+    worker_extract_elapsed_s = 0.0
+    extract_wait_elapsed_s = 0.0
+    online_elapsed_s = 0.0
+    shutdown_drain_s = 0.0
+
+    pipeline = None
+    if args.pipeline_extraction:
+        from frontend_pipeline import FrontendExtractionPipeline
+        pipeline = FrontendExtractionPipeline(slam, buffer_size=max(1, int(args.pipeline_buffer)))
+
     started = time.perf_counter()
     try:
-        for frame_idx in range(total_frames):
-            slam.process(frame_idx, vo.Images_1[frame_idx], vo.Images_2[frame_idx])
+        if pipeline is not None:
+            def _load_pair(idx: int):
+                return vo.Images_1[idx], vo.Images_2[idx]
+
+            submit_times: dict[int, float] = {}
+            prefetch_depth = min(max(1, int(args.pipeline_buffer)), total_frames)
+            next_submit = 0
+            while next_submit < prefetch_depth:
+                submit_times[next_submit] = time.perf_counter()
+                pipeline.submit_loader(next_submit, _load_pair)
+                next_submit += 1
+
+            for frame_idx in range(total_frames):
+                t_iter_start = time.perf_counter()
+                extracted = pipeline.get(frame_idx)
+                t_extract_ready = time.perf_counter()
+                if next_submit < total_frames:
+                    submit_times[next_submit] = time.perf_counter()
+                    pipeline.submit_loader(next_submit, _load_pair)
+                    next_submit += 1
+                prev_kfs = len(slam.map.keyframes)
+                t_proc_start = time.perf_counter()
+                pose_emitted, _ = slam.process(frame_idx, extracted=extracted)
+                t_frame_end = time.perf_counter()
+
+                online_first_poses.append(np.asarray(pose_emitted, dtype=np.float64).copy())
+                t_avail = submit_times.pop(frame_idx, t_iter_start)
+                # True first-pose latency from image availability (includes queueing + I/O + extraction + tracking)
+                first_pose_dt = t_frame_end - t_avail
+                service_dt = t_frame_end - t_iter_start
+                proc_dt = t_frame_end - t_proc_start
+                io_elapsed_s += extracted.io_elapsed_s
+                worker_extract_elapsed_s += extracted.extract_elapsed_s
+                extract_wait_elapsed_s += (t_extract_ready - t_iter_start)
+                slam_process_elapsed_s += proc_dt
+                frame_latencies_s.append(first_pose_dt)
+                service_intervals_s.append(service_dt)
+                process_latencies_s.append(proc_dt)
+                if len(slam.map.keyframes) > prev_kfs:
+                    keyframe_latencies_s.append(first_pose_dt)
+                else:
+                    non_keyframe_latencies_s.append(first_pose_dt)
+        else:
+            for frame_idx in range(total_frames):
+                t_frame_start = time.perf_counter()
+                im1 = vo.Images_1[frame_idx]
+                im2 = vo.Images_2[frame_idx]
+                t_io_end = time.perf_counter()
+                prev_kfs = len(slam.map.keyframes)
+                pose_emitted, _ = slam.process(frame_idx, im1, im2)
+                t_frame_end = time.perf_counter()
+
+                online_first_poses.append(np.asarray(pose_emitted, dtype=np.float64).copy())
+                io_dt = t_io_end - t_frame_start
+                proc_dt = t_frame_end - t_io_end
+                frame_dt = t_frame_end - t_frame_start
+                io_elapsed_s += io_dt
+                slam_process_elapsed_s += proc_dt
+                frame_latencies_s.append(frame_dt)
+                service_intervals_s.append(frame_dt)
+                process_latencies_s.append(proc_dt)
+                if len(slam.map.keyframes) > prev_kfs:
+                    keyframe_latencies_s.append(frame_dt)
+                else:
+                    non_keyframe_latencies_s.append(frame_dt)
+
+        online_elapsed_s = max(time.perf_counter() - started, 1e-9)
+        with slam.map.lock:
+            online_end_poses = [p.copy() for p in slam.map.poses]
     finally:
+        t_close_start = time.perf_counter()
+        if pipeline is not None:
+            pipeline.close()
         slam.close(finish=True)
+        shutdown_drain_s = max(time.perf_counter() - t_close_start, 0.0)
     elapsed_s = max(time.perf_counter() - started, 1e-9)
 
     poses = slam.map.poses
@@ -482,10 +639,16 @@ def _estimator_worker_main(argv: list[str]) -> int:
     out_dir = args.output_seq_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     save_poses_txt(out_dir / "poses.txt", poses)
+    save_poses_txt(out_dir / "online_first_poses.txt", online_first_poses)
+    if len(online_end_poses) == total_frames:
+        save_poses_txt(out_dir / "online_end_poses.txt", online_end_poses)
 
     states = Counter(slam.map.statuses)
-    verified_loops, applied_loops = _count_loop_metrics(slam)
+    loop_summary = _summarize_loop_events(slam)
+    verified_loops = loop_summary["verified_loops"]
+    applied_loops = loop_summary["applied_loops"]
     peak_rss_mb = _self_peak_rss_mb()
+    bundle_reports = getattr(slam, "bundle_reports", ())
 
     run_payload = {
         "sequence": args.sequence,
@@ -493,6 +656,8 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "max_frames": args.max_frames,
         "seed": args.seed,
         "opencv_threads": args.opencv_threads,
+        "openblas_threads": int(os.environ.get("OPENBLAS_NUM_THREADS", "1")),
+        "pipeline_extraction": bool(args.pipeline_extraction),
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -507,11 +672,27 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "landmarks": len(slam.map.landmarks),
         "verified_loops": int(verified_loops),
         "applied_loops": int(applied_loops),
+        "loop_events": loop_summary,
+        "bundle_adjustments_called": int(len(bundle_reports)),
         "bundle_adjustments_applied": int(
-            sum(1 for r in getattr(slam, "bundle_reports", ()) if r.get("applied"))
+            sum(1 for r in bundle_reports if r.get("applied"))
         ),
         "elapsed_s": float(elapsed_s),
+        "online_elapsed_s": float(online_elapsed_s),
+        "slam_process_elapsed_s": float(slam_process_elapsed_s),
+        "io_elapsed_s": float(io_elapsed_s),
+        "worker_extract_elapsed_s": float(worker_extract_elapsed_s),
+        "extract_wait_elapsed_s": float(extract_wait_elapsed_s),
+        "shutdown_drain_s": float(shutdown_drain_s),
         "processing_fps": float(total_frames / elapsed_s),
+        "online_fps": float(total_frames / online_elapsed_s),
+        "frame_latency_ms": {
+            "all": _summarize_latencies_ms(frame_latencies_s),
+            "service_interval": _summarize_latencies_ms(service_intervals_s),
+            "process_only": _summarize_latencies_ms(process_latencies_s),
+            "keyframe": _summarize_latencies_ms(keyframe_latencies_s),
+            "non_keyframe": _summarize_latencies_ms(non_keyframe_latencies_s),
+        },
         "peak_rss_mb": float(peak_rss_mb),
         "stage_timings": slam.profile.report(),
         "stage_profile": slam.profile.detailed_report(),
@@ -541,7 +722,8 @@ def evaluate_sequence_posthoc(
     else:
         gt = gt_full
 
-    est = load_poses_txt(Path(seq_out_dir) / "poses.txt")
+    seq_dir = Path(seq_out_dir)
+    est = load_poses_txt(seq_dir / "poses.txt")
     if len(est) != len(gt):
         raise ValueError(
             f"Trajectory length mismatch on sequence {sequence}: len(est)={len(est)} != len(gt)={len(gt)}"
@@ -552,7 +734,31 @@ def evaluate_sequence_posthoc(
     rot_deg_100m = float(100.0 * rot_deg_m) if rot_deg_m is not None else None
     t_rel = traj_metrics.get("translation_percent")
 
-    return {
+    online_first_metrics = None
+    online_vs_final = None
+    online_first_path = seq_dir / "online_first_poses.txt"
+    if online_first_path.is_file():
+        online_first = load_poses_txt(online_first_path)
+        if len(online_first) == len(gt):
+            om = evaluate_trajectory(gt, online_first, alignment="se3")
+            om_rot = om.get("rotation_deg_per_m")
+            om_t = om.get("translation_percent")
+            online_first_metrics = {
+                "ate_rmse_m": float(om["ate_rmse_m"]),
+                "raw_ate_rmse_m": float(om["raw_ate_rmse_m"]),
+                "translation_percent": float(om_t) if om_t is not None else None,
+                "rotation_deg_per_100m": float(100.0 * om_rot) if om_rot is not None else None,
+            }
+            online_vs_final = _trajectory_translation_delta(online_first, est)
+
+    online_end_vs_final = None
+    online_end_path = seq_dir / "online_end_poses.txt"
+    if online_end_path.is_file():
+        online_end = load_poses_txt(online_end_path)
+        if len(online_end) == len(est):
+            online_end_vs_final = _trajectory_translation_delta(online_end, est)
+
+    result = {
         "frames": int(traj_metrics["frames"]),
         "segments": int(traj_metrics["segment_count"]),
         "ate_rmse_m": float(traj_metrics["ate_rmse_m"]),
@@ -564,9 +770,23 @@ def evaluate_sequence_posthoc(
         "verified_loops": int(run_payload["verified_loops"]),
         "applied_loops": int(run_payload["applied_loops"]),
         "elapsed_s": float(run_payload["elapsed_s"]),
+        "online_elapsed_s": float(run_payload.get("online_elapsed_s", run_payload["elapsed_s"])),
+        "shutdown_drain_s": float(run_payload.get("shutdown_drain_s", 0.0)),
         "processing_fps": float(run_payload["processing_fps"]),
+        "online_fps": float(run_payload.get("online_fps", run_payload["processing_fps"])),
         "peak_rss_mb": float(run_payload["peak_rss_mb"]),
     }
+    if "frame_latency_ms" in run_payload:
+        result["frame_latency_ms"] = run_payload["frame_latency_ms"]
+    if "loop_events" in run_payload:
+        result["loop_events"] = run_payload["loop_events"]
+    if online_first_metrics is not None:
+        result["online_first_metrics"] = online_first_metrics
+    if online_vs_final is not None:
+        result["online_first_vs_final_delta"] = online_vs_final
+    if online_end_vs_final is not None:
+        result["online_end_vs_final_delta"] = online_end_vs_final
+    return result
 
 
 def compute_loop_aggregate(sequences_summary: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1107,6 +1327,9 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hypothesis", type=str, default="")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--opencv-threads", type=int, default=1)
+    parser.add_argument("--openblas-threads", type=int, default=1)
+    parser.add_argument("--pipeline-extraction", action="store_true")
+    parser.add_argument("--pipeline-buffer", type=int, default=1)
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1139,6 +1362,10 @@ def resolve_loop_cli_args(argv: list[str] | None = None) -> tuple[argparse.Names
         parser.error("--seed must be between 0 and 2147483647")
     if args.opencv_threads < 1:
         parser.error("--opencv-threads must be positive")
+    if args.openblas_threads < 1:
+        parser.error("--openblas-threads must be positive")
+    if args.pipeline_buffer < 1:
+        parser.error("--pipeline-buffer must be positive")
     if args.tier == "custom" and not args.sequences:
         parser.error("--tier custom requires --sequences")
 
@@ -1219,6 +1446,9 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             seed=args.seed,
             opencv_threads=args.opencv_threads,
             max_frames=seq_max_frames,
+            pipeline_extraction=bool(args.pipeline_extraction),
+            pipeline_buffer=int(args.pipeline_buffer),
+            openblas_threads=int(args.openblas_threads),
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1232,8 +1462,8 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             run_payload=run_payloads[seq],
             max_frames=seq_max_frames,
         )
-        # Keep exact PROJECT.md per-sequence schema keys cleanly ordered
-        sequences_summary[seq] = {
+        # Keep exact PROJECT.md per-sequence schema keys cleanly ordered, plus online latency/delta metrics
+        seq_entry: dict[str, Any] = {
             "frames": seq_eval["frames"],
             "segments": seq_eval["segments"],
             "ate_rmse_m": seq_eval["ate_rmse_m"],
@@ -1245,8 +1475,21 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             "verified_loops": seq_eval["verified_loops"],
             "applied_loops": seq_eval["applied_loops"],
             "elapsed_s": seq_eval["elapsed_s"],
+            "online_elapsed_s": seq_eval["online_elapsed_s"],
+            "shutdown_drain_s": seq_eval["shutdown_drain_s"],
             "processing_fps": seq_eval["processing_fps"],
+            "online_fps": seq_eval["online_fps"],
         }
+        for opt_key in (
+            "frame_latency_ms",
+            "loop_events",
+            "online_first_metrics",
+            "online_first_vs_final_delta",
+            "online_end_vs_final_delta",
+        ):
+            if opt_key in seq_eval:
+                seq_entry[opt_key] = seq_eval[opt_key]
+        sequences_summary[seq] = seq_entry
         run_payloads[seq]["peak_rss_mb"] = seq_eval["peak_rss_mb"]
 
     aggregate_with_rss_rows = {

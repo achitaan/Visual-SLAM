@@ -155,3 +155,37 @@ def test_first_frame_and_cache_hit_prepare_the_current_pair_before_depth_admissi
         np.testing.assert_array_equal(seen_pairs[1][1], next_right)
     finally:
         slam.close(finish=False)
+
+
+def test_batched_stereo_verification_matches_scalar_reference(monkeypatch):
+    left, right = images(12.35)
+    # Mix valid interior pixels, border/out-of-bounds, nonfinite, and low-texture regions
+    left_mod = left.copy()
+    right_mod = right.copy()
+    left_mod[70:90, 100:140] = 80
+    right_mod[70:90, 80:130] = 80
+    pixels = np.array(
+        [
+            [170.25, 40.25],
+            [151.2, 38.3],
+            [195.5, 55.5],
+            [120.7, 25.1],
+            [115.0, 80.0],  # constant low-texture patch
+            [2.0, 40.0],    # patch_bounds
+            [np.nan, 30.0], # nonfinite_pixel
+        ],
+        dtype=float,
+    )
+    fast_res, fast_cnt = verify_stereo_depth_candidates(left_mod, right_mod, pixels)
+
+    # Force scalar fallback path by wrapping _search
+    orig_search = stereo_depth._search
+    monkeypatch.setattr(stereo_depth, '_search', lambda *a, **kw: orig_search(*a, **kw))
+    scalar_res, scalar_cnt = verify_stereo_depth_candidates(left_mod, right_mod, pixels)
+
+    assert fast_cnt == scalar_cnt
+    assert np.array_equal(np.isfinite(fast_res), np.isfinite(scalar_res))
+    valid = np.isfinite(fast_res)
+    assert valid.sum() >= 4
+    np.testing.assert_allclose(fast_res[valid], scalar_res[valid], atol=1e-3)
+

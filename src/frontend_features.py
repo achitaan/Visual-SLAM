@@ -111,12 +111,49 @@ def extract_grid_bucketed_sift(
     grid_rows: int = 6,
     contrast_threshold: float = 0.02,
     detector: cv.SIFT | None = None,
+    *,
+    build_cv_keypoints: bool = True,
 ) -> BucketedKeypoints:
     """Detect SIFT keypoints with spatial grid bucketing and compute descriptors only for kept keypoints."""
     if image_gray is None or np.ndim(image_gray) != 2:
         raise ValueError("image_gray must be a 2D grayscale image")
     height, width = image_gray.shape
     target = max(1, int(target_features))
+    if (detector is None or isinstance(detector, cv.SIFT)) and image_gray.dtype == np.uint8:
+        from native_accel import extract_sift_grid_avx512
+
+        native_res = extract_sift_grid_avx512(
+            image_gray,
+            target_features=target,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            contrast_threshold=contrast_threshold,
+        )
+        if native_res is not None:
+            pixels, kept_desc, octaves, angles, responses = native_res
+            kept_kps = (
+                [
+                    cv.KeyPoint(
+                        float(pixels[i, 0]),
+                        float(pixels[i, 1]),
+                        float(3.2 * (2.0 ** int(octaves[i]))),
+                        float(angles[i]),
+                        float(responses[i]),
+                        int(octaves[i]) & 255,
+                    )
+                    for i in range(len(pixels))
+                ]
+                if build_cv_keypoints
+                else []
+            )
+            return BucketedKeypoints(
+                keypoints=kept_kps,
+                pixels=pixels,
+                descriptors=kept_desc,
+                octaves=octaves,
+                angles=angles,
+                responses=responses,
+            )
     if detector is None:
         # Single-pass detectAndCompute avoids rebuilding the SIFT DoG pyramid twice
         raw_cap = max(int(target * 1.4), 2100)

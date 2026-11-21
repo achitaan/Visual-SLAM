@@ -199,3 +199,77 @@ def verify_stereo_zncc_avx512(
             name = _ZNCC_REASON_NAMES.get(base, "unknown")
             counts[name] = counts.get(name, 0) + 1
     return out_u, counts
+
+
+def _get_sift_lib() -> ctypes.CDLL | None:
+    if os.environ.get("VISUAL_SLAM_DISABLE_FAST_SIFT", "0").strip().lower() in (
+        "1", "true", "yes", "on"
+    ):
+        return None
+    lib = _load_library("fast_sift")
+    if lib is not None and not getattr(lib, "_configured", False):
+        lib.extract_sift_grid_avx512.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_float,
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_int16),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_int32),
+        ]
+        lib.extract_sift_grid_avx512.restype = ctypes.c_int32
+        lib._configured = True
+    return lib
+
+
+def extract_sift_grid_avx512(
+    image_gray: np.ndarray,
+    *,
+    target_features: int = 1500,
+    grid_cols: int = 16,
+    grid_rows: int = 6,
+    contrast_threshold: float = 0.02,
+    first_octave: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Run AVX-512 C++ SIFT with early spatial grid bucketing before descriptor computation."""
+    lib = _get_sift_lib()
+    if lib is None or image_gray.dtype != np.uint8 or image_gray.ndim != 2:
+        return None
+    if first_octave is None:
+        raw_fo = os.environ.get("VISUAL_SLAM_SIFT_FIRST_OCTAVE", "-1").strip()
+        first_octave = int(raw_fo) if raw_fo in ("-1", "0") else -1
+    img = np.ascontiguousarray(image_gray, dtype=np.uint8)
+    target = max(1, int(target_features))
+    px = np.empty((target, 2), dtype=np.float32)
+    desc = np.empty((target, 128), dtype=np.float32)
+    octs = np.empty(target, dtype=np.int16)
+    angles = np.empty(target, dtype=np.float32)
+    responses = np.empty(target, dtype=np.float32)
+    cnt = ctypes.c_int32(0)
+    ok = lib.extract_sift_grid_avx512(
+        img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        img.shape[0],
+        img.shape[1],
+        target,
+        int(grid_cols),
+        int(grid_rows),
+        float(contrast_threshold),
+        int(first_octave),
+        px.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        desc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        octs.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
+        angles.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        responses.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        ctypes.byref(cnt),
+    )
+    if ok != 1:
+        return None
+    n = int(cnt.value)
+    return px[:n], desc[:n], octs[:n], angles[:n], responses[:n]

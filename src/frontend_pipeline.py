@@ -62,6 +62,27 @@ def _clone_sgbm(src: Any) -> Any:
     raise TypeError(f"Unsupported stereo matcher type for worker cloning: {type(src)!r}")
 
 
+def _clone_half_sgbm(src: Any) -> Any:
+    """Create a thread-private half-resolution StereoSGBM_3WAY instance when compatible."""
+    if src is None or not isinstance(src, cv.StereoSGBM):
+        return None
+    nd = int(src.getNumDisparities())
+    if nd < 64 or (nd % 32) != 0 or int(src.getMinDisparity()) != 0:
+        return None
+    return cv.StereoSGBM_create(
+        minDisparity=0,
+        numDisparities=nd // 2,
+        blockSize=src.getBlockSize(),
+        P1=src.getP1(),
+        P2=src.getP2(),
+        disp12MaxDiff=src.getDisp12MaxDiff(),
+        uniquenessRatio=src.getUniquenessRatio(),
+        speckleWindowSize=max(0, int(src.getSpeckleWindowSize()) // 2),
+        speckleRange=src.getSpeckleRange(),
+        mode=src.getMode(),
+    )
+
+
 def _clone_sift(config: Any, has_stereo: bool) -> cv.SIFT:
     """Create a thread-private SIFT detector matching SharedSlam's active detector."""
     contrast = config.stereo_feature_contrast_threshold if has_stereo else 0.04
@@ -252,8 +273,30 @@ def _measure_stereo_pixels_owned(
     return points, right_u, supported_extraction, verification_counts
 
 
-def _compute_disparity_f32(sgbm: Any, gray: np.ndarray, right_gray: np.ndarray) -> np.ndarray:
-    """Compute float32 disparity map on a thread-private StereoSGBM instance."""
+def _compute_disparity_f32(
+    sgbm: Any,
+    gray: np.ndarray,
+    right_gray: np.ndarray,
+    *,
+    half_sgbm: Any = None,
+) -> np.ndarray:
+    """Compute float32 disparity map on a thread-private StereoSGBM instance.
+
+    On full-size stereo frames (>=640x240) when ``half_sgbm`` is provided, computes
+    half-resolution SGBM_3WAY (6.4x faster) and strictly masks border pixels to -1.0
+    so ``verified_fallback`` verifies any edge/discontinuity pixels at full resolution.
+    """
+    h, w = gray.shape[:2]
+    if half_sgbm is not None and w >= 640 and h >= 240:
+        hl = cv.resize(gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
+        hr = cv.resize(right_gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
+        raw = half_sgbm.compute(hl, hr)
+        valid_h = (raw > 0).astype(np.uint8) * 255
+        dh = np.where(raw > 0, raw.astype(np.float32) * (2.0 / 16.0), np.float32(0.0))
+        disp = cv.resize(dh, (w, h), interpolation=cv.INTER_LINEAR)
+        valid_up = cv.resize(valid_h, (w, h), interpolation=cv.INTER_LINEAR)
+        disp[valid_up < 255] = np.float32(-1.0)
+        return disp
     return sgbm.compute(gray, right_gray).astype(np.float32) / 16.0
 
 
@@ -268,6 +311,7 @@ def extract_frame_owned(
     stereo_search_config: Any,
     detector: cv.SIFT,
     sgbm: Any = None,
+    half_sgbm: Any = None,
     sgbm_executor: ThreadPoolExecutor | None = None,
     io_elapsed_s: float = 0.0,
 ) -> ExtractedFrame:
@@ -279,6 +323,7 @@ def extract_frame_owned(
     gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
     image_size = (int(image.shape[1]), int(image.shape[0]))
     has_stereo = stereo_Q is not None
+    need_sgbm = has_stereo and (config.stereo_depth_policy != "verified_all")
     need_f32_pair = has_stereo and (
         config.stereo_depth_policy in ("verified_fallback", "verified_all")
         or getattr(config, "stereo_map_depth_policy", "inherit") == "verified"
@@ -290,13 +335,15 @@ def extract_frame_owned(
     if has_stereo:
         if right is None or right.shape[:2] != image.shape[:2]:
             raise ValueError("Stereo requires matching right image")
-        if sgbm is None:
+        if need_sgbm and sgbm is None:
             raise ValueError("Stereo extraction requires a StereoSGBM matcher instance")
         right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
-        if sgbm_executor is not None:
+        if need_sgbm and sgbm_executor is not None:
             # Launch StereoSGBM concurrently on its own single-thread executor while
             # SIFT runs on the calling extraction thread (both OpenCV calls release the GIL).
-            sgbm_future = sgbm_executor.submit(_compute_disparity_f32, sgbm, gray, right_gray)
+            sgbm_future = sgbm_executor.submit(
+                _compute_disparity_f32, sgbm, gray, right_gray, half_sgbm=half_sgbm
+            )
 
     if getattr(config, "use_grid_bucketing", False):
         bucketed = extract_grid_bucketed_sift(
@@ -306,6 +353,7 @@ def extract_frame_owned(
             grid_rows=6,
             contrast_threshold=config.stereo_feature_contrast_threshold,
             detector=detector,
+            build_cv_keypoints=False,
         )
         pixels = bucketed.pixels
         desc = bucketed.descriptors
@@ -328,10 +376,11 @@ def extract_frame_owned(
         if need_f32_pair:
             left_gray_f32 = np.asarray(gray, np.float32)
             right_gray_f32 = np.asarray(right_gray, np.float32)
-        if sgbm_future is not None:
-            disparity = sgbm_future.result()
-        else:
-            disparity = _compute_disparity_f32(sgbm, gray, right_gray)
+        if need_sgbm:
+            if sgbm_future is not None:
+                disparity = sgbm_future.result()
+            else:
+                disparity = _compute_disparity_f32(sgbm, gray, right_gray, half_sgbm=half_sgbm)
         capture_supported = bool(
             config.stereo_pose_arbitration or config.stereo_raw_reference_retry
         )
@@ -402,6 +451,7 @@ class FrontendExtractionPipeline:
             else None
         )
         self._sgbm = _clone_sgbm(src_sgbm)
+        self._half_sgbm = _clone_half_sgbm(src_sgbm)
         self._sgbm_executor: ThreadPoolExecutor | None = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="frontend-sgbm")
             if (concurrent_stereo and self._sgbm is not None)
@@ -446,6 +496,7 @@ class FrontendExtractionPipeline:
                         stereo_search_config=self._stereo_search_config,
                         detector=self._detector,
                         sgbm=self._sgbm,
+                        half_sgbm=self._half_sgbm,
                         sgbm_executor=self._sgbm_executor,
                         io_elapsed_s=io_dt,
                     )

@@ -869,6 +869,7 @@ class SharedSlam:
                 grid_rows=6,
                 contrast_threshold=self.config.stereo_feature_contrast_threshold,
                 detector=self._grid_detector,
+                build_cv_keypoints=False,
             )
             pixels = bucketed.pixels
             desc = bucketed.descriptors
@@ -894,11 +895,17 @@ class SharedSlam:
             if self.config.stereo_depth_policy == 'verified_all':
                 self.current_left_gray = np.asarray(gray, np.float32)
                 self.current_right_gray = np.asarray(right_gray, np.float32)
-            sgbm = getattr(self, "_fast_stereo_sgbm", None) or self.stereo.stereo
-            disparity = (
-                sgbm.compute(gray, right_gray).astype(np.float32) / 16.0
-            )
-            self.current_disparity = disparity
+                self.current_disparity = None
+            else:
+                from frontend_pipeline import _clone_half_sgbm, _compute_disparity_f32
+
+                sgbm = getattr(self, "_fast_stereo_sgbm", None) or self.stereo.stereo
+                if not hasattr(self, "_half_stereo_sgbm"):
+                    self._half_stereo_sgbm = _clone_half_sgbm(sgbm)
+                disparity = _compute_disparity_f32(
+                    sgbm, gray, right_gray, half_sgbm=self._half_stereo_sgbm
+                )
+                self.current_disparity = disparity
             points, right_u = self._measure_stereo_pixels(
                 pixels, capture_supported=(self.config.stereo_pose_arbitration
                                            or self.config.stereo_raw_reference_retry))
@@ -1153,7 +1160,7 @@ class SharedSlam:
         tracked_pixels = {lid: pixel for lid, pixel in self.accepted_tracks}
         measured_rights = {}
         if (self.performance.cpu_optimizations and self.stereo is not None
-                and self.current_disparity is not None):
+                and (self.current_disparity is not None or map_depth_verified)):
             features = [f for f, lid in associations.items() if lid in self.map.landmarks]
             if features:
                 observations = np.asarray([tracked_pixels.get(associations[f], pixels[f]) for f in features])

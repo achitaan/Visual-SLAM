@@ -34,8 +34,13 @@ class DescriptorMatcher:
         self.cuda_calls = 0
         self.cpu_calls = 0
         self.ambiguous_rows = 0
+        self.init_elapsed_s = 0.0
+        self.cuda_transfer_s = 0.0
+        self.cuda_compute_s = 0.0
+        self.cuda_sync_s = 0.0
         self._lock = Lock()
         if backend != "cpu":
+            init_t0 = perf_counter()
             try:
                 import torch
 
@@ -66,6 +71,8 @@ class DescriptorMatcher:
                 self.reason = str(error)
                 if backend == "cuda":
                     raise RuntimeError("CUDA matching requested but unavailable: " + self.reason) from error
+            finally:
+                self.init_elapsed_s = max(perf_counter() - init_t0, 0.0)
 
     def _cpu(self, first, second, ratio):
         with self._lock:
@@ -120,14 +127,23 @@ class DescriptorMatcher:
     def _direction(self, first, second, ratio):
         torch = self.torch
         mappings = np.full(len(first), -1, int)
+        t_tx0 = perf_counter()
         train = torch.as_tensor(np.ascontiguousarray(second), device="cuda")
+        tx_dt = perf_counter() - t_tx0
+        comp_dt = 0.0
         train_norm = float(np.max(np.einsum("ij,ij->i", second, second)))
         for start in range(0, len(first), 1024):
             source = np.ascontiguousarray(first[start:start + 1024])
+            t0 = perf_counter()
             query = torch.as_tensor(source, device="cuda")
+            t1 = perf_counter()
             distances = torch.cdist(query, train, compute_mode="use_mm_for_euclid_dist")
             values, indices = torch.topk(distances, 2, dim=1, largest=False, sorted=True)
+            t2 = perf_counter()
             values, indices = values.cpu().numpy(), indices.cpu().numpy()
+            t3 = perf_counter()
+            tx_dt += (t1 - t0) + (t3 - t2)
+            comp_dt += (t2 - t1)
             squared = values.astype(np.float64) ** 2
             accepted = values[:, 0] < ratio * values[:, 1]
 
@@ -153,15 +169,21 @@ class DescriptorMatcher:
                         indices[row, 0] = pair[0].trainIdx
             selected = np.flatnonzero(accepted)
             mappings[start + selected] = indices[selected, 0]
+        with self._lock:
+            self.cuda_transfer_s += max(tx_dt, 0.0)
+            self.cuda_compute_s += max(comp_dt, 0.0)
         return mappings
 
     def _cuda(self, first, second, ratio):
         with self.torch.inference_mode():
             forward = self._direction(first, second, ratio)
             backward = self._direction(second, first, ratio)
+            t_sync = perf_counter()
             self.torch.cuda.synchronize()
+            sync_dt = max(perf_counter() - t_sync, 0.0)
         with self._lock:
             self.cuda_calls += 1
+            self.cuda_sync_s += sync_dt
         rows = np.flatnonzero(forward >= 0)
         rows = rows[backward[forward[rows]] == rows]
         return np.column_stack([rows, forward[rows]]).astype(int)
@@ -181,6 +203,10 @@ class DescriptorMatcher:
                 "cuda_calls": self.cuda_calls,
                 "cpu_calls": self.cpu_calls,
                 "ambiguous_rows_on_cpu": self.ambiguous_rows,
+                "init_elapsed_s": float(self.init_elapsed_s),
+                "cuda_transfer_s": float(self.cuda_transfer_s),
+                "cuda_compute_s": float(self.cuda_compute_s),
+                "cuda_sync_s": float(self.cuda_sync_s),
                 "auto_decisions": {str(key): value for key, value in self.auto_decisions.items()},
             }
         if self.torch is not None:

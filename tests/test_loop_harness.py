@@ -301,3 +301,82 @@ def test_subprocess_isolation_metadata_matches_enforced_boundary(tmp_path, monke
     assert payload["ground_truth_used_for_estimation"] is False
     assert payload["peak_rss_mb"] == pytest.approx(42.5)
 
+
+def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkeypatch):
+    import loop_harness
+
+    seq_dir = tmp_path / "kitti" / "sequences" / "04"
+    for cam in ("image_0", "image_1"):
+        (seq_dir / cam).mkdir(parents=True)
+        for idx in range(2):
+            (seq_dir / cam / f"{idx:06d}.png").write_bytes(b"png")
+    (seq_dir / "calib.txt").write_text("P0: 1 0 0 0 0 1 0 0 0 0 1 0\n")
+    poses_dir = tmp_path / "kitti" / "poses"
+    poses_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args_cpu, cfg_cpu, ov_cpu = loop_harness.resolve_loop_cli_args(
+        ["--tier", "custom", "--sequences", "04", "--preset", "improved_stereo"]
+    )
+    args_cuda, cfg_cuda, ov_cuda = loop_harness.resolve_loop_cli_args(
+        [
+            "--tier",
+            "custom",
+            "--sequences",
+            "04",
+            "--preset",
+            "improved_stereo",
+            "--matching-backend",
+            "cuda",
+        ]
+    )
+    assert args_cpu.matching_backend == "cpu"
+    assert args_cuda.matching_backend == "cuda"
+    assert cfg_cpu == cfg_cuda
+    assert ov_cpu == ov_cuda == {}
+
+    cmd_cpu, env_cpu, _ = build_airgapped_estimator_invocation(
+        sequence="04",
+        data_root=tmp_path / "kitti",
+        poses_root=poses_dir,
+        seq_out_dir=tmp_path / "out_cpu" / "04",
+        preset="improved_stereo",
+        effective_overrides={},
+        seed=0,
+        opencv_threads=2,
+        max_frames=2,
+        matching_backend="cpu",
+    )
+    assert "--matching-backend" not in cmd_cpu
+    assert env_cpu["CUDA_VISIBLE_DEVICES"] == "0"
+
+    cmd_cuda, _, _ = build_airgapped_estimator_invocation(
+        sequence="04",
+        data_root=tmp_path / "kitti",
+        poses_root=poses_dir,
+        seq_out_dir=tmp_path / "out_cuda" / "04",
+        preset="improved_stereo",
+        effective_overrides={},
+        seed=0,
+        opencv_threads=2,
+        max_frames=2,
+        matching_backend="cuda",
+    )
+    idx = cmd_cuda.index("--matching-backend")
+    assert cmd_cuda[idx + 1] == "cuda"
+
+    with pytest.raises(ValueError):
+        build_airgapped_estimator_invocation(
+            sequence="04",
+            data_root=tmp_path / "kitti",
+            poses_root=poses_dir,
+            seq_out_dir=tmp_path / "out_bad" / "04",
+            preset="improved_stereo",
+            effective_overrides={},
+            seed=0,
+            opencv_threads=2,
+            max_frames=2,
+            matching_backend="vulkan",
+        )
+
+

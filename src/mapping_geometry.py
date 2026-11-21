@@ -42,23 +42,37 @@ def _match_descriptors_gemm_l2(first, second, ratio):
         return _match_descriptors_bf(first, second, ratio)
 
     r2 = float(ratio * ratio)
-    dist2 = np.multiply(a, np.float32(-2.0)) @ b.T
-    dist2 += na[:, None]
-    dist2 += nb[None, :]
-    np.maximum(dist2, np.float32(0.0), out=dist2)
+    # mat[i, j] = -2 * a[i] . b[j] + ||b[j]||^2. Since ||a[i]||^2 is constant across
+    # row i, argmin/min over row i does not require adding na[:, None] or clamping
+    # the full MxN matrix in memory.
+    mat = np.multiply(a, np.float32(-2.0)) @ b.T
+    mat += nb[None, :]
 
-    rows = np.arange(len(a))
-    best_f = np.argmin(dist2, axis=1)
-    d1_f = dist2[rows, best_f].copy()
-    dist2[rows, best_f] = np.inf
-    d2_f = np.min(dist2, axis=1)
-    dist2[rows, best_f] = d1_f
+    m = len(a)
+    best_f = np.empty(m, dtype=np.intp)
+    m1_f = np.empty(m, dtype=np.float32)
+    m2_f = np.empty(m, dtype=np.float32)
+    tile = 128
+    tile_rows_full = np.arange(tile)
+    for start in range(0, m, tile):
+        end = min(start + tile, m)
+        chunk = mat[start:end]
+        t_rows = tile_rows_full if (end - start) == tile else np.arange(end - start)
+        t_best = np.argmin(chunk, axis=1)
+        t_m1 = chunk[t_rows, t_best].copy()
+        chunk[t_rows, t_best] = np.inf
+        t_m2 = np.min(chunk, axis=1)
+        chunk[t_rows, t_best] = t_m1
+        best_f[start:end] = t_best
+        m1_f[start:end] = t_m1
+        m2_f[start:end] = t_m2
 
+    na_f64 = na.astype(np.float64)
     eps = float(np.finfo(np.float32).eps)
     dim_factor = 8.0 * eps * (a.shape[1] + 2)
-    bound_f = dim_factor * (na.astype(np.float64) + float(nb.max()))
-    d1_f64 = d1_f.astype(np.float64)
-    d2_f64 = d2_f.astype(np.float64)
+    bound_f = dim_factor * (na_f64 + float(nb.max()))
+    d1_f64 = np.maximum(m1_f.astype(np.float64) + na_f64, 0.0)
+    d2_f64 = np.maximum(m2_f.astype(np.float64) + na_f64, 0.0)
     ok_f = d1_f64 < r2 * d2_f64
     ambig_f = (
         (d2_f64 - d1_f64 <= 2.0 * bound_f)
@@ -80,8 +94,10 @@ def _match_descriptors_gemm_l2(first, second, ratio):
     cand_j = best_f[cand_i]
 
     # Only evaluate the reverse nearest-neighbor ratio test on columns won in forward pass.
+    # Add na[None, :] only on this much smaller [U, M] slice.
     uniq_j, inv_j = np.unique(cand_j, return_inverse=True)
-    sub_b = np.ascontiguousarray(dist2[:, uniq_j].T)
+    sub_b = np.ascontiguousarray(mat[:, uniq_j].T)
+    sub_b += na[None, :]
     u_rows = np.arange(len(uniq_j))
     best_b = np.argmin(sub_b, axis=1)
     d1_b = sub_b[u_rows, best_b].copy()
@@ -89,8 +105,8 @@ def _match_descriptors_gemm_l2(first, second, ratio):
     d2_b = np.min(sub_b, axis=1)
 
     bound_b = dim_factor * (nb[uniq_j].astype(np.float64) + float(na.max()))
-    d1_b64 = d1_b.astype(np.float64)
-    d2_b64 = d2_b.astype(np.float64)
+    d1_b64 = np.maximum(d1_b.astype(np.float64), 0.0)
+    d2_b64 = np.maximum(d2_b.astype(np.float64), 0.0)
     ok_b = d1_b64 < r2 * d2_b64
     ambig_b = (
         (d2_b64 - d1_b64 <= 2.0 * bound_b)

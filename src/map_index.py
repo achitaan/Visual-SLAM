@@ -62,6 +62,12 @@ class IncrementalMapIndex:
         self._visible_counts: dict[int, int] = {}
         self._found_counts: dict[int, int] = {}
 
+        # Structural version for caching recent-keyframe candidate slots in query_frustum
+        self._struct_version: int = 0
+        self._recent_kf_cache_version: int = -1
+        self._recent_kf_cache_window: int = 0
+        self._recent_kf_slots: np.ndarray | None = None
+
     def __len__(self) -> int:
         return self._size
 
@@ -189,6 +195,7 @@ class IncrementalMapIndex:
         observations = getattr(landmark, "observations", None) or {}
         for kf_id, obs in observations.items():
             self.on_observation_added(lm_id, obs, keyframe_id=int(kf_id))
+        self._struct_version += 1
 
     def on_observation_added(
         self,
@@ -225,6 +232,7 @@ class IncrementalMapIndex:
         pixel = getattr(actual_obs, "pixel", None)
         if pixel is not None:
             self._add_claim(lm_id, kf_id, pixel)
+        self._struct_version += 1
 
     def on_observation_removed(
         self,
@@ -242,6 +250,7 @@ class IncrementalMapIndex:
                 del self._kf_landmarks[kf_id]
 
         lm_kfs = self._landmark_kfs.get(lm_id)
+        self._struct_version += 1
         if lm_kfs is not None:
             lm_kfs.discard(kf_id)
             if not lm_kfs:
@@ -323,6 +332,7 @@ class IncrementalMapIndex:
                     del self._anchor_landmarks[anchor]
         self._visible_counts.pop(lm_id, None)
         self._found_counts.pop(lm_id, None)
+        self._struct_version += 1
 
     def record_visibility(self, landmark_ids: np.ndarray | list[int]) -> None:
         for lm_id in landmark_ids:
@@ -358,6 +368,105 @@ class IncrementalMapIndex:
                 result.update(lm_set)
         return result
 
+    def _recent_keyframe_slots(self, window: int = 12) -> np.ndarray | None:
+        """Return ascending slots of all landmarks observed in the latest ``window`` keyframes.
+
+        Every landmark with ``max_obs_kf >= min(recent_kfs)`` is guaranteed to appear
+        in this subset, and every landmark outside it strictly has a smaller ``max_obs_kf``.
+        """
+        if len(self._kf_landmarks) <= window:
+            return None
+        if (
+            self._recent_kf_cache_version == self._struct_version
+            and self._recent_kf_cache_window == window
+            and self._recent_kf_slots is not None
+        ):
+            return self._recent_kf_slots
+        recent_kfs = sorted(self._kf_landmarks.keys(), reverse=True)[:window]
+        id_to_slot = self._id_to_slot
+        slot_set: set[int] = set()
+        for kf_id in recent_kfs:
+            for lm_id in self._kf_landmarks[kf_id]:
+                slot = id_to_slot.get(lm_id)
+                if slot is not None:
+                    slot_set.add(slot)
+        slots = np.fromiter(slot_set, dtype=np.int64, count=len(slot_set))
+        slots.sort()
+        self._recent_kf_cache_version = self._struct_version
+        self._recent_kf_cache_window = window
+        self._recent_kf_slots = slots
+        return slots
+
+    def _project_frustum_subset(
+        self,
+        slots: np.ndarray | None,
+        R: np.ndarray,
+        t: np.ndarray,
+        K_arr: np.ndarray,
+        width: float,
+        height: float,
+        max_depth: float,
+        margin_px: float,
+        include_far_bearings: bool,
+        exclude_conflicted: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if slots is None:
+            n = self._size
+            pts_w = self._positions[:n]
+            is_far = self._is_far[:n]
+            is_conf = self._is_conflicted[:n]
+        else:
+            if not len(slots):
+                empty = np.empty(0, dtype=np.int64)
+                empty_f = np.empty(0, dtype=np.float64)
+                return empty, empty_f, empty_f, empty_f
+            pts_w = self._positions[slots]
+            is_far = self._is_far[slots]
+            is_conf = self._is_conflicted[slots]
+
+        # Compute camera-frame Z first so points behind the camera skip X/Y matmul.
+        z = pts_w @ R[2] + t[2]
+        depth_ok = z > 1e-3
+        if include_far_bearings:
+            depth_ok &= (z <= max_depth) | is_far
+        else:
+            depth_ok &= z <= max_depth
+        if exclude_conflicted:
+            depth_ok &= ~is_conf
+
+        cand_idx = np.flatnonzero(depth_ok)
+        if not len(cand_idx):
+            empty = np.empty(0, dtype=np.int64)
+            empty_f = np.empty(0, dtype=np.float64)
+            return empty, empty_f, empty_f, empty_f
+
+        cand_w = pts_w[cand_idx]
+        cand_xy = cand_w @ R[:2].T + t[:2]
+        cand_z = z[cand_idx]
+        fx, fy = K_arr[0, 0], K_arr[1, 1]
+        cx, cy = K_arr[0, 2], K_arr[1, 2]
+        inv_z = 1.0 / cand_z
+        u = fx * cand_xy[:, 0] * inv_z + cx
+        v = fy * cand_xy[:, 1] * inv_z + cy
+
+        in_bounds = (
+            np.isfinite(u)
+            & np.isfinite(v)
+            & (u >= -margin_px)
+            & (u < width + margin_px)
+            & (v >= -margin_px)
+            & (v < height + margin_px)
+        )
+        in_idx = np.flatnonzero(in_bounds)
+        if not len(in_idx):
+            empty = np.empty(0, dtype=np.int64)
+            empty_f = np.empty(0, dtype=np.float64)
+            return empty, empty_f, empty_f, empty_f
+
+        local_slots = cand_idx[in_idx]
+        final_slots = local_slots if slots is None else slots[local_slots]
+        return final_slots, u[in_idx], v[in_idx], cand_z[in_idx]
+
     def query_frustum(
         self,
         T_cw: np.ndarray,
@@ -388,60 +497,16 @@ class IncrementalMapIndex:
         if max_depth <= 0 or not np.isfinite(max_depth):
             raise ValueError("max_depth must be positive and finite")
 
-        n = self._size
-        pts_w = self._positions[:n]
         R = T[:3, :3]
         t = T[:3, 3]
-        # Compute camera-frame Z first so points behind the camera skip X/Y matmul.
-        z = pts_w @ R[2] + t[2]
+        final_slots = None
+        u_vis = v_vis = z_vis = None
 
-        depth_ok = z > 1e-3
-        if include_far_bearings:
-            depth_ok &= (z <= max_depth) | self._is_far[:n]
-        else:
-            depth_ok &= z <= max_depth
-        if exclude_conflicted:
-            depth_ok &= ~self._is_conflicted[:n]
-
-        cand_idx = np.flatnonzero(depth_ok)
-        if not len(cand_idx):
-            return FrustumQueryResult(
-                landmark_ids=np.empty(0, dtype=np.int64),
-                projected_uv=np.empty((0, 2), dtype=np.float64),
-                depths=np.empty(0, dtype=np.float64),
-            )
-
-        cand_w = pts_w[cand_idx]
-        cand_xy = cand_w @ R[:2].T + t[:2]
-        cand_z = z[cand_idx]
-        fx, fy = K_arr[0, 0], K_arr[1, 1]
-        cx, cy = K_arr[0, 2], K_arr[1, 2]
-        inv_z = 1.0 / cand_z
-        u = fx * cand_xy[:, 0] * inv_z + cx
-        v = fy * cand_xy[:, 1] * inv_z + cy
-
-        in_bounds = (
-            np.isfinite(u)
-            & np.isfinite(v)
-            & (u >= -margin_px)
-            & (u < width + margin_px)
-            & (v >= -margin_px)
-            & (v < height + margin_px)
-        )
-        in_idx = np.flatnonzero(in_bounds)
-        if not len(in_idx):
-            return FrustumQueryResult(
-                landmark_ids=np.empty(0, dtype=np.int64),
-                projected_uv=np.empty((0, 2), dtype=np.float64),
-                depths=np.empty(0, dtype=np.float64),
-            )
-
-        final_slots = cand_idx[in_idx]
-        u_vis = u[in_idx]
-        v_vis = v[in_idx]
-        z_vis = cand_z[in_idx]
-
-        if max_landmarks is not None and len(final_slots) > int(max_landmarks):
+        # Exact recent-keyframe top-K fast path: on large maps, every landmark observed in
+        # the latest 12 keyframes strictly outranks all older landmarks in (max_obs_kf, num_obs).
+        # If >= k of those recent landmarks are visible in the frustum, their top-k is
+        # mathematically identical to scanning the entire map. Otherwise fall back to full scan.
+        if max_landmarks is not None:
             k = int(max_landmarks)
             if k <= 0:
                 return FrustumQueryResult(
@@ -449,6 +514,31 @@ class IncrementalMapIndex:
                     projected_uv=np.empty((0, 2), dtype=np.float64),
                     depths=np.empty(0, dtype=np.float64),
                 )
+            if self._size > max(4 * k, 8000):
+                recent_slots = self._recent_keyframe_slots(window=12)
+                if recent_slots is not None and len(recent_slots) >= k and len(recent_slots) < self._size // 2:
+                    r_slots, r_u, r_v, r_z = self._project_frustum_subset(
+                        recent_slots, R, t, K_arr, width, height,
+                        max_depth, margin_px, include_far_bearings, exclude_conflicted,
+                    )
+                    if len(r_slots) >= k:
+                        final_slots, u_vis, v_vis, z_vis = r_slots, r_u, r_v, r_z
+
+        if final_slots is None:
+            final_slots, u_vis, v_vis, z_vis = self._project_frustum_subset(
+                None, R, t, K_arr, width, height,
+                max_depth, margin_px, include_far_bearings, exclude_conflicted,
+            )
+
+        if not len(final_slots):
+            return FrustumQueryResult(
+                landmark_ids=np.empty(0, dtype=np.int64),
+                projected_uv=np.empty((0, 2), dtype=np.float64),
+                depths=np.empty(0, dtype=np.float64),
+            )
+
+        if max_landmarks is not None and len(final_slots) > int(max_landmarks):
+            k = int(max_landmarks)
             # Exact stable top-k descending by (max_obs_kf, num_obs), preserving
             # original ascending slot order on ties.
             keys = (
@@ -524,5 +614,7 @@ class IncrementalMapIndex:
         self._landmark_anchor.clear()
         self._visible_counts.clear()
         self._found_counts.clear()
+        self._struct_version += 1
+        self._recent_kf_slots = None
         for lm in map_state.landmarks.values():
             self.on_landmark_added(lm)

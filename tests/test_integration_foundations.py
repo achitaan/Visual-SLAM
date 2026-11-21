@@ -99,3 +99,25 @@ def test_performance_config_preserves_current_retrieval_as_default():
 
     with pytest.raises(ValueError, match="current, indexed or exhaustive"):
         PerformanceConfig(retrieval="unknown")
+
+
+def test_gemm_l2_matcher_exact_parity_with_bfmatcher():
+    from mapping_geometry import _match_descriptors_bf, _match_descriptors_gemm_l2
+
+    rng = np.random.default_rng(123)
+    # Build >128x128 matrices with realistic SIFT-like scale, exact ties, near-ratio boundaries, and zero-distance duplicates
+    base = rng.uniform(0.0, 200.0, size=(200, 128)).astype(np.float32)
+    second = base[:160].copy()
+    # Perturb matches slightly, inject exact duplicate ties, and inject exact 0-distance copies
+    second[:80] += rng.normal(0.0, 3.0, size=(80, 128)).astype(np.float32)
+    second[80:90] = base[80:90]  # zero-distance cancellation sensitive
+    second = np.vstack([second, second[0:5], rng.uniform(0.0, 200.0, size=(20, 128)).astype(np.float32)])
+
+    # Test both rectangular orientations (len(a) > len(b) and len(a) < len(b))
+    for a, b in ((base, second), (second, base)):
+        expected = _match_descriptors_bf(a, b, ratio=0.7)
+        actual_gemm = _match_descriptors_gemm_l2(a, b, ratio=0.7)
+        actual_dispatch = match_descriptors(a, b, ratio=0.7)
+        np.testing.assert_array_equal(actual_gemm, expected)
+        np.testing.assert_array_equal(actual_dispatch, expected)
+

@@ -193,6 +193,11 @@ def local_bundle_adjustment(
     gauge_mode="veto",
     candidate_validation_provider=None,
     landmark_policy="bounded_fixed",
+    use_analytic_jacobian=False,
+    use_map_index=False,
+    selected_keyframes=None,
+    cull_outliers_chi2=False,
+    use_heteroscedastic_weights=False,
 ):
     if landmark_policy not in ("bounded_fixed", "joint_tracks"):
         raise ValueError(
@@ -375,7 +380,13 @@ def local_bundle_adjustment(
              for key, frame in state.keyframes.items()}
             if provider_enabled else None
         )
-        selected = list(state.keyframes)[-window:]
+        if selected_keyframes is not None:
+            selected = [k for k in selected_keyframes if k in state.keyframes]
+            if len(selected) < 3:
+                selected = list(state.keyframes)[-window:]
+        else:
+            selected = list(state.keyframes)[-window:]
+        selected_set = set(selected)
         diagnostic_keyframe_rows = {} if snapshot_enabled else None
         if snapshot_enabled:
             for keyframe_id in selected:
@@ -388,20 +399,49 @@ def local_bundle_adjustment(
         # Hold the two oldest monocular anchors to fix scale in the local window.
         fixed = set(selected[: 1 if state.metric else 2])
         free = [k for k in selected if k not in fixed]
+        free_set = set(free)
+        if (use_map_index and hasattr(state, "index")
+                and len(state.index) == len(state.landmarks)):
+            window_landmark_pool = [
+                state.landmarks[lid]
+                for lid in state.index.landmarks_for_keyframes(selected)
+                if lid in state.landmarks
+            ]
+        else:
+            window_landmark_pool = list(state.landmarks.values())
         landmarks = [
             l
-            for l in state.landmarks.values()
-            if sum(k in selected for k in l.observations) >= 2
+            for l in window_landmark_pool
+            if sum(k in selected_set for k in l.observations) >= 2
         ]
         landmarks.sort(
             key=lambda l: (
-                sum(k in selected for k in l.observations),
+                sum(k in selected_set for k in l.observations),
                 max(l.observations),
             ),
             reverse=True,
         )
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
-        landmarks = landmarks[:max_landmarks]
+        if state.metric and use_heteroscedastic_weights and len(landmarks) > max_landmarks:
+            stereo_lms = [
+                l for l in landmarks
+                if any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
+            ]
+            bearing_lms = [
+                l for l in landmarks
+                if not any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
+            ]
+            max_bearing = max(10, int(0.25 * max_landmarks))
+            stereo_quota = max_landmarks - min(len(bearing_lms), max_bearing)
+            chosen = stereo_lms[:stereo_quota]
+            remaining = max_landmarks - len(chosen)
+            if remaining > 0:
+                chosen.extend(bearing_lms[:remaining])
+            if len(chosen) < max_landmarks:
+                chosen.extend(stereo_lms[stereo_quota:stereo_quota + (max_landmarks - len(chosen))])
+            landmarks = chosen[:max_landmarks]
+        else:
+            landmarks = landmarks[:max_landmarks]
         if len(landmarks) < 15:
             return {"applied": False, "reason": "insufficient_observations",
                     **solver_metadata("not_run")}
@@ -487,19 +527,19 @@ def local_bundle_adjustment(
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
             (landmark.position.copy(), k, o)
-            for landmark in state.landmarks.values()
+            for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) >= 2
             for k, o in landmark.observations.items()
-            if k in free
+            if k in free_set
         ]
         held_out_ids = [] if snapshot_enabled else None
         if snapshot_enabled:
             held_out_ids = [
                 int(landmark.id)
-                for landmark in state.landmarks.values()
+                for landmark in window_landmark_pool
                 if landmark.id not in optimized_ids and len(landmark.observations) >= 2
                 for k, _ in landmark.observations.items()
-                if k in free
+                if k in free_set
             ]
         joint_landmark_expansion = None
         if landmark_policy == "joint_tracks":
@@ -514,19 +554,19 @@ def local_bundle_adjustment(
             ]
             old_fixed_row_ids = [
                 (int(landmark.id), int(keyframe_id))
-                for landmark in state.landmarks.values()
+                for landmark in window_landmark_pool
                 if landmark.id not in optimized_ids
                 and len(landmark.observations) >= 2
                 for keyframe_id in landmark.observations
-                if keyframe_id in free
+                if keyframe_id in free_set
             ]
             old_fixed_row_id_set = set(old_fixed_row_ids)
             promoted_landmarks = sorted(
                 (
-                    landmark for landmark in state.landmarks.values()
+                    landmark for landmark in window_landmark_pool
                     if landmark.id not in optimized_ids
                     and len(landmark.observations) >= 2
-                    and any(keyframe_id in free
+                    and any(keyframe_id in free_set
                             for keyframe_id in landmark.observations)
                 ),
                 key=lambda landmark: int(landmark.id),
@@ -644,9 +684,9 @@ def local_bundle_adjustment(
             }
         single_view = [
             (landmark.id, landmark.anchor, landmark.position.copy())
-            for landmark in state.landmarks.values()
+            for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) == 1
-            and landmark.anchor in free and landmark.anchor in landmark.observations
+            and landmark.anchor in free_set and landmark.anchor in landmark.observations
         ]
         single_view_observation_rows = [] if provider_enabled else None
         if provider_enabled:
@@ -772,16 +812,24 @@ def local_bundle_adjustment(
         [3 if state.metric and o.right_u is not None else 2 for _, _, o in held_out],
         dtype=int,
     )
-    pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
-    row = 0
-    for (i, k, _), dim in zip(records, dimensions):
-        if k in pose_offset:
-            pattern[row : row + dim, pose_offset[k] : pose_offset[k] + 6] = 1
-        pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
-        row += dim
-    for (_, k, _), dim in zip(held_out, held_dimensions):
-        pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
-        row += dim
+    need_sparsity_pattern = not (
+        use_analytic_jacobian
+        and not provider_enabled
+        and not source_history_enabled
+        and not retention_requested
+    )
+    pattern = None
+    if need_sparsity_pattern:
+        pattern = lil_matrix((sum(dimensions)+sum(held_dimensions), len(initial)), dtype=int)
+        row = 0
+        for (i, k, _), dim in zip(records, dimensions):
+            if k in pose_offset:
+                pattern[row : row + dim, pose_offset[k] : pose_offset[k] + 6] = 1
+            pattern[row : row + dim, point_offset + 3 * i : point_offset + 3 * i + 3] = 1
+            row += dim
+        for (_, k, _), dim in zip(held_out, held_dimensions):
+            pattern[row : row+dim, pose_offset[k] : pose_offset[k]+6] = 1
+            row += dim
 
     # Residual rows repeatedly use the same point indices, camera indices, and
     # measurements. Materialize those once so each solver evaluation only
@@ -949,12 +997,15 @@ def local_bundle_adjustment(
         values[z <= 0] = 1e4
         return values[mask]
 
+    ba_obs_weights = None
+    ba_obs_weights_active = None
+
     def optimized_residual(x, cameras=None, points=None):
         if points is None:
             points = x[point_offset:point_limit].reshape(-1, 3)
         if cameras is None:
             cameras = camera_poses_for(x)
-        return observation_residual(
+        vals = observation_residual(
             points[record_points],
             cameras,
             record_cameras,
@@ -962,6 +1013,9 @@ def local_bundle_adjustment(
             measured_right,
             dimension_mask,
         )
+        if ba_obs_weights_active is not None:
+            return vals * ba_obs_weights_active
+        return vals
 
     def objective(r):
         a = np.abs(r)
@@ -2312,14 +2366,46 @@ def local_bundle_adjustment(
                 + retained_source_before
             ),
         })
+    use_analytic_jac_effective = bool(
+        use_analytic_jacobian
+        and owned_training_rows is None
+        and not source_history_rows
+        and not retained_source_rows
+    )
     solver_options = {
-        "jac_sparsity": pattern.tocsr(),
         "loss": "huber",
         "f_scale": 2.0,
         "max_nfev": 30,
         "x_scale": variable_scale,
         "tr_solver": "lsmr",
     }
+    if use_analytic_jac_effective:
+        from analytic_ba import build_local_bundle_jacobian
+
+        def analytic_jacobian(vector):
+            return build_local_bundle_jacobian(
+                vector,
+                camera_poses_for(vector),
+                free_camera_indices,
+                free_offsets,
+                point_offset,
+                point_limit,
+                record_cameras,
+                record_points,
+                measured_pixels,
+                dimension_mask,
+                held_cameras,
+                held_points,
+                held_pixels,
+                held_dimension_mask,
+                matrix,
+                baseline,
+                bool(state.metric),
+            )
+
+        solver_options["jac"] = analytic_jacobian
+    else:
+        solver_options["jac_sparsity"] = pattern.tocsr()
     precise_inner_solve = solver_accuracy == "precise" or owned_training_rows is not None
     inner_options = None
     if precise_inner_solve:
@@ -2396,7 +2482,36 @@ def local_bundle_adjustment(
                        if gauge_correction is not None else {}),
                     **solver_metadata("not_run"),
                 })
-    result = least_squares(residual, initial, **solver_options)
+    if use_analytic_jac_effective:
+        from analytic_ba import solve_schur_local_bundle
+
+        result = solve_schur_local_bundle(
+            initial,
+            camera_poses_for,
+            free_camera_indices,
+            free_offsets,
+            point_offset,
+            point_limit,
+            record_cameras,
+            record_points,
+            measured_pixels,
+            measured_right,
+            dimension_mask,
+            held_cameras,
+            held_points,
+            held_pixels,
+            held_right,
+            held_dimension_mask,
+            matrix,
+            baseline,
+            disparity_offset,
+            bool(state.metric),
+            f_scale=2.0,
+            max_iter=20,
+            obs_weights=ba_obs_weights,
+        )
+    else:
+        result = least_squares(residual, initial, **solver_options)
     if gauge_certificate is not None:
         from bundle_gauge import canonicalize_two_bridge_candidate
         raw_solver_vector = np.asarray(result.x, dtype=float).copy()
@@ -3075,6 +3190,38 @@ def local_bundle_adjustment(
         # Multiview world points are independent; single-view stereo points retain
         # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
+        if cull_outliers_chi2:
+            culled_obs = 0
+            fx_b = float(matrix[0, 0]) * float(baseline)
+            for idx_pt, kf_id, obs in records:
+                lm = state.landmarks.get(landmarks[idx_pt].id)
+                if lm is None or kf_id not in lm.observations or len(lm.observations) <= 1:
+                    continue
+                if kf_id not in state.keyframes:
+                    continue
+                kf_pose = state.keyframes[kf_id].pose
+                pc = kf_pose[:3, :3].T @ (lm.position - kf_pose[:3, 3])
+                is_outlier = pc[2] <= 0.05
+                if not is_outlier:
+                    h = matrix @ pc
+                    uv = h[:2] / max(float(h[2]), 1e-9)
+                    err_uv = uv - np.asarray(obs.pixel, dtype=float)
+                    err_sq = float(err_uv[0] * err_uv[0] + err_uv[1] * err_uv[1])
+                    if state.metric and obs.right_u is not None:
+                        u_r = float(uv[0]) - fx_b / max(float(pc[2]), 1e-9) - float(disparity_offset)
+                        err_r = u_r - float(obs.right_u)
+                        chi2 = err_sq + err_r * err_r
+                        is_outlier = (chi2 > 11.34) or (err_sq > 12.25) or (abs(err_r) > 3.5)
+                    else:
+                        is_outlier = (err_sq > 9.21)
+                if is_outlier and len(lm.observations) > 1:
+                    if hasattr(state, "remove_observation"):
+                        removed = state.remove_observation(lm.id, kf_id)
+                    else:
+                        removed = lm.observations.pop(kf_id, None)
+                    if removed is not None:
+                        culled_obs += 1
+            report["culled_outlier_observations"] = int(culled_obs)
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)
             training_bundle_summary['committed_map_revision'] = int(state.revision)

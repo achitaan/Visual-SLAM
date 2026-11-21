@@ -91,7 +91,28 @@ def plot3D(curr_poses, gt_poses: list[NDArray] | None = None) -> None:
     plt.show()
 
 
+_CLI_MAPPING_FIELDS = (
+    'features', 'loop_mode', 'stereo_depth_policy', 'stereo_map_depth_policy',
+    'stereo_map_frontend_seed_fallback', 'stereo_pose_arbitration',
+    'stereo_two_view_refinement', 'stereo_two_view_solver',
+    'stereo_raw_reference_retry', 'stereo_descriptor_association_retry',
+    'stereo_verified_reference_retry', 'stereo_owned_image_bundle',
+    'stereo_source_history_bundle', 'stereo_retained_source_observations',
+    'stereo_mapping_observation_retention', 'bundle_solver_accuracy',
+    'bundle_landmark_policy', 'stereo_bundle_gauge_mode',
+)
+
+
 def _mapping_config_from_args(args):
+    preset = getattr(args, 'preset', None)
+    if preset is not None:
+        stereo = bool(getattr(args, 'stereo', True))
+        overrides = {}
+        for field_name in _CLI_MAPPING_FIELDS:
+            val = getattr(args, field_name, None)
+            if val is not None:
+                overrides[field_name] = val
+        return MappingConfig.from_preset(preset, stereo=stereo, **overrides)
     return MappingConfig(features=args.features,
                          loop_mode=getattr(args, 'loop_mode', 'live'),
                          stereo_depth_policy=args.stereo_depth_policy,
@@ -110,61 +131,66 @@ def _mapping_config_from_args(args):
                              args, 'stereo_two_view_refinement', False),
                          stereo_two_view_solver=getattr(
                              args, 'stereo_two_view_solver', 'sparse_lsmr'),
-                          stereo_map_depth_policy=getattr(
-                              args, 'stereo_map_depth_policy', 'inherit'),
+                         stereo_map_depth_policy=getattr(
+                             args, 'stereo_map_depth_policy', 'inherit'),
                          stereo_map_frontend_seed_fallback=getattr(
                              args, 'stereo_map_frontend_seed_fallback', False),
                          bundle_solver_accuracy=args.bundle_solver_accuracy,
                          bundle_landmark_policy=getattr(args, 'bundle_landmark_policy', 'bounded_fixed'),
                          stereo_bundle_gauge_mode=getattr(args, 'stereo_bundle_gauge_mode', 'veto'))
 
-def main() -> None:
+
+def parse_main_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, help="KITTI root containing sequences/")
     parser.add_argument("--poses-root", type=Path, help="Ground-truth poses for display only")
     parser.add_argument("--sequence", default="00")
     parser.add_argument("--max-frames", type=int, default=None)
-    parser.add_argument("--features", type=int, default=1500,
+    parser.add_argument("--seed", type=int, default=0,
+                        help="OpenCV/NumPy random seed for reproducible runs (default: 0)")
+    parser.add_argument("--preset", choices=["improved_stereo", "verified_baseline", "legacy_default"],
+                        default=None, help="Named SharedSlam configuration preset")
+    parser.add_argument("--features", type=int, default=None,
                         help="Requested SharedSlam SIFT feature budget (1–10000; default 1500)")
-    parser.add_argument('--loop-mode', choices=['off', 'live', 'offline'], default='live',
+    parser.add_argument('--loop-mode', choices=['off', 'live', 'offline'], default=None,
                         help='Loop processing policy; the confirmed benchmark profile uses off')
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
-    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default=None)
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default=None,
                         help='Map geometry source only; verified uses full-range right-image correspondences')
-    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true',
+    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true', default=None,
                         help='Use valid current-frame frontend XYZ as a left-only seed when verified map stereo abstains')
-    parser.add_argument('--stereo-pose-arbitration', action='store_true',
+    parser.add_argument('--stereo-pose-arbitration', action='store_true', default=None,
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
-    parser.add_argument('--stereo-two-view-refinement', action='store_true',
+    parser.add_argument('--stereo-two-view-refinement', action='store_true', default=None,
                         help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
     parser.add_argument('--stereo-two-view-solver', choices=['sparse_lsmr', 'dense_exact'],
-                        default='sparse_lsmr',
+                        default=None,
                         help='Linear solver for the opt-in two-view training refinement')
-    parser.add_argument('--stereo-raw-reference-retry', action='store_true',
+    parser.add_argument('--stereo-raw-reference-retry', action='store_true', default=None,
                         help='Retry a failed configured stereo reference with guarded raw-supported geometry')
-    parser.add_argument('--stereo-descriptor-association-retry', action='store_true',
+    parser.add_argument('--stereo-descriptor-association-retry', action='store_true', default=None,
                         help='Reconnect verified stereo poses using validated descriptor associations')
-    parser.add_argument('--stereo-verified-reference-retry', action='store_true',
+    parser.add_argument('--stereo-verified-reference-retry', action='store_true', default=None,
                         help='Use the verified raw-reference recovery path from the confirmed Python profile')
-    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true', default=None,
                         help='Opt in to bounded image factors from the selected reserved stereo training rows')
-    parser.add_argument('--stereo-source-history-bundle', action='store_true',
+    parser.add_argument('--stereo-source-history-bundle', action='store_true', default=None,
                         help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
-    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+    parser.add_argument('--stereo-retained-source-observations', action='store_true', default=None,
                         help='Retain source-image constraints using the existing anchored camera model')
-    parser.add_argument('--stereo-mapping-observation-retention', action='store_true',
+    parser.add_argument('--stereo-mapping-observation-retention', action='store_true', default=None,
                         help='Retain individually validated old landmark observations after an independently accepted stereo pose fails only spatial coverage')
-    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default=None,
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--bundle-landmark-policy', choices=['bounded_fixed', 'joint_tracks'],
-                        default='bounded_fixed',
+                        default=None,
                         help='Experimental joint tracks optimize capped-out landmark XYZ using their existing image observations')
-    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
+    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default=None,
                         help='Experimental finite gauge convention for certified two-bridge stereo graphs')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
@@ -178,7 +204,21 @@ def main() -> None:
     parser.add_argument("--frame-delay-ms", type=float, default=TELEMETRY.frame_delay_ms)
     parser.add_argument("--output", type=Path, default=Path("results/poses.txt"))
     parser.add_argument("--plot", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not 0 <= args.seed < 2**31:
+        parser.error('--seed must be between 0 and 2147483647')
+    if args.preset in ("improved_stereo", "verified_baseline") and not (args.slam and args.stereo):
+        parser.error(f"--preset {args.preset} requires --slam --stereo")
+    if args.preset == "legacy_default" and not args.slam:
+        parser.error("--preset requires --slam")
+    base_cfg = (
+        MappingConfig.from_preset(args.preset, stereo=bool(args.stereo))
+        if args.preset is not None
+        else MappingConfig()
+    )
+    for field_name in _CLI_MAPPING_FIELDS:
+        if getattr(args, field_name) is None:
+            setattr(args, field_name, getattr(base_cfg, field_name))
     try:
         args.features = validate_feature_budget(args.features)
     except ValueError as error:
@@ -242,15 +282,21 @@ def main() -> None:
             parser.error('--bundle-diagnostics-dir must be inside the map output directory')
     if args.opencv_threads < 1:
         parser.error('--opencv-threads must be positive')
-    cv.setNumThreads(args.opencv_threads)
-    cv.setRNGSeed(0)
-    run_id = str(uuid.uuid4())
     if args.max_frames is not None and args.max_frames < 2:
         parser.error("--max-frames must be at least 2")
     if args.frame_delay_ms < 0:
         parser.error("--frame-delay-ms cannot be negative")
     if not 0 <= args.telemetry_port <= 65535:
         parser.error("--telemetry-port must be between 0 and 65535")
+    return parser, args
+
+
+def main() -> None:
+    parser, args = parse_main_args()
+    cv.setNumThreads(args.opencv_threads)
+    cv.setRNGSeed(args.seed)
+    np.random.seed(args.seed)
+    run_id = str(uuid.uuid4())
 
     gt_poses = None
     stereo_root = None
@@ -442,8 +488,9 @@ def main() -> None:
                         inlier = inlier_mask[idx] if idx < len(inlier_mask) else True
                         features.append({"x": float(x), "y": float(y), "inlier": inlier})
 
+                has_clients = bool(getattr(telemetry, "has_clients", True))
                 image_payload = None
-                if telemetry.state.stream_enabled and TELEMETRY.stream_images:
+                if has_clients and telemetry.state.stream_enabled and TELEMETRY.stream_images:
                     image_payload = encode_image(vo.Images_1[i] if use_stereo else vo.Images[i], encoding="jpg")
 
                 tracking = {
@@ -456,10 +503,10 @@ def main() -> None:
                 }
                 map_state = shared.map_state() if shared is not None else slam_backend.map_state() if (use_keyframes or use_local_map) else {"keyframes": 0, "map_points": 0}
                 pose_graph_state = None if shared is not None else slam_backend.pose_graph_state(i if (use_keyframes or use_local_map) else None)
-                if shared is not None and shared.loop_worker.verified:
+                if has_clients and shared is not None and shared.loop_worker.verified:
                     pose_graph_state={'optimized_pose_T_wc':vo.poses[-1].tolist(),'optimized_poses_count':len(vo.poses),'optimized_poses':[p.tolist() for p in vo.poses] if len(vo.poses)<=5000 else None}
                 map_points_payload = None
-                if use_local_map and TELEMETRY.stream_map_points:
+                if has_clients and use_local_map and TELEMETRY.stream_map_points:
                     map_points_payload = shared.map_points_sample(TELEMETRY.max_map_points) if shared is not None else slam_backend.map_points_sample(TELEMETRY.max_map_points)
 
                 expected_pose = gt_poses[i] if gt_poses and i < len(gt_poses) else None
@@ -473,7 +520,7 @@ def main() -> None:
                     pose_graph=pose_graph_state,
                     expected_pose_T_wc=expected_pose,
                     image_payload=image_payload,
-                    features=features,
+                    features=features if has_clients else None,
                     fps=fps,
                     state=telemetry.state,
                     events=([{'timestamp':current_time,'type':e['type'],'message':str(e),'severity':'warn' if e['type'] in ('loop_failed','loop_discarded') else 'info'} for e in shared.loop_worker.events[shared_events_sent:]] if shared is not None else [e.__dict__ for e in events]),
@@ -487,7 +534,7 @@ def main() -> None:
                 if shared is not None:shared_events_sent=len(shared.loop_worker.events)
             if args.realtime and frame_times and i < len(frame_times):
                 time.sleep(max(0.0, frame_times[i] - frame_times[i - 1]))
-            elif telemetry and args.frame_delay_ms > 0:
+            elif telemetry and getattr(telemetry, "has_clients", True) and args.frame_delay_ms > 0:
                 time.sleep(args.frame_delay_ms / 1000.0)
     finally:
         if shared is not None:

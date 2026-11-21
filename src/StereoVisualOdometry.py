@@ -32,27 +32,26 @@ class StereoVisualOdometry:
         print("Left Intrinsics:\n", self.K1)
         print("Right Intrinsics:\n", self.K2)
 
-        if poses_path and os.path.exists(poses_path):
-            self.true_poses = self.__load_poses(poses_path)
-        else:
-            self.true_poses = [np.eye(4)]
-        self.poses = [np.eye(4)]
-
-        # Load left and right images
-        self.Images_1 = self.__load(folder_path + "0", max_frames=max_frames)  # Left images
-        self.Images_2 = self.__load(folder_path + "1", max_frames=max_frames)  # Right images
-        if [p.name for p in image_paths(folder_path + "0", max_frames)] != [p.name for p in image_paths(folder_path + "1", max_frames)]:
-            raise ValueError("Left/right image filenames must match")
-
-        # Compute the Q matrix for reprojectImageTo3D using the correct stereo pair.
+        # Compute the Q matrix for reprojectImageTo3D using the correct stereo pair,
+        # validating focal lengths and positive baseline before dividing or loading images.
         f = float(self.K1[0, 0])
+        f_right = float(self.P2[0, 0])
+        fy_left = float(self.K1[1, 1])
+        fy_right = float(self.P2[1, 1])
+        if (
+            not np.isfinite(f) or f <= 0.0
+            or not np.isfinite(f_right) or f_right <= 0.0
+            or not np.isfinite(fy_left) or fy_left <= 0.0
+            or not np.isfinite(fy_right) or fy_right <= 0.0
+        ):
+            raise ValueError("Stereo calibration requires positive finite focal lengths")
         cx_left = float(self.P1[0, 2])
         cy_left = float(self.P1[1, 2])
         cx_right = float(self.P2[0, 2])
-        tx = float(self.P2[0, 3]) / float(self.P2[0, 0])  # Tx = -B
+        tx = float(self.P2[0, 3]) / f_right  # Tx = -B
         print((f, cx_left, cy_left))
-        baseline = float(self.P1[0, 3] / self.P1[0, 0]) - tx
-        if not np.isfinite(baseline) or baseline <= 0:
+        baseline = float(self.P1[0, 3]) / f - tx
+        if not np.isfinite(baseline) or baseline <= 0.0:
             raise ValueError("Stereo calibration requires a positive left-to-right baseline")
         self.baseline = float(baseline)
         self.Q = np.array(
@@ -64,6 +63,18 @@ class StereoVisualOdometry:
             ],
             dtype=np.float32,
         )
+
+        if poses_path and os.path.exists(poses_path):
+            self.true_poses = self.__load_poses(poses_path)
+        else:
+            self.true_poses = [np.eye(4)]
+        self.poses = [np.eye(4)]
+
+        # Load left and right images
+        self.Images_1 = self.__load(folder_path + "0", max_frames=max_frames)  # Left images
+        self.Images_2 = self.__load(folder_path + "1", max_frames=max_frames)  # Right images
+        if [p.name for p in image_paths(folder_path + "0", max_frames)] != [p.name for p in image_paths(folder_path + "1", max_frames)]:
+            raise ValueError("Left/right image filenames must match")
 
 
         self.stereo = cv.StereoSGBM_create(
@@ -150,22 +161,53 @@ class StereoVisualOdometry:
             K = P[0:3, 0:3]
         return K, P
     
-    def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
-        P = {}
-        with open(filepath, 'r') as f:
-            for line in f:
-                if line.startswith("P"):
-                    key = line.split(':', 1)[0].strip()
-                    params = np.fromstring(line.split(':', 1)[1], dtype=np.float64, sep=' ')
-                    P[key] = np.reshape(params, (3, 4))
-        # KITTI gray sequences use P0/P1 for left/right.
-        if "P0" in P and "P1" in P:
-            P_l, P_r = P["P0"], P["P1"]
+    @staticmethod
+    def _parse_projection_matrix(raw: str, filepath: str, label: str) -> NDArray:
+        tokens = raw.strip().split()
+        try:
+            values = np.array([float(tok) for tok in tokens], dtype=np.float64)
+        except ValueError as exc:
+            raise ValueError(f"Invalid calibration floats for {label} in {filepath}") from exc
+        if values.size != 12 or not np.isfinite(values).all():
+            raise ValueError(f"Expected 12 finite calibration values for {label} in {filepath}")
+        return values.reshape(3, 4)
+
+    @classmethod
+    def parse_stereo_calib(cls, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        if not lines:
+            raise ValueError(f"Empty calibration file: {filepath}")
+        labeled: dict[str, NDArray] = {}
+        for line in lines:
+            if ':' in line:
+                key, rhs = line.split(':', 1)
+                key = key.strip()
+                if key.startswith('P'):
+                    labeled[key] = cls._parse_projection_matrix(rhs, filepath, key)
+        # KITTI gray sequences use P0/P1 for left/right; color uses P2/P3 or P1/P2;
+        # bundled unlabeled files provide P0 on line 1 and P1 on line 2.
+        if "P0" in labeled and "P1" in labeled:
+            P_l, P_r = labeled["P0"], labeled["P1"]
+        elif "P1" in labeled and "P2" in labeled:
+            P_l, P_r = labeled["P1"], labeled["P2"]
+        elif labeled:
+            raise ValueError(
+                f"Labeled stereo calibration in {filepath} must provide P0/P1 or P1/P2"
+            )
         else:
-            P_l, P_r = P["P1"], P["P2"]
+            if len(lines) < 2:
+                raise ValueError(
+                    f"Unlabeled stereo calibration in {filepath} requires at least 2 lines (P0 and P1)"
+                )
+            P_l = cls._parse_projection_matrix(lines[0], filepath, "line 1 (P0)")
+            P_r = cls._parse_projection_matrix(lines[1], filepath, "line 2 (P1)")
         K_l = P_l[0:3, 0:3]
         K_r = P_r[0:3, 0:3]
         return K_l, P_l, K_r, P_r
+
+    def __calib(self, filepath: str) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        return self.parse_stereo_calib(filepath)
 
     def bf_match_features(self, i: int):
         # Match features between left image at frame i-1 and frame i using ORB + BFMatcher
@@ -193,14 +235,27 @@ class StereoVisualOdometry:
             return np.empty((0, 2), dtype=np.float32), np.empty((0, 2), dtype=np.float32), kp1, kp2, []
 
         matcher = self.brute_force if hasattr(self, "orb") else self.flann
-        matches = matcher.knnMatch(desc1, desc2, k=2)
-        thresh, good_matches = 0.7, []
-        for pair in matches:
+        matches_fwd = matcher.knnMatch(desc1, desc2, k=2)
+        thresh = 0.72
+        fwd_good = {}
+        for pair in matches_fwd:
             if len(pair) != 2:
                 continue
             m, n = pair
             if m.distance < thresh * n.distance:
-                good_matches.append(m)
+                fwd_good[m.queryIdx] = m
+        good_matches = []
+        if fwd_good and len(desc1) >= 2:
+            matches_bwd = matcher.knnMatch(desc2, desc1, k=2)
+            bwd_best = {}
+            for pair in matches_bwd:
+                if len(pair) >= 1:
+                    bwd_best[pair[0].queryIdx] = pair[0].trainIdx
+            for qidx, m in fwd_good.items():
+                if bwd_best.get(m.trainIdx) == qidx:
+                    good_matches.append(m)
+        else:
+            good_matches = list(fwd_good.values())
         if self.draw_matches:
             self.__draw_corresponding_points(i, kp1, kp2, good_matches)
         p1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
@@ -222,7 +277,6 @@ class StereoVisualOdometry:
             raise ValueError("Stereo images must have matching dimensions")
         disparity = self.stereo.compute(left, right).astype(np.float32) / 16.0
         valid_disparity = (disparity > MINIMUM_DISPARITY) & (disparity < NUMBER_OF_DISPARITY)
-        dense = cv.reprojectImageTo3D(disparity, self.Q)
         p1, p2, old_kp, new_kp, matches = self.flann_match_features(i)
         debug = {"num_matches": len(matches), "num_inliers": 0, "inlier_ratio": 0.0,
                  "keypoints": new_kp, "descriptors": self._current_descriptors,
@@ -230,14 +284,35 @@ class StereoVisualOdometry:
                  "tracking_ok": False, "num_valid_3d": 0, "feature_points": [], "inlier_mask": []}
         if len(matches) < STEREO_MIN_MATCHES:
             return np.eye(4), debug
+        h_img, w_img = disparity.shape
+        fx, fy = float(self.K1[0, 0]), float(self.K1[1, 1])
+        cx, cy = float(self.K1[0, 2]), float(self.K1[1, 2])
+        q32, q33, q23 = float(self.Q[3, 2]), float(self.Q[3, 3]), float(self.Q[2, 3])
         points_3d, points_2d = [], []
         for match in matches:
-            u, v = (int(round(coord)) for coord in old_kp[match.queryIdx].pt)
-            if not (0 <= u < dense.shape[1] and 0 <= v < dense.shape[0]):
+            u_f, v_f = old_kp[match.queryIdx].pt
+            if not (0.0 <= u_f <= w_img - 1.0 and 0.0 <= v_f <= h_img - 1.0):
                 continue
-            point = dense[v, u]
-            if not valid_disparity[v, u] or not np.isfinite(point).all() or not (0.1 < point[2] < 100.0):
+            x0, y0 = int(np.floor(u_f)), int(np.floor(v_f))
+            x1, y1 = min(x0 + 1, w_img - 1), min(y0 + 1, h_img - 1)
+            dx, dy = u_f - x0, v_f - y0
+            d00 = float(disparity[y0, x0])
+            d10 = float(disparity[y0, x1])
+            d01 = float(disparity[y1, x0])
+            d11 = float(disparity[y1, x1])
+            nbrs = (d00, d10, d01, d11)
+            if any((not np.isfinite(d)) or d <= MINIMUM_DISPARITY or d >= NUMBER_OF_DISPARITY for d in nbrs):
                 continue
+            if max(nbrs) - min(nbrs) > 2.0:
+                continue
+            d_sub = (1.0 - dx) * (1.0 - dy) * d00 + dx * (1.0 - dy) * d10 + (1.0 - dx) * dy * d01 + dx * dy * d11
+            denom = q32 * d_sub + q33
+            if denom <= 0.0:
+                continue
+            z = q23 / denom
+            if not np.isfinite(z) or not (0.1 < z < 100.0):
+                continue
+            point = np.array([(u_f - cx) * z / fx, (v_f - cy) * z / fy, z], dtype=np.float32)
             points_3d.append(point)
             points_2d.append(new_kp[match.trainIdx].pt)
         debug["num_valid_3d"] = len(points_3d)

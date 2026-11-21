@@ -178,20 +178,62 @@ def original_image_pose_observability(
         if len(free_lookup) != nfree:
             return invalid("duplicate_free_camera_index")
 
+        from analytic_ba import right_jacobian_batch, _projection_jacobian_wrt_cam
+
+        cam_to_slot = np.full(len(cameras), -1, dtype=np.int32)
+        if nfree:
+            cam_to_slot[free_idx] = np.arange(nfree, dtype=np.int32)
+        cam_Jr = np.broadcast_to(np.eye(3, dtype=np.float64), (len(cameras), 3, 3)).copy()
+        if nfree:
+            cam_Jr[free_idx] = right_jacobian_batch(rotvecs)
+
+        def _batch_jacobians(obs_cams, obs_pts, obs_pix, obs_mask):
+            m = len(obs_cams)
+            if m == 0:
+                return np.empty((0, 3, 6), np.float64), np.empty((0, 3, 3), np.float64)
+            sel_cams = cameras[obs_cams]
+            R_wc = sel_cams[:, :3, :3]
+            t_wc = sel_cams[:, :3, 3]
+            pts_c = np.einsum("ni,nij->nj", obs_pts - t_wc, R_wc)
+            if not np.isfinite(pts_c).all():
+                raise ValueError("undefined_camera_depth")
+            z = pts_c[:, 2]
+            if np.any((z > 0.0) & (z < 1e-15)):
+                raise ValueError("undefined_camera_depth")
+            h = pts_c @ K.T
+            uv = h[:, :2] / np.maximum(h[:, 2:], 1e-9)
+            raw_err = uv - obs_pix
+            pos_z = z > 0.0
+            if np.any(pos_z[:, None] & (np.abs(raw_err) == 1e4)):
+                raise ValueError("nondifferentiable_left_clip_boundary")
+            J_pix = _projection_jacobian_wrt_cam(pts_c, K, float(baseline), raw_left_error=raw_err)
+            J_point = np.einsum("nij,ncj->nci", R_wc, J_pix)
+            J_pose = np.zeros((m, 3, 6), dtype=np.float64)
+            slots = cam_to_slot[obs_cams]
+            free_m = slots >= 0
+            if np.any(free_m):
+                fi = np.flatnonzero(free_m)
+                vc = np.cross(J_pix[fi], pts_c[fi, None, :])
+                J_pose[fi, :, :3] = np.einsum("fci,fij->fcj", vc, cam_Jr[obs_cams[fi]])
+                J_pose[fi, :, 3:] = -np.einsum("fij,fcj->fci", R_wc[fi], J_pix[fi])
+            return J_pose, J_point
+
+        Jpose_s, Jpt_s = _batch_jacobians(sc, points[sp], pix, sm) if len(sc) else (
+            np.empty((0, 3, 6)), np.empty((0, 3, 3))
+        )
+        active_count = int(sm.sum()) + int(em.sum())
+
         by_point = [[] for _ in range(len(points))]
-        active_count = 0
         for row in range(len(sc)):
+            active = np.flatnonzero(sm[row])
+            if not len(active):
+                continue
             camera_index, point_index = int(sc[row]), int(sp[row])
-            phi = rotvecs[free_lookup[camera_index]] if camera_index in free_lookup else np.zeros(3)
-            values, pose_jac, point_jac = _observation_jacobians(
-                cameras[camera_index], phi, points[point_index], pix[row], sr[row],
-                sm[row], K, baseline, disparity_offset)
-            active_count += len(values)
-            pose_block = np.zeros((len(values), npose), dtype=np.float64)
-            if camera_index in free_lookup:
-                slot = free_lookup[camera_index]
-                pose_block[:, 6 * slot:6 * slot + 6] = pose_jac * pose_scale[slot]
-            point_block = point_jac * point_scale[point_index]
+            pose_block = np.zeros((len(active), npose), dtype=np.float64)
+            slot = int(cam_to_slot[camera_index])
+            if slot >= 0:
+                pose_block[:, 6 * slot:6 * slot + 6] = Jpose_s[row, active] * pose_scale[slot]
+            point_block = Jpt_s[row, active] * point_scale[point_index]
             by_point[point_index].append((pose_block, point_block))
 
         reduced = []
@@ -211,18 +253,17 @@ def original_image_pose_observability(
             if point_rank < U.shape[1]:
                 reduced.append(U[:, point_rank:].T @ A)
 
-        for row in range(len(ec)):
-            camera_index = int(ec[row])
-            phi = rotvecs[free_lookup[camera_index]] if camera_index in free_lookup else np.zeros(3)
-            _values, pose_jac, _point_jac = _observation_jacobians(
-                cameras[camera_index], phi, fixed_points[row], epix[row], er[row],
-                em[row], K, baseline, disparity_offset)
-            active_count += len(_values)
-            if camera_index in free_lookup:
-                slot = free_lookup[camera_index]
-                block = np.zeros((len(pose_jac), npose), dtype=np.float64)
-                block[:, 6 * slot:6 * slot + 6] = pose_jac * pose_scale[slot]
-                reduced.append(block)
+        if len(ec):
+            Jpose_e, _Jpt_e = _batch_jacobians(ec, fixed_points, epix, em)
+            for row in range(len(ec)):
+                active = np.flatnonzero(em[row])
+                if not len(active):
+                    continue
+                slot = int(cam_to_slot[int(ec[row])])
+                if slot >= 0:
+                    block = np.zeros((len(active), npose), dtype=np.float64)
+                    block[:, 6 * slot:6 * slot + 6] = Jpose_e[row, active] * pose_scale[slot]
+                    reduced.append(block)
 
         C = (np.vstack(reduced) if reduced else np.empty((0, npose), dtype=np.float64))
         if not np.isfinite(C).all():

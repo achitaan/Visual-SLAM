@@ -90,5 +90,6 @@ def main():
     c.add_image()
     print(c.find_matrix(True))
 
-main()
+if __name__ == "__main__":
+    main()
 

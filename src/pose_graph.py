@@ -112,10 +112,9 @@ def optimize(poses, edges, max_evaluations=100, diagnostics=None):
         options['tr_solver'] = 'exact'
         solver = 'dense SVD with grouped forward differences'
     else:
-        options.update(jac_sparsity=sparsity.tocsr(), tr_solver='lsmr',
-                       tr_options={"atol": 1e-10, "btol": 1e-10,
-                                   "maxiter": max(1000, 10 * initial.size)})
-        solver = 'sparse LSMR'
+        return optimize_sparse_se3(
+            poses, edges, max_evaluations=max_evaluations, huber_scale=1.0, diagnostics=diagnostics
+        )
     result = least_squares(residual, initial.ravel(), **options)
     if diagnostics is not None:
         diagnostics.update(solver=solver, success=bool(result.success), function_evaluations=result.nfev,
@@ -126,3 +125,266 @@ def optimize(poses, edges, max_evaluations=100, diagnostics=None):
         raise RuntimeError(f"Pose graph optimization did not converge: {result.message}; "
                            f"evaluations={result.nfev}, cost={result.cost:.8g}, optimality={result.optimality:.8g}")
     return list(unpack(result.x))
+
+
+def _inv_right_jacobian_batch(rotvecs: np.ndarray) -> np.ndarray:
+    """Vectorized inverse right Jacobian J_r^{-1}(phi) of SO(3) for [E, 3] rotvecs."""
+    from analytic_ba import skew_batch
+
+    phi = np.asarray(rotvecs, dtype=np.float64).reshape(-1, 3)
+    n = len(phi)
+    eye = np.broadcast_to(np.eye(3, dtype=np.float64), (n, 3, 3)).copy()
+    if n == 0:
+        return eye
+    theta = np.linalg.norm(phi, axis=1)
+    cross = skew_batch(phi)
+    cross2 = cross @ cross
+    small = theta < 1e-5
+    c2 = np.empty(n, dtype=np.float64)
+    c2[small] = 1.0 / 12.0
+    if np.any(~small):
+        t = theta[~small]
+        half_t = 0.5 * t
+        cot_half = np.cos(half_t) / np.maximum(np.sin(half_t), 1e-12)
+        c2[~small] = (1.0 - half_t * cot_half) / (t * t)
+    return eye + 0.5 * cross + c2[:, None, None] * cross2
+
+
+def optimize_sparse_se3(
+    poses: list[np.ndarray],
+    edges: list[tuple],
+    max_evaluations: int = 50,
+    huber_scale: float = 1.0,
+    diagnostics: dict | None = None,
+) -> list[np.ndarray]:
+    """Scalable uncapped (>300-KF) vectorized analytic-Jacobian sparse SE(3) pose graph solver."""
+    from scipy.sparse import csc_matrix, csr_matrix, diags
+    from scipy.sparse.linalg import spsolve
+    from analytic_ba import skew_batch
+
+    if not poses:
+        return []
+    for pose in poses:
+        validate_pose(pose)
+    n_poses = len(poses)
+    if n_poses == 1 or not edges:
+        return [pose.copy() for pose in poses]
+
+    started = time.perf_counter()
+    weights_list = []
+    first_idx = []
+    second_idx = []
+    meas_list = []
+    for edge in edges:
+        first, second, measurement, information = edge[0], edge[1], edge[2], edge[3]
+        if not (0 <= first < n_poses and 0 <= second < n_poses) or first == second:
+            raise ValueError("Pose graph edge references an invalid vertex")
+        validate_pose(measurement)
+        info = np.asarray(information, dtype=np.float64)
+        if info.shape != (6, 6) or not np.isfinite(info).all() or not np.allclose(info, info.T):
+            raise ValueError("Information matrix must be finite symmetric 6x6")
+        weights_list.append(np.linalg.cholesky(info).T)
+        first_idx.append(int(first))
+        second_idx.append(int(second))
+        meas_list.append(np.asarray(measurement, dtype=np.float64))
+
+    n_edges = len(edges)
+    fi = np.asarray(first_idx, dtype=np.intp)
+    si = np.asarray(second_idx, dtype=np.intp)
+    W = np.asarray(weights_list, dtype=np.float64)  # [E, 6, 6]
+    meas = np.asarray(meas_list, dtype=np.float64)  # [E, 4, 4]
+    Rm_T = meas[:, :3, :3].transpose(0, 2, 1)       # [E, 3, 3]
+    tm = meas[:, :3, 3]                              # [E, 3]
+    delta_h = float(max(huber_scale, 1e-6))
+
+    current = np.asarray([p.copy() for p in poses], dtype=np.float64)
+    n_free = n_poses - 1
+    n_vars = 6 * n_free
+    n_rows = 6 * n_edges
+
+    def _eval(cur_poses):
+        R_i = cur_poses[fi, :3, :3]
+        t_i = cur_poses[fi, :3, 3]
+        R_j = cur_poses[si, :3, :3]
+        t_j = cur_poses[si, :3, 3]
+        R_iT = R_i.transpose(0, 2, 1)
+        R_hat = R_iT @ R_j
+        t_hat = np.einsum("nij,nj->ni", R_iT, t_j - t_i)
+        dR = Rm_T @ R_hat
+        dt = np.einsum("nij,nj->ni", Rm_T, t_hat - tm)
+        phi = Rotation.from_matrix(dR).as_rotvec()
+        err = np.hstack((phi, dt))  # [E, 6]
+        res = np.einsum("nij,nj->ni", W, err)  # [E, 6]
+        a = np.abs(res)
+        cmat = np.where(a <= delta_h, 0.5 * res * res, delta_h * (a - 0.5 * delta_h))
+        return R_hat, t_hat, dR, phi, res, float(np.sum(cmat))
+
+    R_hat, t_hat, dR, phi, res, cur_cost = _eval(current)
+    initial_cost = cur_cost
+    lam = 1e-3
+    nfev = 1
+    njev = 0
+    converged = False
+    optimality = float("inf")
+
+    fi_free = fi > 0
+    si_free = si > 0
+    fi_idx = np.flatnonzero(fi_free)
+    si_idx = np.flatnonzero(si_free)
+    base_6 = np.arange(6, dtype=np.int32)
+
+    for _it in range(max(1, min(int(max_evaluations), 60))):
+        njev += 1
+        Jr_inv = _inv_right_jacobian_batch(phi)  # [E, 3, 3]
+
+        row_parts = []
+        col_parts = []
+        data_parts = []
+
+        if len(fi_idx):
+            Ji = np.zeros((len(fi_idx), 6, 6), dtype=np.float64)
+            Ji[:, :3, :3] = -Jr_inv[fi_idx] @ R_hat[fi_idx].transpose(0, 2, 1)
+            Ji[:, 3:, :3] = Rm_T[fi_idx] @ skew_batch(t_hat[fi_idx])
+            Ji[:, 3:, 3:] = -Rm_T[fi_idx]
+            WJi = W[fi_idx] @ Ji  # [Fi, 6, 6]
+            r_block = (6 * fi_idx)[:, None, None] + base_6[None, :, None]
+            c_block = (6 * (fi[fi_idx] - 1))[:, None, None] + base_6[None, None, :]
+            row_parts.append(np.broadcast_to(r_block, WJi.shape).ravel())
+            col_parts.append(np.broadcast_to(c_block, WJi.shape).ravel())
+            data_parts.append(WJi.ravel())
+
+        if len(si_idx):
+            Jj = np.zeros((len(si_idx), 6, 6), dtype=np.float64)
+            Jj[:, :3, :3] = Jr_inv[si_idx]
+            Jj[:, 3:, 3:] = dR[si_idx]
+            WJj = W[si_idx] @ Jj  # [Si, 6, 6]
+            r_block = (6 * si_idx)[:, None, None] + base_6[None, :, None]
+            c_block = (6 * (si[si_idx] - 1))[:, None, None] + base_6[None, None, :]
+            row_parts.append(np.broadcast_to(r_block, WJj.shape).ravel())
+            col_parts.append(np.broadcast_to(c_block, WJj.shape).ravel())
+            data_parts.append(WJj.ravel())
+
+        J = csr_matrix(
+            (np.concatenate(data_parts), (np.concatenate(row_parts), np.concatenate(col_parts))),
+            shape=(n_rows, n_vars),
+            dtype=np.float64,
+        )
+        r_flat = res.ravel()
+        abs_r = np.abs(r_flat)
+        irls = np.where(abs_r <= delta_h, 1.0, delta_h / np.maximum(abs_r, 1e-12))
+        JT = J.T.tocsr()
+        J_w = J.multiply(irls[:, None]).tocsr()
+        H = (JT @ J_w).tocsc()
+        g = JT @ (irls * r_flat)
+        optimality = float(np.max(np.abs(g))) if len(g) else 0.0
+        if not np.isfinite(optimality):
+            break
+        if optimality < 1e-6:
+            converged = True
+            break
+
+        h_diag = np.maximum(H.diagonal(), 1e-6)
+        accepted = False
+        for _lm_try in range(8):
+            H_damp = (H + diags(lam * h_diag, format="csc")).tocsc()
+            try:
+                step = -spsolve(H_damp, g)
+            except Exception:
+                lam = min(lam * 10.0, 1e8)
+                continue
+            if not np.isfinite(step).all():
+                lam = min(lam * 10.0, 1e8)
+                continue
+
+            step_mat = step.reshape(n_free, 6)
+            cand = current.copy()
+            dR_step = Rotation.from_rotvec(step_mat[:, :3]).as_matrix()
+            cand[1:, :3, 3] = current[1:, :3, 3] + np.einsum("nij,nj->ni", current[1:, :3, :3], step_mat[:, 3:])
+            cand[1:, :3, :3] = current[1:, :3, :3] @ dR_step
+
+            rh_c, th_c, dR_c, phi_c, res_c, cost_c = _eval(cand)
+            nfev += 1
+            if np.isfinite(cost_c) and cost_c < cur_cost:
+                rel_impr = (cur_cost - cost_c) / max(cur_cost, 1e-12)
+                current = cand
+                R_hat, t_hat, dR, phi, res, cur_cost = rh_c, th_c, dR_c, phi_c, res_c, cost_c
+                lam = max(lam * 0.3, 1e-7)
+                accepted = True
+                if rel_impr < 1e-8 or float(np.linalg.norm(step)) < 1e-6:
+                    converged = True
+                break
+            lam = min(lam * 5.0, 1e8)
+
+        if converged or not accepted:
+            if not accepted:
+                converged = True
+            break
+
+    if diagnostics is not None:
+        diagnostics.update(
+            solver="sparse analytic SE(3) LM",
+            success=bool(converged or cur_cost <= initial_cost),
+            function_evaluations=int(nfev),
+            jacobian_evaluations=int(njev),
+            initial_cost=float(initial_cost),
+            final_cost=float(cur_cost),
+            optimality=float(optimality),
+            message="converged" if converged else "max_iterations",
+            elapsed_s=float(time.perf_counter() - started),
+        )
+    return [current[k].copy() for k in range(n_poses)]
+
+
+def optimize_weighted_pose_graph(
+    poses_wc: dict[int, np.ndarray] | list[np.ndarray],
+    odometry_edges: list[tuple],
+    loop_edges: list[tuple],
+    huber_scale: float = 1.0,
+    max_evaluations: int = 60,
+    diagnostics: dict | None = None,
+) -> dict[int, np.ndarray]:
+    """Optimize an arbitrary-size (>300-KF) SE(3) pose graph with distance-scaled odometry & inlier-scaled loop weights."""
+    if isinstance(poses_wc, dict):
+        kf_ids = sorted(poses_wc.keys())
+        id_to_idx = {kid: idx for idx, kid in enumerate(kf_ids)}
+        poses_list = [np.asarray(poses_wc[kid], dtype=np.float64).copy() for kid in kf_ids]
+    else:
+        kf_ids = list(range(len(poses_wc)))
+        id_to_idx = {kid: kid for kid in kf_ids}
+        poses_list = [np.asarray(p, dtype=np.float64).copy() for p in poses_wc]
+
+    edges = []
+    for edge in odometry_edges:
+        i_id, j_id, meas = edge[0], edge[1], np.asarray(edge[2], dtype=np.float64)
+        if i_id not in id_to_idx or j_id not in id_to_idx:
+            continue
+        if len(edge) >= 4 and edge[3] is not None:
+            info = np.asarray(edge[3], dtype=np.float64)
+        else:
+            dist_m = max(float(np.linalg.norm(meas[:3, 3])), 0.5)
+            inv_d = 1.0 / dist_m
+            info = np.diag([1000.0 * inv_d] * 3 + [10.0 * inv_d] * 3)
+        edges.append((id_to_idx[i_id], id_to_idx[j_id], meas, info, "odometry"))
+
+    for edge in loop_edges:
+        i_id, j_id, meas = edge[0], edge[1], np.asarray(edge[2], dtype=np.float64)
+        if i_id not in id_to_idx or j_id not in id_to_idx:
+            continue
+        if len(edge) >= 4 and isinstance(edge[3], np.ndarray) and edge[3].shape == (6, 6):
+            info = np.asarray(edge[3], dtype=np.float64)
+        else:
+            meta = edge[3] if len(edge) >= 4 and isinstance(edge[3], dict) else {}
+            inliers = float(meta.get("inliers", 50))
+            med_err = max(0.5, float(meta.get("median_reprojection_px", 1.0)))
+            scale = float(np.clip(inliers / 50.0, 0.5, 4.0) / (med_err * med_err))
+            info = np.diag([2000.0 * scale] * 3 + [20.0 * scale] * 3)
+        edges.append((id_to_idx[i_id], id_to_idx[j_id], meas, info, "loop"))
+
+    optimized = optimize_sparse_se3(
+        poses_list,
+        edges,
+        max_evaluations=max_evaluations,
+        huber_scale=huber_scale,
+        diagnostics=diagnostics,
+    )
+    return {kf_ids[idx]: optimized[idx] for idx in range(len(kf_ids))}

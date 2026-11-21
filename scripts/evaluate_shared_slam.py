@@ -80,7 +80,68 @@ def export_reserve_bytes(state, minimum_mb):
     )
 
 
+_EVALUATOR_CLI_CONFIG_FIELDS = (
+    "features",
+    "loop_mode",
+    "stereo_depth_policy",
+    "stereo_map_depth_policy",
+    "stereo_map_frontend_seed_fallback",
+    "stereo_verified_reference_retry",
+    "stereo_pose_arbitration",
+    "stereo_descriptor_association_retry",
+    "stereo_two_view_refinement",
+    "stereo_two_view_solver",
+    "stereo_physical_match_pool",
+    "stereo_raw_reference_retry",
+    "stereo_owned_image_bundle",
+    "stereo_source_history_bundle",
+    "stereo_retained_source_observations",
+    "stereo_mapping_observation_retention",
+    "bundle_solver_accuracy",
+    "bundle_landmark_policy",
+    "stereo_bundle_gauge_mode",
+    "stereo_bundle_holdout_guard",
+)
+
+
+def _parse_json_overrides(raw_overrides):
+    if raw_overrides is None:
+        return {}
+    if isinstance(raw_overrides, dict):
+        return dict(raw_overrides)
+    try:
+        parsed = json.loads(raw_overrides)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"--config-overrides must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--config-overrides must be a JSON object")
+    return parsed
+
+
 def _mapping_config_from_args(args):
+    if getattr(args, "_preset_applied", False):
+        merged = dict(args._resolved_base_dict)
+        merged["bundle_enabled"] = not bool(args.disable_bundle)
+        for field_name in _EVALUATOR_CLI_CONFIG_FIELDS:
+            merged[field_name] = getattr(args, field_name)
+        return MappingConfig(**merged)
+    preset = getattr(args, "preset", None)
+    raw_overrides = getattr(args, "config_overrides", None)
+    if preset is not None or raw_overrides is not None:
+        stereo = bool(getattr(args, "stereo", True))
+        overrides = _parse_json_overrides(raw_overrides)
+        disable_bundle = getattr(args, "disable_bundle", None)
+        if disable_bundle is not None:
+            overrides["bundle_enabled"] = not bool(disable_bundle)
+        for field_name in _EVALUATOR_CLI_CONFIG_FIELDS:
+            val = getattr(args, field_name, None)
+            if val is not None:
+                overrides[field_name] = val
+        return MappingConfig.from_preset(
+            preset or "legacy_default",
+            stereo=stereo,
+            **overrides,
+        )
     return MappingConfig(features=args.features, bundle_enabled=not args.disable_bundle,
         loop_mode=args.loop_mode, stereo_depth_policy=args.stereo_depth_policy,
         stereo_pose_arbitration=args.stereo_pose_arbitration,
@@ -105,13 +166,15 @@ def _mapping_config_from_args(args):
         stereo_bundle_holdout_guard=getattr(args, 'stereo_bundle_holdout_guard', False))
 
 
-def main():
-    invocation_started = time.perf_counter()
-    evaluator_source = Path(__file__).read_bytes()
+def parse_evaluator_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=["kitti", "tum", "euroc"], default="kitti")
     parser.add_argument("--seed", type=int, default=0,
                         help="OpenCV/NumPy random seed for paired reproducibility")
+    parser.add_argument("--preset", choices=["improved_stereo", "verified_baseline", "legacy_default"],
+                        default=None, help="Named SharedSlam configuration preset")
+    parser.add_argument("--config-overrides", type=str, default=None,
+                        help="JSON object overriding MappingConfig fields")
     parser.add_argument("--data-root", type=Path)
     parser.add_argument(
         "--remote",
@@ -122,50 +185,50 @@ def main():
     parser.add_argument("--sequence", default="04")
     parser.add_argument("--stereo", action="store_true")
     parser.add_argument("--max-frames", type=int)
-    parser.add_argument("--features", type=int, default=1500,
-                        help="Requested SIFT feature budget (1â€“10000; default 1500)")
+    parser.add_argument("--features", type=int, default=None,
+                        help="Requested SIFT feature budget (1–10000; default 1500)")
     parser.add_argument("--max-wall-seconds", type=float)
     parser.add_argument("--stop-file", type=Path)
-    parser.add_argument("--disable-bundle", action="store_true")
-    parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default="live")
+    parser.add_argument("--disable-bundle", action="store_true", default=None)
+    parser.add_argument("--loop-mode", choices=["off", "live", "offline"], default=None)
     parser.add_argument("--feature-cache", type=Path, help="Optional diagnostic cache; excludes timings from official performance claims")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
-    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default='supported')
-    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default='inherit',
+    parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default=None)
+    parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default=None,
                         help='Map geometry source only; verified uses full-range right-image correspondences')
-    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true',
+    parser.add_argument('--stereo-map-frontend-seed-fallback', action='store_true', default=None,
                         help='Use valid current-frame frontend XYZ as a left-only seed when verified map stereo abstains')
-    parser.add_argument('--stereo-verified-reference-retry', action='store_true',
+    parser.add_argument('--stereo-verified-reference-retry', action='store_true', default=None,
                         help='Retry only unverified one-way full-pool proposals with independently reverse-verified appearance geometry')
-    parser.add_argument('--stereo-pose-arbitration', action='store_true',
+    parser.add_argument('--stereo-pose-arbitration', action='store_true', default=None,
                         help='Use reserved raw stereo observations to arbitrate map and independent poses')
-    parser.add_argument('--stereo-descriptor-association-retry', action='store_true',
+    parser.add_argument('--stereo-descriptor-association-retry', action='store_true', default=None,
                         help='Experimentally retry map links from original descriptors at a selected reserved stereo pose')
-    parser.add_argument('--stereo-two-view-refinement', action='store_true',
+    parser.add_argument('--stereo-two-view-refinement', action='store_true', default=None,
                         help='Opt in to capped full-XYZ two-view stereo training refinement before unchanged holdout arbitration')
     parser.add_argument('--stereo-two-view-solver', choices=['sparse_lsmr', 'dense_exact'],
-                        default='sparse_lsmr',
+                        default=None,
                         help='Linear solver for the opt-in two-view training refinement')
-    parser.add_argument('--stereo-physical-match-pool', action='store_true',
+    parser.add_argument('--stereo-physical-match-pool', action='store_true', default=None,
                         help='Use strict physical stereo match groups for reserved fit and holdout pools')
-    parser.add_argument('--stereo-raw-reference-retry', action='store_true',
+    parser.add_argument('--stereo-raw-reference-retry', action='store_true', default=None,
                         help='Retry failed configured stereo references with guarded raw-supported geometry')
-    parser.add_argument('--stereo-owned-image-bundle', action='store_true',
+    parser.add_argument('--stereo-owned-image-bundle', action='store_true', default=None,
                         help='Opt in to factors from selected reserved stereo training observations')
-    parser.add_argument('--stereo-source-history-bundle', action='store_true',
+    parser.add_argument('--stereo-source-history-bundle', action='store_true', default=None,
                         help='Experiment with accepted source-frame left observations in owned stereo bundle adjustment')
-    parser.add_argument('--stereo-retained-source-observations', action='store_true',
+    parser.add_argument('--stereo-retained-source-observations', action='store_true', default=None,
                         help='Retain source-image constraints using the existing anchored camera model')
-    parser.add_argument('--stereo-mapping-observation-retention', action='store_true',
+    parser.add_argument('--stereo-mapping-observation-retention', action='store_true', default=None,
                         help='Retain individually validated map observations after an independent stereo pose fails only spatial coverage')
-    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default='default',
+    parser.add_argument('--bundle-solver-accuracy', choices=['default', 'precise'], default=None,
                         help='Default keeps current policy; precise applies tight LSMR tolerances to all bundle solves')
     parser.add_argument('--bundle-landmark-policy', choices=['bounded_fixed', 'joint_tracks'],
-                        default='bounded_fixed',
+                        default=None,
                         help='Experimental joint tracks optimize capped-out landmark XYZ using their existing image observations')
-    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default='veto',
+    parser.add_argument('--stereo-bundle-gauge-mode', choices=['veto', 'canonical_two_bridge'], default=None,
                         help='Experimental finite gauge convention for certified two-bridge stereo graphs')
-    parser.add_argument('--stereo-bundle-holdout-guard', action='store_true',
+    parser.add_argument('--stereo-bundle-holdout-guard', action='store_true', default=None,
                         help='Experimentally validate original stereo bundle corrections on reserved image evidence')
     parser.add_argument('--retrieval', choices=['current', 'indexed', 'exhaustive'], default='current')
     parser.add_argument('--no-cpu-optimizations', action='store_true')
@@ -191,13 +254,48 @@ def main():
         default=512,
         help="Keep this much free space in addition to estimated export size",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 0 <= args.seed < 2**31:
         parser.error('--seed must be between 0 and 2147483647')
+    if args.preset in ("improved_stereo", "verified_baseline") and not args.stereo:
+        parser.error(f"--preset {args.preset} requires --stereo")
+    try:
+        parsed_overrides = _parse_json_overrides(args.config_overrides)
+        preset_only_cfg = (
+            MappingConfig.from_preset(args.preset, stereo=bool(args.stereo))
+            if args.preset is not None
+            else MappingConfig()
+        )
+        base_cfg = (
+            MappingConfig.from_preset(
+                args.preset or "legacy_default",
+                stereo=bool(args.stereo),
+                **parsed_overrides,
+            )
+            if (args.preset is not None or parsed_overrides)
+            else MappingConfig()
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    if args.disable_bundle is None:
+        args.disable_bundle = not bool(base_cfg.bundle_enabled)
+    for field_name in _EVALUATOR_CLI_CONFIG_FIELDS:
+        if getattr(args, field_name) is None:
+            setattr(args, field_name, getattr(base_cfg, field_name))
+    args._preset_base_cfg = preset_only_cfg
+    args._resolved_base_dict = base_cfg.__dict__.copy()
+    args._preset_applied = True
     try:
         args.features = validate_feature_budget(args.features)
     except ValueError as error:
         parser.error(str(error))
+    return parser, args
+
+
+def main():
+    invocation_started = time.perf_counter()
+    evaluator_source = Path(__file__).read_bytes()
+    parser, args = parse_evaluator_args()
     if args.stereo_verified_reference_retry and not args.stereo:
         parser.error('--stereo-verified-reference-retry requires --stereo')
     if not args.stereo and args.stereo_depth_policy != 'supported':
@@ -435,17 +533,7 @@ def main():
     if args.feature_cache:
         signature = extraction_signature(slam, cv)
         cache = FeatureCache(args.feature_cache, signature)
-        extract = slam._extract
-        def cached_extract(image, right_image):
-            key = cache.key(image, right_image)
-            values = cache.get(key)
-            if values is not None:
-                slam.current_disparity = values[4] if args.stereo else None
-                return values[:4]
-            result = extract(image, right_image)
-            cache.put(key, (*result, slam.current_disparity if args.stereo else np.empty((0,0))))
-            return result
-        slam._extract = cached_extract
+        cache.wrap_slam_extract(slam, stereo=bool(args.stereo))
     target = snapshot_target(args.output, args.telemetry_file)
     observer = (
         SnapshotWriter(target, args.sequence, args.output.name, len(paths))
@@ -589,7 +677,11 @@ def main():
         args.profile.parent.mkdir(parents=True, exist_ok=True)
         write_json(args.profile, profile)
         report['performance_profile'] = profile
-    report["diagnostic_overrides"] = {"disable_bundle": args.disable_bundle, "loop_mode": args.loop_mode if args.loop_mode != "live" else None}
+    preset_base_cfg = getattr(args, "_preset_base_cfg", MappingConfig())
+    report["diagnostic_overrides"] = {
+        "disable_bundle": bool(args.disable_bundle) if preset_base_cfg.bundle_enabled else False,
+        "loop_mode": args.loop_mode if args.loop_mode != preset_base_cfg.loop_mode else None,
+    }
     report["wall_budget_seconds"] = args.max_wall_seconds
     report["feature_cache"] = cache.metadata() if cache else {"enabled": False}
     report['bundle_diagnostics'] = bundle_diagnostic_manifest
@@ -689,11 +781,11 @@ def main():
                 except ValueError as error:
                     report['evaluation_error' if label == 'metrics' else 'online_evaluation_error'] = str(error)
                     metrics = {}
-                if not args.stereo:
-                    for key in ["raw_ate_rmse_m", "translation_percent", "rotation_deg_per_m"]:
-                        metrics[key] = None
-                    metrics["segments"] = []
-                    metrics["segment_count"] = 0
+                if not args.stereo and metrics:
+                    metrics["raw_ate_rmse_m"] = None
+                    metrics["translation_percent"] = None
+                    for seg in metrics.get("segments", ()):
+                        seg["translation_percent"] = None
                 report[label] = {k: v for k, v in metrics.items() if k != "segments"}
     report["total_wall_seconds"] = time.perf_counter() - invocation_started
     write_json(args.output / "evaluation.json", report)

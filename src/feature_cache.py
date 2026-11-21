@@ -16,11 +16,23 @@ def extraction_signature(slam, opencv):
                 'parameters': {name: getattr(algorithm, name)() for name in sorted(dir(algorithm))
                 if name.startswith('get') and callable(getattr(algorithm, name))}}
 
+    use_grid_bucketing = bool(getattr(slam.config, 'use_grid_bucketing', False))
+    effective_detector = (
+        getattr(slam, '_grid_detector', None) if use_grid_bucketing else None
+    ) or slam.detector
+    effective_stereo = (
+        (getattr(slam, '_fast_stereo_sgbm', None) or slam.stereo.stereo)
+        if slam.stereo is not None
+        else None
+    )
     settings = {
-        'schema': 2, 'opencv': opencv.__version__, 'numpy': np.__version__,
+        'schema': 3, 'opencv': opencv.__version__, 'numpy': np.__version__,
         'machine': platform.machine(), 'processor': platform.processor(),
-        'detector': parameters(slam.detector),
-        'stereo': parameters(slam.stereo.stereo) if slam.stereo is not None else None,
+        'use_grid_bucketing': use_grid_bucketing,
+        'target_features': int(slam.config.features),
+        'stereo_feature_contrast_threshold': float(slam.config.stereo_feature_contrast_threshold),
+        'detector': parameters(effective_detector),
+        'stereo': parameters(effective_stereo) if effective_stereo is not None else None,
         'stereo_depth_policy': slam.config.stereo_depth_policy,
         'stereo_pose_arbitration': bool(getattr(slam.config, 'stereo_pose_arbitration', False)),
         'stereo_raw_reference_retry': bool(getattr(slam.config, 'stereo_raw_reference_retry', False)),
@@ -34,6 +46,10 @@ def extraction_signature(slam, opencv):
     digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode())
     digest.update(opencv.getBuildInformation().encode())
     digest.update(Path(stereo_depth.__file__).read_bytes())
+    frontend_source = Path(__file__).resolve().with_name('frontend_features.py')
+    if frontend_source.is_file():
+        digest.update(b'frontend_features.py\0')
+        digest.update(frontend_source.read_bytes())
     scorer_source = Path(__file__).resolve().with_name('stereo_pose_arbitration.py')
     if scorer_source.is_file():
         digest.update(b'stereo_pose_arbitration.py\0')
@@ -54,6 +70,9 @@ def extraction_signature(slam, opencv):
 
 
 class FeatureCache:
+    _CORE_FIELDS = ('pixels', 'descriptors', 'points', 'right_u', 'disparity')
+    _ALL_FIELDS = ('pixels', 'descriptors', 'points', 'right_u', 'disparity', 'octaves')
+
     def __init__(self, folder, signature, max_bytes=512*1024**2):
         self.root=Path(folder).resolve()
         self.signature=signature
@@ -74,15 +93,19 @@ class FeatureCache:
         if not path.exists():self.misses+=1;return None
         try:
             with np.load(path,allow_pickle=False) as data:
-                values=tuple(data[name].copy() for name in ('pixels','descriptors','points','right_u','disparity'))
+                names=self._ALL_FIELDS if 'octaves' in data else self._CORE_FIELDS
+                values=tuple(data[name].copy() for name in names)
             self.hits+=1;path.touch();return values
         except (OSError,ValueError,KeyError):
             self.misses+=1;return None
 
     def put(self,key,values):
         path=self.folder/(key+'.npz');temporary=path.with_suffix('.part')
+        names=self._ALL_FIELDS if len(values)==len(self._ALL_FIELDS) else self._CORE_FIELDS
+        if len(values)!=len(names):
+            raise ValueError(f'Expected 5 or 6 cached extraction arrays, got {len(values)}')
         with temporary.open('wb') as stream:
-            np.savez_compressed(stream,**dict(zip(('pixels','descriptors','points','right_u','disparity'),values)))
+            np.savez_compressed(stream,**dict(zip(names,values)))
         temporary.replace(path)
         files=[]
         for marker in self.root.glob('*/owner.json'):
@@ -97,5 +120,30 @@ class FeatureCache:
         for old in files:
             if size<=self.max_bytes:break
             size-=old.stat().st_size;old.unlink()
+
+    def wrap_slam_extract(self, slam, *, stereo=None):
+        """Wrap slam._extract so cache hits restore disparity and per-feature octaves."""
+        use_stereo = (slam.stereo is not None) if stereo is None else bool(stereo)
+        extract = slam._extract
+
+        def cached_extract(image, right_image):
+            key = self.key(image, right_image)
+            values = self.get(key)
+            if values is not None:
+                slam.current_disparity = values[4] if use_stereo else None
+                slam._current_octaves = values[5] if len(values) > 5 else None
+                return values[:4]
+            result = extract(image, right_image)
+            disparity = slam.current_disparity if use_stereo else np.empty((0, 0), dtype=np.float32)
+            octaves = (
+                np.asarray(slam._current_octaves, dtype=np.int16).copy()
+                if getattr(slam, '_current_octaves', None) is not None
+                else np.zeros(len(result[0]), dtype=np.int16)
+            )
+            self.put(key, (*result, disparity, octaves))
+            return result
+
+        slam._extract = cached_extract
+        return cached_extract
 
     def metadata(self):return {'enabled':True,'signature':self.signature,'hits':self.hits,'misses':self.misses,'runtime_is_cached_diagnostic':True}

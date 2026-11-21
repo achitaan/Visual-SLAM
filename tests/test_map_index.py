@@ -1,0 +1,205 @@
+"""Unit tests for IncrementalMapIndex (F6)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+import numpy as np
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from map_index import IncrementalMapIndex
+from slam_state import Landmark, MapState, Observation
+
+
+def test_incremental_conflict_tracking_matches_bruteforce():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    lm0 = state.add_landmark(
+        [1.0, 0.0, 10.0], desc, anchor=0,
+        observations={0: Observation(np.array([100.0, 200.0], np.float32), 80.0)},
+    )
+    lm1 = state.add_landmark(
+        [2.0, 0.0, 10.0], desc, anchor=0,
+        observations={0: Observation(np.array([150.0, 200.0], np.float32), 130.0)},
+    )
+    assert state.index.conflicted_landmark_ids() == frozenset()
+
+    # Duplicate pixel claim on keyframe 0 creates conflict for lm0 and lm2
+    lm2 = state.add_landmark(
+        [1.1, 0.0, 10.5], desc, anchor=0,
+        observations={0: Observation(np.array([100.0, 200.0], np.float32), 81.0)},
+    )
+    assert state.index.conflicted_landmark_ids() == frozenset({lm0, lm2})
+
+    # Removing lm2 resolves the conflict cleanly
+    state.remove_landmark(lm2)
+    assert state.index.conflicted_landmark_ids() == frozenset()
+    assert lm1 not in state.index.conflicted_landmark_ids()
+
+
+def test_frustum_query_and_far_bearings():
+    idx = IncrementalMapIndex()
+    desc = np.zeros(128, dtype=np.float32)
+    K = np.array([[700.0, 0.0, 620.0], [0.0, 700.0, 188.0], [0.0, 0.0, 1.0]])
+    T_cw = np.eye(4)
+
+    # Close visible point
+    idx.on_landmark_added(Landmark(0, np.array([0.0, 0.0, 15.0]), desc, 0, {}, is_far=False))
+    # Behind camera
+    idx.on_landmark_added(Landmark(1, np.array([0.0, 0.0, -5.0]), desc, 0, {}, is_far=False))
+    # Out of horizontal FOV
+    idx.on_landmark_added(Landmark(2, np.array([50.0, 0.0, 10.0]), desc, 0, {}, is_far=False))
+    # Far bearing point (Z = 200 m > max_depth=80 m)
+    idx.on_landmark_added(Landmark(3, np.array([2.0, 0.0, 200.0]), desc, 0, {}, is_far=True))
+
+    res_close = idx.query_frustum(T_cw, K, (1241, 376), max_depth=80.0, include_far_bearings=False)
+    assert list(res_close.landmark_ids) == [0]
+    assert res_close.projected_uv[0] == pytest.approx([620.0, 188.0])
+    assert res_close.depths[0] == pytest.approx(15.0)
+
+    res_with_far = idx.query_frustum(T_cw, K, (1241, 376), max_depth=80.0, include_far_bearings=True)
+    assert set(res_with_far.landmark_ids.tolist()) == {0, 3}
+
+
+def test_prune_stale_landmarks_preserves_multiview():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    # Old single-view landmark -> should be pruned
+    stale_id = state.add_landmark(
+        [0.0, 0.0, 10.0], desc, anchor=0,
+        observations={0: Observation(np.array([300.0, 150.0], np.float32), 280.0)},
+    )
+    state.landmarks[stale_id].misses = 3
+
+    # Old multi-view landmark -> must never be pruned
+    multi_id = state.add_landmark(
+        [1.0, 0.0, 12.0], desc, anchor=0,
+        observations={0: Observation(np.array([400.0, 150.0], np.float32), 380.0)},
+    )
+    state.add_observation(multi_id, 1, Observation(np.array([405.0, 150.0], np.float32), 385.0))
+
+    # Young single-view landmark -> must not be pruned yet
+    young_id = state.add_landmark(
+        [2.0, 0.0, 12.0], desc, anchor=4,
+        observations={4: Observation(np.array([500.0, 150.0], np.float32), 480.0)},
+    )
+
+    pruned = state.index.prune_stale_landmarks(state, current_kf_id=5, min_age_kfs=3)
+    assert pruned == 1
+    assert stale_id not in state.landmarks
+    assert multi_id in state.landmarks
+    assert young_id in state.landmarks
+    assert len(state.index) == 2
+
+
+def test_remove_observation_clears_pixel_conflict_and_reverse_kf_index():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    shared_px = np.array([250.5, 140.25], np.float32)
+    lm0 = state.add_landmark(
+        [0.5, 0.0, 10.0], desc, anchor=0,
+        observations={
+            0: Observation(np.array([240.0, 140.0], np.float32), 200.0),
+            1: Observation(shared_px, 210.0),
+        },
+    )
+    lm1 = state.add_landmark(
+        [0.6, 0.0, 10.2], desc, anchor=0,
+        observations={
+            0: Observation(np.array([260.0, 140.0], np.float32), 220.0),
+            1: Observation(shared_px, 211.0),
+        },
+    )
+    assert state.index.conflicted_landmark_ids() == frozenset({lm0, lm1})
+    assert state.index.landmarks_for_keyframes([1]) == {lm0, lm1}
+
+    # Removing lm0's observation on kf 1 must clear conflict for BOTH landmarks and update kf 1 reverse index
+    removed = state.remove_observation(lm0, 1)
+    assert removed is not None
+    assert 1 not in state.landmarks[lm0].observations
+    assert state.index.conflicted_landmark_ids() == frozenset()
+    assert state.index.landmarks_for_keyframes([1]) == {lm1}
+    assert state.index.landmarks_for_keyframes([0]) == {lm0, lm1}
+
+
+def test_local_bundle_outlier_culling_updates_map_index():
+    from local_bundle import local_bundle_adjustment
+    from slam_state import MappingKeyframe
+
+    K = np.array([[700.0, 0.0, 620.0], [0.0, 700.0, 188.0], [0.0, 0.0, 1.0]])
+    baseline = 0.54
+    fx_b = K[0, 0] * baseline
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+
+    # Create 5 keyframes along +Z with exact ground-truth poses
+    kf_poses = [np.eye(4) for _ in range(5)]
+    for kf_id, pose in enumerate(kf_poses):
+        pose[2, 3] = float(kf_id)
+        state.keyframes[kf_id] = MappingKeyframe(
+            id=kf_id,
+            frame=kf_id * 5,
+            pose=pose.copy(),
+            pixels=np.empty((0, 2), np.float32),
+            descriptors=np.empty((0, 128), np.float32),
+            landmark_ids=np.empty(0, np.int64),
+        )
+        state.record(pose, "tracking", anchor=kf_id)
+
+    def project_obs(pt_w, pose):
+        pc = pose[:3, :3].T @ (pt_w - pose[:3, 3])
+        h = K @ pc
+        uv = h[:2] / h[2]
+        right_u = float(uv[0] - fx_b / pc[2])
+        return Observation(np.asarray(uv, dtype=np.float32), right_u=right_u)
+
+    # Add clean inlier landmarks observed across all 5 keyframes so BA converges cleanly
+    rng = np.random.default_rng(7)
+    for _ in range(18):
+        pt = np.array([rng.uniform(-4.0, 4.0), rng.uniform(-1.5, 1.5), rng.uniform(10.0, 24.0)])
+        obs = {kf_id: project_obs(pt, kf_poses[kf_id]) for kf_id in range(5)}
+        state.add_landmark(pt, desc, anchor=0, observations=obs)
+
+    # Add one clean landmark lm_good and one landmark lm_bad whose kf=4 observation
+    # falsely claims lm_good's exact pixel (both a gross outlier and a pixel conflict).
+    pt_good = np.array([2.5, -0.5, 14.0])
+    good_obs_kf4 = project_obs(pt_good, kf_poses[4])
+    lm_good = state.add_landmark(
+        pt_good, desc, anchor=0,
+        observations={kf_id: project_obs(pt_good, kf_poses[kf_id]) for kf_id in range(5)},
+    )
+
+    pt_bad = np.array([-3.0, 0.8, 17.0])
+    bad_obs = {kf_id: project_obs(pt_bad, kf_poses[kf_id]) for kf_id in range(4)}
+    bad_obs[4] = Observation(good_obs_kf4.pixel.copy(), right_u=good_obs_kf4.right_u)
+    lm_bad = state.add_landmark(pt_bad, desc, anchor=0, observations=bad_obs)
+
+    assert {lm_good, lm_bad}.issubset(state.index.conflicted_landmark_ids())
+    assert lm_bad in state.index.landmarks_for_keyframes([4])
+
+    report = local_bundle_adjustment(
+        state,
+        K,
+        baseline=baseline,
+        window=5,
+        max_landmarks=100,
+        use_analytic_jacobian=True,
+        use_map_index=True,
+        cull_outliers_chi2=True,
+    )
+    assert report["applied"] is True
+    assert report.get("culled_outlier_observations", 0) >= 1
+    assert 4 not in state.landmarks[lm_bad].observations
+    assert lm_bad not in state.index.landmarks_for_keyframes([4])
+    assert lm_good not in state.index.conflicted_landmark_ids()
+    assert lm_bad not in state.index.conflicted_landmark_ids()
+

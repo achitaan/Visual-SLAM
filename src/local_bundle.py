@@ -528,7 +528,7 @@ def local_bundle_adjustment(
                     **solver_metadata("not_run")}
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
-            (landmark.position.copy(), k, o)
+            (landmark.position.copy() if snapshot_enabled else landmark.position, k, o)
             for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) >= 2
             for k, o in landmark.observations.items()
@@ -685,7 +685,7 @@ def local_bundle_adjustment(
                 ] if snapshot_enabled else None),
             }
         single_view = [
-            (landmark.id, landmark.anchor, landmark.position.copy())
+            (landmark.id, landmark.anchor, landmark.position.copy() if snapshot_enabled else landmark.position)
             for landmark in window_landmark_pool
             if landmark.id not in optimized_ids and len(landmark.observations) == 1
             and landmark.anchor in free_set and landmark.anchor in landmark.observations
@@ -864,7 +864,10 @@ def local_bundle_adjustment(
     record_cameras = np.asarray(
         [camera_index[k] for _, k, _ in records], dtype=np.intp
     )
-    measured_pixels = np.asarray([o.pixel for _, _, o in records], dtype=float)
+    measured_pixels = np.asarray(
+        [o._identity_key if getattr(o, "_identity_key", None) is not None else o.pixel for _, _, o in records],
+        dtype=float,
+    )
     measured_right = np.asarray(
         [o.right_u if o.right_u is not None else 0.0 for _, _, o in records],
         dtype=float,
@@ -876,7 +879,10 @@ def local_bundle_adjustment(
     held_cameras = np.asarray(
         [camera_index[k] for _, k, _ in held_out], dtype=np.intp
     )
-    held_pixels = np.asarray([o.pixel for _, _, o in held_out], dtype=float).reshape(-1, 2)
+    held_pixels = np.asarray(
+        [o._identity_key if getattr(o, "_identity_key", None) is not None else o.pixel for _, _, o in held_out],
+        dtype=float,
+    ).reshape(-1, 2)
     held_right = np.asarray(
         [o.right_u if o.right_u is not None else 0.0 for _, _, o in held_out],
         dtype=float,

@@ -182,9 +182,16 @@ class MapState:
     def record(self, pose, status, anchor=None):
         validate_pose(pose)
         with self.lock:
+            frame_idx = len(self.poses)
             self.poses.append(pose.copy())
             self.statuses.append(status)
             self.pose_anchors.append(anchor)
+            if anchor is not None:
+                fba = getattr(self, "_frames_by_anchor", None)
+                if fba is None:
+                    fba = {}
+                    self._frames_by_anchor = fba
+                fba.setdefault(anchor, []).append(frame_idx)
             self.relative_poses.append(
                 np.linalg.inv(self.keyframes[anchor].pose) @ pose
                 if anchor is not None
@@ -325,20 +332,40 @@ class MapState:
                         positions[ident] = pos
             poses = list(self.poses)
             moved_frames = []
-            for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
-                if frame in intermediate:
-                    updated = intermediate[frame].copy()
-                    validate_pose(updated)
-                    poses[frame] = updated
-                    moved_frames.append(frame)
-                elif anchor in moved_kfs:
+            fba = getattr(self, "_frames_by_anchor", None)
+            if (fba is not None and not intermediate
+                    and len(moved_kfs) < len(self.keyframes)
+                    and len(self.poses) == len(self.pose_anchors)):
+                for anchor in moved_kfs:
+                    f_list = fba.get(anchor)
+                    if not f_list:
+                        continue
                     rotation, scale, translation = corrections[anchor]
-                    updated = pose.copy()
-                    updated[:3, :3] = rotation @ pose[:3, :3]
-                    updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
-                    validate_pose(updated)
-                    poses[frame] = updated
-                    moved_frames.append(frame)
+                    for frame in f_list:
+                        if frame >= len(poses) or self.pose_anchors[frame] != anchor:
+                            continue
+                        pose = poses[frame]
+                        updated = pose.copy()
+                        updated[:3, :3] = rotation @ pose[:3, :3]
+                        updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
+            else:
+                for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
+                    if frame in intermediate:
+                        updated = intermediate[frame].copy()
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
+                    elif anchor in moved_kfs:
+                        rotation, scale, translation = corrections[anchor]
+                        updated = pose.copy()
+                        updated[:3, :3] = rotation @ pose[:3, :3]
+                        updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
             retained_registry = None
             if retained_source_updates is not None:
                 if not isinstance(retained_source_updates, dict):

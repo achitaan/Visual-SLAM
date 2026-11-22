@@ -1595,6 +1595,13 @@ class SharedSlam:
                 'descriptor_rows': tuple(descriptor_rows),
                 'descriptor_pool_count': len(descriptor_rows),
                 'post_track_misses': None,
+                '_pixels_ref': (
+                    pixels
+                    if (type(pixels) is np.ndarray and pixels.dtype == np.float32
+                        and pixels.ndim == 2 and pixels.shape[1] == 2
+                        and not pixels.flags.writeable and use_fast_key)
+                    else None
+                ),
             }
         except (AttributeError, TypeError, ValueError, OverflowError, IndexError):
             return None
@@ -1673,27 +1680,29 @@ class SharedSlam:
                             return False
                     elif not np.array_equal(np.asarray(lp, float), sp):
                         return False
-                for row in snapshot['descriptor_rows']:
-                    landmark_id, feature = row['landmark_id'], row['feature']
-                    rp = row['pixel']
-                    if (landmark_id in seen_ids or feature in seen_features
-                            or feature < 0 or feature >= n_curr_px
-                            or landmark_id in excl_lms or feature in excl_tgts):
-                        return False
-                    cp = current_pixels[feature]
-                    if (type(rp) is np.ndarray and rp.dtype == np.float32 and rp.shape == (2,)):
-                        if cp[0] != rp[0] or cp[1] != rp[1]:
+                px_ref = snapshot.get('_pixels_ref')
+                if not (px_ref is not None and pixels is px_ref and not px_ref.flags.writeable and use_fast_key):
+                    for row in snapshot['descriptor_rows']:
+                        landmark_id, feature = row['landmark_id'], row['feature']
+                        rp = row['pixel']
+                        if (landmark_id in seen_ids or feature in seen_features
+                                or feature < 0 or feature >= n_curr_px
+                                or landmark_id in excl_lms or feature in excl_tgts):
                             return False
-                        key = (float(rp[0]), float(rp[1])) if use_fast_key else self._physical_pixel_key(rp)
-                    else:
-                        if not np.array_equal(cp, rp):
+                        cp = current_pixels[feature]
+                        if (type(rp) is np.ndarray and rp.dtype == np.float32 and rp.shape == (2,)):
+                            if cp[0] != rp[0] or cp[1] != rp[1]:
+                                return False
+                            key = (float(rp[0]), float(rp[1])) if use_fast_key else self._physical_pixel_key(rp)
+                        else:
+                            if not np.array_equal(cp, rp):
+                                return False
+                            key = self._physical_pixel_key(rp)
+                        if key in seen_pixels or key in excl_px:
                             return False
-                        key = self._physical_pixel_key(rp)
-                    if key in seen_pixels or key in excl_px:
-                        return False
-                    seen_ids.add(landmark_id)
-                    seen_features.add(feature)
-                    seen_pixels.add(key)
+                        seen_ids.add(landmark_id)
+                        seen_features.add(feature)
+                        seen_pixels.add(key)
             return bool(snapshot['descriptor_pool_count'] == len(snapshot['descriptor_rows']))
         except (AttributeError, TypeError, ValueError, OverflowError, IndexError):
             return False
@@ -4197,12 +4206,18 @@ class SharedSlam:
                         rejected['invalid_observation'] += 1
                         continue
                     observed = np.asarray(pixels[feature], float)
-                world = np.asarray(landmark.position, float)
-                if (observed.shape != (2,) or world.shape != (3,)
-                        or not (np.isfinite(observed[0]) and np.isfinite(observed[1])
-                                and np.isfinite(world[0]) and np.isfinite(world[1]) and np.isfinite(world[2]))
-                        or observed[0] < 0 or observed[0] >= w_lim
-                        or observed[1] < 0 or observed[1] >= h_lim):
+                world = landmark.position
+                if type(world) is not np.ndarray or world.dtype != np.float64:
+                    world = np.asarray(world, float)
+                if observed.shape != (2,) or world.shape != (3,):
+                    rejected['invalid_observation'] += 1
+                    continue
+                ox, oy = observed.tolist()
+                wx, wy, wz = world.tolist()
+                if (not (_isfinite(ox) and _isfinite(oy)
+                         and _isfinite(wx) and _isfinite(wy) and _isfinite(wz))
+                        or ox < 0.0 or ox >= w_lim
+                        or oy < 0.0 or oy >= h_lim):
                     rejected['invalid_observation'] += 1
                     continue
                 cand_valid_ids.append(landmark_id)

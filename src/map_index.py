@@ -164,7 +164,11 @@ class IncrementalMapIndex:
 
     def on_landmark_added(self, landmark: Any) -> None:
         lm_id = int(landmark.id)
-        pos = np.asarray(landmark.position, dtype=np.float64).reshape(3)
+        raw_pos = landmark.position
+        if type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64 and raw_pos.shape == (3,):
+            pos = raw_pos
+        else:
+            pos = np.asarray(raw_pos, dtype=np.float64).reshape(3)
         is_far = bool(getattr(landmark, "is_far", False))
         slot = self._id_to_slot.get(lm_id)
         if slot is None:
@@ -179,10 +183,12 @@ class IncrementalMapIndex:
         self._positions[slot] = pos
         self._is_far[slot] = is_far
         self._is_conflicted[slot] = lm_id in self._conflict_counts
-        self._visible_counts.setdefault(lm_id, 1)
-        self._found_counts.setdefault(lm_id, 1)
+        if lm_id not in self._visible_counts:
+            self._visible_counts[lm_id] = 1
+        if lm_id not in self._found_counts:
+            self._found_counts[lm_id] = 1
 
-        anchor = getattr(landmark, "anchor", None)
+        anchor = landmark.anchor
         if anchor is not None:
             anchor_id = int(anchor)
             prev_anchor = self._landmark_anchor.get(lm_id)
@@ -193,11 +199,38 @@ class IncrementalMapIndex:
                     if not prev_set:
                         del self._anchor_landmarks[prev_anchor]
             self._landmark_anchor[lm_id] = anchor_id
-            self._anchor_landmarks.setdefault(anchor_id, set()).add(lm_id)
+            anc_set = self._anchor_landmarks.get(anchor_id)
+            if anc_set is None:
+                self._anchor_landmarks[anchor_id] = {lm_id}
+            else:
+                anc_set.add(lm_id)
 
-        observations = getattr(landmark, "observations", None) or {}
-        for kf_id, obs in observations.items():
-            self.on_observation_added(lm_id, obs, keyframe_id=int(kf_id))
+        observations = landmark.observations
+        if observations:
+            for kf_id, obs in observations.items():
+                kf_i = int(kf_id)
+                kf_set = self._kf_landmarks.get(kf_i)
+                if kf_set is None:
+                    self._kf_landmarks[kf_i] = {lm_id}
+                else:
+                    kf_set.add(lm_id)
+                lm_kfs = self._landmark_kfs.get(lm_id)
+                if lm_kfs is None:
+                    lm_kfs = {kf_i}
+                    self._landmark_kfs[lm_id] = lm_kfs
+                else:
+                    lm_kfs.add(kf_i)
+                self._num_obs[slot] = len(lm_kfs)
+                if kf_i > self._max_obs_kf[slot]:
+                    self._max_obs_kf[slot] = kf_i
+                self._found_counts[lm_id] = self._found_counts.get(lm_id, 0) + 1
+                pid_i32 = getattr(obs, "_pixel_id_i32", None)
+                if pid_i32 is not None and getattr(obs, "_identity_owned", False):
+                    self._add_claim_key(lm_id, kf_i, pid_i32)
+                else:
+                    pixel = getattr(obs, "pixel", None)
+                    if pixel is not None:
+                        self._add_claim(lm_id, kf_i, pixel)
         self._struct_version += 1
 
     def on_observation_added(

@@ -59,6 +59,25 @@ def _get_matcher_lib() -> ctypes.CDLL | None:
             ctypes.POINTER(ctypes.c_int32),
         ]
         lib.match_sift_mutual_f32.restype = ctypes.c_int32
+        if hasattr(lib, "match_projected_landmarks_f32"):
+            lib.match_projected_landmarks_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_int16),
+                ctypes.c_int32,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_int16),
+                ctypes.c_int32,
+                ctypes.c_float,
+                ctypes.c_float,
+                ctypes.c_int32,
+                ctypes.c_float,
+                ctypes.c_float,
+                ctypes.POINTER(ctypes.c_int32),
+                ctypes.POINTER(ctypes.c_int32),
+            ]
+            lib.match_projected_landmarks_f32.restype = ctypes.c_int32
         lib._configured = True
     return lib
 
@@ -104,6 +123,66 @@ def match_sift_mutual_vnni(
     if status != 1:
         return None
     return out_pairs[: out_cnt.value].astype(int, copy=False)
+
+
+def match_projected_landmarks_avx512(
+    proj_uv: np.ndarray,
+    lm_descs: np.ndarray,
+    lm_oct: np.ndarray | None,
+    f_pixels: np.ndarray,
+    f_descs: np.ndarray,
+    f_oct: np.ndarray | None,
+    *,
+    radius_px: float,
+    ratio: float,
+    max_octave_diff: int,
+    max_l2_distance: float,
+    max_single_l2_distance: float,
+) -> np.ndarray | None:
+    """AVX-512 spatial-grid projective landmark matcher (exact float32 L2^2 + ratio + 1-to-1)."""
+    lib = _get_matcher_lib()
+    if lib is None or not hasattr(lib, "match_projected_landmarks_f32"):
+        return None
+    if lm_descs.ndim != 2 or lm_descs.shape[1] != 128 or f_descs.ndim != 2 or f_descs.shape[1] != 128:
+        return None
+    p_uv = np.ascontiguousarray(proj_uv, dtype=np.float32)
+    l_d = np.ascontiguousarray(lm_descs, dtype=np.float32)
+    f_px = np.ascontiguousarray(f_pixels, dtype=np.float32)
+    f_d = np.ascontiguousarray(f_descs, dtype=np.float32)
+    n_lm = len(p_uv)
+    n_feat = len(f_px)
+    if n_lm == 0 or n_feat == 0:
+        return np.empty((0, 2), dtype=np.int32)
+    if lm_oct is not None and f_oct is not None and max_octave_diff >= 0:
+        l_o = np.ascontiguousarray(lm_oct, dtype=np.int16)
+        f_o = np.ascontiguousarray(f_oct, dtype=np.int16)
+        l_o_ptr = l_o.ctypes.data_as(ctypes.POINTER(ctypes.c_int16))
+        f_o_ptr = f_o.ctypes.data_as(ctypes.POINTER(ctypes.c_int16))
+    else:
+        l_o_ptr = ctypes.POINTER(ctypes.c_int16)()
+        f_o_ptr = ctypes.POINTER(ctypes.c_int16)()
+    out_pairs = np.empty((min(n_lm, n_feat), 2), dtype=np.int32)
+    out_cnt = ctypes.c_int32(0)
+    status = lib.match_projected_landmarks_f32(
+        p_uv.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        l_d.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        l_o_ptr,
+        n_lm,
+        f_px.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        f_d.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        f_o_ptr,
+        n_feat,
+        float(radius_px),
+        float(ratio),
+        int(max_octave_diff),
+        float(max_l2_distance),
+        float(max_single_l2_distance),
+        out_pairs.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+        ctypes.byref(out_cnt),
+    )
+    if status != 1:
+        return None
+    return out_pairs[: out_cnt.value]
 
 
 _ZNCC_REASON_NAMES: dict[int, str] = {

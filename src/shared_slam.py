@@ -1218,23 +1218,45 @@ class SharedSlam:
                 lid, ident, OwnedObservation(observed_pixel.copy(), measured_right)
             )
         if self.stereo is not None:
+            _R_kf = pose[:3, :3]
+            _t_kf = pose[:3, 3]
+            with np.errstate(invalid="ignore", over="ignore"):
+                _world_map = map_points @ _R_kf.T + _t_kf
+            _lm_ids_arr = frame.landmark_ids
+            _n_oct = len(kf_octaves)
+            _add_lm = self.map.add_landmark
             for group_id, members in enumerate(groups):
-                if group_id in blocked_groups or any(
-                        frame.landmark_ids[feature] >= 0 for feature in members):
+                if group_id in blocked_groups:
                     continue
                 if len(members) == 1:
                     f0 = members[0]
+                    if _lm_ids_arr[f0] >= 0:
+                        continue
                     v0 = map_points[f0]
                     r0 = float(map_right_u[f0])
-                    verified_group = bool(
-                        np.isfinite(v0[0]) and np.isfinite(v0[1]) and np.isfinite(v0[2])
-                        and np.isfinite(r0)
+                    verified_group = (
+                        _isfinite(float(v0[0])) and _isfinite(float(v0[1]))
+                        and _isfinite(float(v0[2])) and _isfinite(r0)
                     )
+                    if verified_group:
+                        lm_oct = int(kf_octaves[f0]) if f0 < _n_oct else 0
+                        lid = _add_lm(
+                            _world_map[f0],
+                            desc[f0],
+                            ident,
+                            {ident: OwnedObservation(pixels[f0], r0)},
+                            octave=lm_oct,
+                            is_far=False,
+                        )
+                        _lm_ids_arr[f0] = lid
+                        continue
                     values = map_points[f0:f0 + 1]
                     rights = map_right_u[f0:f0 + 1]
                     seed_values = values
-                    seed_right = r0 if verified_group else None
+                    seed_right = None
                 else:
+                    if any(_lm_ids_arr[feature] >= 0 for feature in members):
+                        continue
                     values = map_points[members]
                     rights = map_right_u[members]
                     finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
@@ -1293,9 +1315,9 @@ class SharedSlam:
                         ):
                             continue
                 feature = members[0]
-                world = pose[:3, :3] @ seed_values[0] + pose[:3, 3]
-                lm_oct = int(kf_octaves[feature]) if feature < len(kf_octaves) else 0
-                lid = self.map.add_landmark(
+                world = _R_kf @ seed_values[0] + _t_kf
+                lm_oct = int(kf_octaves[feature]) if feature < _n_oct else 0
+                lid = _add_lm(
                     world,
                     desc[feature],
                     ident,
@@ -1307,7 +1329,7 @@ class SharedSlam:
                     octave=lm_oct,
                     is_far=False,
                 )
-                frame.landmark_ids[members] = lid
+                _lm_ids_arr[members] = lid
             if getattr(self.config, "use_projective_tracking", False) and ident > 0:
                 from local_map_tracker import fuse_neighbor_landmarks
 
@@ -2041,7 +2063,7 @@ class SharedSlam:
             if proj_frustum_uv is not None and len(pixels) > 0 and len(desc) > 0:
                 from local_map_tracker import match_landmarks_by_projection
 
-                lm_descs = np.asarray([l.descriptor for l in landmarks], dtype=np.float32)
+                lm_descs, _ = self._landmark_descriptor_bank(landmarks)
                 lm_octs = np.asarray([int(getattr(l, "octave", 0)) for l in landmarks], dtype=np.int16)
                 frame_feats = {
                     "pixels": pixels,
@@ -3874,28 +3896,43 @@ class SharedSlam:
                 return None, report
             # Preserve the default numerical path exactly. It drops duplicate
             # endpoint pixels before splitting descriptor rows by source index.
-            prev_f32 = np.ascontiguousarray(previous.pixels, np.float32)
-            curr_f32 = np.ascontiguousarray(current.pixels, np.float32)
-            prev_all_finite = bool(len(prev_f32) and np.isfinite(prev_f32).all())
-            curr_all_finite = bool(len(curr_f32) and np.isfinite(curr_f32).all())
-            if prev_all_finite:
-                prev_norm = np.where(prev_f32 == 0.0, np.float32(0.0), prev_f32)
-                prev_u64 = prev_norm.view(np.uint64).ravel()
-                _, previous_inverse, previous_counts = np.unique(
-                    prev_u64, return_inverse=True, return_counts=True)
-            else:
-                prev_norm = prev_u64 = None
-                _, previous_inverse, previous_counts = np.unique(
-                    prev_f32, axis=0, return_inverse=True, return_counts=True)
-            if curr_all_finite:
-                curr_norm = np.where(curr_f32 == 0.0, np.float32(0.0), curr_f32)
-                curr_u64 = curr_norm.view(np.uint64).ravel()
-                _, current_inverse, current_counts = np.unique(
-                    curr_u64, return_inverse=True, return_counts=True)
-            else:
-                curr_norm = curr_u64 = None
-                _, current_inverse, current_counts = np.unique(
-                    curr_f32, axis=0, return_inverse=True, return_counts=True)
+            prev_cached = getattr(previous, "_arb_unique_cache", None)
+            if prev_cached is None:
+                prev_f32 = np.ascontiguousarray(previous.pixels, np.float32)
+                if len(prev_f32) and bool(np.isfinite(prev_f32).all()):
+                    prev_norm = np.where(prev_f32 == 0.0, np.float32(0.0), prev_f32)
+                    prev_u64 = prev_norm.view(np.uint64).ravel()
+                    _, previous_inverse, previous_counts = np.unique(
+                        prev_u64, return_inverse=True, return_counts=True)
+                else:
+                    prev_norm = prev_u64 = None
+                    _, previous_inverse, previous_counts = np.unique(
+                        prev_f32, axis=0, return_inverse=True, return_counts=True)
+                prev_cached = (prev_norm, prev_u64, previous_inverse, previous_counts)
+                try:
+                    object.__setattr__(previous, "_arb_unique_cache", prev_cached)
+                except Exception:
+                    pass
+            prev_norm, prev_u64, previous_inverse, previous_counts = prev_cached
+
+            curr_cached = getattr(current, "_arb_unique_cache", None)
+            if curr_cached is None:
+                curr_f32 = np.ascontiguousarray(current.pixels, np.float32)
+                if len(curr_f32) and bool(np.isfinite(curr_f32).all()):
+                    curr_norm = np.where(curr_f32 == 0.0, np.float32(0.0), curr_f32)
+                    curr_u64 = curr_norm.view(np.uint64).ravel()
+                    _, current_inverse, current_counts = np.unique(
+                        curr_u64, return_inverse=True, return_counts=True)
+                else:
+                    curr_norm = curr_u64 = None
+                    _, current_inverse, current_counts = np.unique(
+                        curr_f32, axis=0, return_inverse=True, return_counts=True)
+                curr_cached = (curr_norm, curr_u64, current_inverse, current_counts)
+                try:
+                    object.__setattr__(current, "_arb_unique_cache", curr_cached)
+                except Exception:
+                    pass
+            curr_norm, curr_u64, current_inverse, current_counts = curr_cached
             a, b = pairs.T
             valid = (np.isfinite(previous.points[a]).all(axis=1)
                      & np.isfinite(current.points[b]).all(axis=1)

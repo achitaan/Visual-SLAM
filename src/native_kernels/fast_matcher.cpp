@@ -378,4 +378,176 @@ int32_t match_sift_mutual_f32(
     return 1;
 }
 
+int32_t match_projected_landmarks_f32(
+    const float* proj_uv,       // [n_lm, 2]
+    const float* lm_descs,      // [n_lm, 128]
+    const int16_t* lm_oct,      // [n_lm] or nullptr
+    int32_t n_lm,
+    const float* f_pixels,      // [n_feat, 2]
+    const float* f_descs,       // [n_feat, 128]
+    const int16_t* f_oct,       // [n_feat] or nullptr
+    int32_t n_feat,
+    float radius_px,
+    float ratio,
+    int32_t max_octave_diff,
+    float max_l2_distance,
+    float max_single_l2_distance,
+    int32_t* out_pairs,         // [min(n_lm, n_feat), 2] -> (lm_idx, feat_idx)
+    int32_t* out_count
+) {
+    *out_count = 0;
+    if (n_lm <= 0 || n_feat <= 0) {
+        return 1;
+    }
+    const float rad = (radius_px > 1.0f) ? radius_px : 1.0f;
+    const float inv_cell = 1.0f / rad;
+    const float rad_sq = rad * rad;
+    const float ratio_sq = ratio * ratio;
+    const float max_dist_sq = max_l2_distance * max_l2_distance;
+    const float max_single_sq = max_single_l2_distance * max_single_l2_distance;
+    const bool use_oct = (lm_oct != nullptr && f_oct != nullptr && max_octave_diff >= 0);
+
+    // Compute spatial grid bounds over frame features
+    int32_t min_gx = 2147483647, max_gx = -2147483647;
+    int32_t min_gy = 2147483647, max_gy = -2147483647;
+    std::vector<int32_t> fgx(n_feat), fgy(n_feat);
+    for (int32_t f = 0; f < n_feat; ++f) {
+        const float fx = f_pixels[2 * f + 0];
+        const float fy = f_pixels[2 * f + 1];
+        if (!std::isfinite(fx) || !std::isfinite(fy)) {
+            return 0;
+        }
+        const int32_t gx = static_cast<int32_t>(std::floor(fx * inv_cell));
+        const int32_t gy = static_cast<int32_t>(std::floor(fy * inv_cell));
+        fgx[f] = gx;
+        fgy[f] = gy;
+        if (gx < min_gx) min_gx = gx;
+        if (gx > max_gx) max_gx = gx;
+        if (gy < min_gy) min_gy = gy;
+        if (gy > max_gy) max_gy = gy;
+    }
+    const int64_t gw = static_cast<int64_t>(max_gx) - static_cast<int64_t>(min_gx) + 1;
+    const int64_t gh = static_cast<int64_t>(max_gy) - static_cast<int64_t>(min_gy) + 1;
+    if (gw <= 0 || gh <= 0 || gw * gh > 65536) {
+        return 0;
+    }
+    const int32_t n_cells = static_cast<int32_t>(gw * gh);
+    std::vector<int32_t> cell_offsets(n_cells + 1, 0);
+    for (int32_t f = 0; f < n_feat; ++f) {
+        const int32_t cid = (fgy[f] - min_gy) * static_cast<int32_t>(gw) + (fgx[f] - min_gx);
+        cell_offsets[cid + 1] += 1;
+    }
+    for (int32_t c = 0; c < n_cells; ++c) {
+        cell_offsets[c + 1] += cell_offsets[c];
+    }
+    std::vector<int32_t> cell_cursor(cell_offsets.begin(), cell_offsets.begin() + n_cells);
+    std::vector<int32_t> grid_feats(n_feat);
+    for (int32_t f = 0; f < n_feat; ++f) {
+        const int32_t cid = (fgy[f] - min_gy) * static_cast<int32_t>(gw) + (fgx[f] - min_gx);
+        grid_feats[cell_cursor[cid]++] = f;
+    }
+
+    std::vector<float> best_feat_d2(n_feat, 1e30f);
+    std::vector<int32_t> best_feat_lm(n_feat, -1);
+
+    const int32_t gw_i = static_cast<int32_t>(gw);
+    const int32_t gh_i = static_cast<int32_t>(gh);
+
+    for (int32_t i = 0; i < n_lm; ++i) {
+        const float u = proj_uv[2 * i + 0];
+        const float v = proj_uv[2 * i + 1];
+        if (!std::isfinite(u) || !std::isfinite(v)) {
+            continue;
+        }
+        const int32_t cx = static_cast<int32_t>(std::floor(u * inv_cell)) - min_gx;
+        const int32_t cy = static_cast<int32_t>(std::floor(v * inv_cell)) - min_gy;
+        if (cx < -1 || cx > gw_i || cy < -1 || cy > gh_i) {
+            continue;
+        }
+        const int32_t y0 = (cy > 0) ? (cy - 1) : 0;
+        const int32_t y1 = (cy + 1 < gh_i) ? (cy + 1) : (gh_i - 1);
+        const int32_t x0 = (cx > 0) ? (cx - 1) : 0;
+        const int32_t x1 = (cx + 1 < gw_i) ? (cx + 1) : (gw_i - 1);
+
+        const float* lmd = lm_descs + static_cast<size_t>(i) * 128;
+        const int32_t lo = use_oct ? static_cast<int32_t>(lm_oct[i]) : 0;
+
+        float best_d2 = 1e30f;
+        float second_d2 = 1e30f;
+        int32_t best_f = -1;
+        int32_t cand_cnt = 0;
+
+        for (int32_t gy = y0; gy <= y1; ++gy) {
+            const int32_t row_base = gy * gw_i;
+            for (int32_t gx = x0; gx <= x1; ++gx) {
+                const int32_t cid = row_base + gx;
+                const int32_t beg = cell_offsets[cid];
+                const int32_t end = cell_offsets[cid + 1];
+                for (int32_t p = beg; p < end; ++p) {
+                    const int32_t f = grid_feats[p];
+                    const float dx = f_pixels[2 * f + 0] - u;
+                    const float dy = f_pixels[2 * f + 1] - v;
+                    if (dx * dx + dy * dy > rad_sq) {
+                        continue;
+                    }
+                    if (use_oct) {
+                        const int32_t diff_o = static_cast<int32_t>(f_oct[f]) - lo;
+                        if (diff_o > max_octave_diff || diff_o < -max_octave_diff) {
+                            continue;
+                        }
+                    }
+                    const float* fd = f_descs + static_cast<size_t>(f) * 128;
+                    __m512 acc0 = _mm512_setzero_ps();
+                    __m512 acc1 = _mm512_setzero_ps();
+                    for (int32_t k = 0; k < 128; k += 32) {
+                        __m512 d0 = _mm512_sub_ps(_mm512_loadu_ps(lmd + k), _mm512_loadu_ps(fd + k));
+                        __m512 d1 = _mm512_sub_ps(_mm512_loadu_ps(lmd + k + 16), _mm512_loadu_ps(fd + k + 16));
+                        acc0 = _mm512_fmadd_ps(d0, d0, acc0);
+                        acc1 = _mm512_fmadd_ps(d1, d1, acc1);
+                    }
+                    const float d2 = _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1));
+                    ++cand_cnt;
+                    if (d2 < best_d2) {
+                        second_d2 = best_d2;
+                        best_d2 = d2;
+                        best_f = f;
+                    } else if (d2 < second_d2) {
+                        second_d2 = d2;
+                    }
+                }
+            }
+        }
+        if (cand_cnt == 0 || best_f < 0) {
+            continue;
+        }
+        if (cand_cnt == 1) {
+            if (best_d2 > max_single_sq) {
+                continue;
+            }
+        } else {
+            if (best_d2 > max_dist_sq) {
+                continue;
+            }
+            if (second_d2 > 1e-12f && best_d2 >= ratio_sq * second_d2) {
+                continue;
+            }
+        }
+        if (best_feat_lm[best_f] < 0 || best_d2 < best_feat_d2[best_f]) {
+            best_feat_d2[best_f] = best_d2;
+            best_feat_lm[best_f] = i;
+        }
+    }
+
+    int32_t cnt = 0;
+    for (int32_t f = 0; f < n_feat; ++f) {
+        if (best_feat_lm[f] >= 0) {
+            out_pairs[2 * cnt + 0] = best_feat_lm[f];
+            out_pairs[2 * cnt + 1] = f;
+            ++cnt;
+        }
+    }
+    *out_count = cnt;
+    return 1;
+}
+
 }  // extern "C"

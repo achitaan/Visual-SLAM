@@ -104,6 +104,29 @@ def match_landmarks_by_projection(
         f_oct = None
 
     rad = max(1.0, float(radius_px))
+    try:
+        from native_accel import match_projected_landmarks_avx512
+        native_pairs = match_projected_landmarks_avx512(
+            proj_uv,
+            lm_descs,
+            lm_oct,
+            f_pixels,
+            f_descs,
+            f_oct,
+            radius_px=rad,
+            ratio=float(ratio),
+            max_octave_diff=int(max_octave_diff) if use_octaves else -1,
+            max_l2_distance=float(max_l2_distance),
+            max_single_l2_distance=float(max_single_l2_distance),
+        )
+        if native_pairs is not None:
+            return {
+                int(lm_ids[lm_i]): int(feat_i)
+                for lm_i, feat_i in native_pairs.tolist()
+            }
+    except Exception:
+        pass
+
     rad_sq = rad * rad
     max_dist_sq = float(max_l2_distance) * float(max_l2_distance)
     max_single_sq = float(max_single_l2_distance) * float(max_single_l2_distance)
@@ -248,9 +271,66 @@ def fuse_neighbor_landmarks(
         rad = max(1.0, float(radius_px))
         rad_sq = rad * rad
         max_d2 = float(max_l2_distance) * float(max_l2_distance)
-        grid, inv_cell = _build_spatial_grid(f_pixels, max(rad, 4.0))
 
         fused = 0
+        native_fused_pairs = None
+        try:
+            from native_accel import match_projected_landmarks_avx512
+            vis_lms = [unseen_lms[int(p)] for p in idx_v.tolist()]
+            lm_descs_arr = np.asarray([lm.descriptor for lm in vis_lms], dtype=np.float32)
+            lm_octs_arr = (
+                np.asarray([int(getattr(lm, "octave", 0)) for lm in vis_lms], dtype=np.int16)
+                if f_octs is not None else None
+            )
+            native_fused_pairs = match_projected_landmarks_avx512(
+                uv.astype(np.float32, copy=False),
+                lm_descs_arr,
+                lm_octs_arr,
+                f_pixels,
+                f_descs,
+                f_octs,
+                radius_px=rad,
+                ratio=1.01,
+                max_octave_diff=1 if f_octs is not None else -1,
+                max_l2_distance=float(max_l2_distance),
+                max_single_l2_distance=float(max_l2_distance),
+            )
+        except Exception:
+            native_fused_pairs = None
+
+        if native_fused_pairs is not None:
+            for row_i, feat_idx in native_fused_pairs.tolist():
+                lm = unseen_lms[int(idx_v[row_i])]
+                existing_lid = int(keyframe.landmark_ids[feat_idx])
+                if existing_lid < 0:
+                    ru = None
+                    if right_u_values is not None and feat_idx < len(right_u_values):
+                        rv = float(right_u_values[feat_idx])
+                        if np.isfinite(rv):
+                            ru = rv
+                    obs = Observation(
+                        f_pixels[feat_idx].copy(),
+                        ru,
+                        octave=int(f_octs[feat_idx]) if f_octs is not None else 0,
+                    )
+                    keyframe.landmark_ids[feat_idx] = int(lm.id)
+                    map_state.add_observation(int(lm.id), kf_id, obs)
+                    fused += 1
+                elif existing_lid != int(lm.id) and existing_lid in map_state.landmarks:
+                    other = map_state.landmarks[existing_lid]
+                    if (len(other.observations) == 1
+                            and len(lm.observations) >= 2
+                            and float(np.linalg.norm(other.position - lm.position)) < max(0.5, 0.05 * float(pc[row_i, 2]))):
+                        obs_other = other.observations.get(kf_id)
+                        if obs_other is not None:
+                            keyframe.landmark_ids[feat_idx] = int(lm.id)
+                            map_state.remove_landmark(existing_lid)
+                            map_state.add_observation(int(lm.id), kf_id, obs_other)
+                            fused += 1
+            return fused
+
+        grid, inv_cell = _build_spatial_grid(f_pixels, max(rad, 4.0))
+
         for row_i, lm_pos in enumerate(idx_v):
             lm = unseen_lms[int(lm_pos)]
             u_p, v_p = float(uv[row_i, 0]), float(uv[row_i, 1])

@@ -482,68 +482,85 @@ def _estimate_pose_hypothesis(
             "tvec": tv0,
             "useExtrinsicGuess": True,
         }
-    ok, rv, tv, inliers = cv.solvePnPRansac(
-        pts_f64,
-        pix_f64,
-        matrix,
-        None,
-        iterationsCount=200,
-        reprojectionError=2.0,
-        confidence=0.995,
-        flags=cv.SOLVEPNP_ITERATIVE if initial_pose is not None else cv.SOLVEPNP_EPNP,
-        **arguments
+    pnp_flags = (
+        (cv.SOLVEPNP_ITERATIVE,)
+        if initial_pose is not None
+        else (cv.SOLVEPNP_AP3P, cv.SOLVEPNP_EPNP)
     )
-    if (
-        not ok
-        or inliers is None
-        or len(inliers) < min_inliers
-        or len(inliers) / len(pts_f64) < 0.25
-    ):
-        diagnostics.update(
-            candidate_inliers=0 if inliers is None else len(inliers),
-            pose_rejection_reason=(
-                "ransac_failed" if not ok else "insufficient_inlier_support"
-            ),
+    for flag_idx, pnp_flag in enumerate(pnp_flags):
+        ok, rv, tv, inliers = cv.solvePnPRansac(
+            pts_f64,
+            pix_f64,
+            matrix,
+            None,
+            iterationsCount=200,
+            reprojectionError=2.0,
+            confidence=0.995,
+            flags=pnp_flag,
+            **arguments
         )
-        return None
-    ids = inliers.ravel()
-    rv, tv = cv.solvePnPRefineLM(
-        pts_f64[ids], pix_f64[ids], matrix, None, rv, tv
-    )
-    pose = np.eye(4)
-    pose[:3, :3] = cv.Rodrigues(rv)[0].T
-    pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
-    predicted, depth = project(pts_f64[ids], pose, matrix)
-    error = np.linalg.norm(predicted - pix_f64[ids], axis=1)
-    med_err = float(np.median(error))
-    cells = coverage(pix_f64[ids], size)
-    diagnostics.update(
-        candidate_inliers=len(ids),
-        candidate_inlier_ratio=len(ids) / len(pts_f64),
-        candidate_median_reprojection_px=med_err,
-        candidate_feature_cells=cells,
-    )
-    if (
-        not np.isfinite(pose).all()
-        or np.any(depth <= 0)
-        or med_err > 1.5
-        or cells < 3
-    ):
-        diagnostics["pose_rejection_reason"] = (
-            "invalid_pose"
-            if not np.isfinite(pose).all()
-            else (
-                "negative_depth"
-                if np.any(depth <= 0)
-                else (
-                    "reprojection_error"
-                    if med_err > 1.5
-                    else "insufficient_spatial_support"
-                )
+        if (
+            not ok
+            or inliers is None
+            or len(inliers) < min_inliers
+            or len(inliers) / len(pts_f64) < 0.25
+        ):
+            if flag_idx + 1 < len(pnp_flags):
+                continue
+            diagnostics.update(
+                candidate_inliers=0 if inliers is None else len(inliers),
+                pose_rejection_reason=(
+                    "ransac_failed" if not ok else "insufficient_inlier_support"
+                ),
             )
+            return None
+        ids = inliers.ravel()
+        rv, tv = cv.solvePnPRefineLM(
+            pts_f64[ids], pix_f64[ids], matrix, None, rv, tv
         )
-        return None
-    return pose, ids, med_err
+        pose = np.eye(4)
+        pose[:3, :3] = cv.Rodrigues(rv)[0].T
+        pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
+        predicted, depth = project(pts_f64[ids], pose, matrix)
+        error = np.linalg.norm(predicted - pix_f64[ids], axis=1)
+        med_err = float(np.median(error))
+        cells = coverage(pix_f64[ids], size)
+        if (
+            not np.isfinite(pose).all()
+            or np.any(depth <= 0)
+            or med_err > 1.5
+            or cells < 3
+        ):
+            if flag_idx + 1 < len(pnp_flags):
+                continue
+            diagnostics.update(
+                candidate_inliers=len(ids),
+                candidate_inlier_ratio=len(ids) / len(pts_f64),
+                candidate_median_reprojection_px=med_err,
+                candidate_feature_cells=cells,
+                pose_rejection_reason=(
+                    "invalid_pose"
+                    if not np.isfinite(pose).all()
+                    else (
+                        "negative_depth"
+                        if np.any(depth <= 0)
+                        else (
+                            "reprojection_error"
+                            if med_err > 1.5
+                            else "insufficient_spatial_support"
+                        )
+                    )
+                ),
+            )
+            return None
+        diagnostics.update(
+            candidate_inliers=len(ids),
+            candidate_inlier_ratio=len(ids) / len(pts_f64),
+            candidate_median_reprojection_px=med_err,
+            candidate_feature_cells=cells,
+        )
+        return pose, ids, med_err
+    return None
 
 
 def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed):

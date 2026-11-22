@@ -567,3 +567,65 @@ def track_lk_pyramids_avx512(
     return p1.reshape(n, 1, 2), st.reshape(n, 1)
 
 
+def _get_pgo_lib() -> ctypes.CDLL | None:
+    lib = _load_library("fast_pgo")
+    if lib is not None and not getattr(lib, "_configured", False):
+        lib.solve_sparse_se3_pgo.argtypes = [
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_double),
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_double),
+            ctypes.POINTER(ctypes.c_double),
+            ctypes.c_double,
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_double),
+        ]
+        lib.solve_sparse_se3_pgo.restype = ctypes.c_int32
+        lib._configured = True
+    return lib
+
+
+def solve_sparse_se3_pgo_native(
+    poses: np.ndarray,
+    fi: np.ndarray,
+    si: np.ndarray,
+    meas: np.ndarray,
+    W: np.ndarray,
+    huber_scale: float = 1.0,
+    max_iter: int = 50,
+) -> tuple[np.ndarray, dict[str, Any]] | None:
+    """Solve sparse SE(3) pose graph via native block-6x6 MD-Cholesky LM solver."""
+    lib = _get_pgo_lib()
+    if lib is None:
+        return None
+    poses_buf = np.ascontiguousarray(poses, dtype=np.float64).copy()
+    fi_buf = np.ascontiguousarray(fi, dtype=np.int32)
+    si_buf = np.ascontiguousarray(si, dtype=np.int32)
+    meas_buf = np.ascontiguousarray(meas, dtype=np.float64)
+    W_buf = np.ascontiguousarray(W, dtype=np.float64)
+    stats = np.zeros(5, dtype=np.float64)
+    converged = int(
+        lib.solve_sparse_se3_pgo(
+            int(poses_buf.shape[0]),
+            poses_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            int(fi_buf.shape[0]),
+            fi_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+            si_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+            meas_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            W_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            float(huber_scale),
+            int(max_iter),
+            stats.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        )
+    )
+    info = {
+        "converged": bool(converged),
+        "initial_cost": float(stats[0]),
+        "final_cost": float(stats[1]),
+        "optimality": float(stats[2]),
+        "nfev": int(round(stats[3])),
+        "njev": int(round(stats[4])),
+    }
+    return poses_buf, info

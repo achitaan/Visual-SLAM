@@ -448,7 +448,9 @@ def _summarize_loop_events(slam: Any) -> dict[str, Any]:
             if i is not None and j is not None:
                 verified_pairs.add((int(i), int(j)))
     applied_loops = 0
-    applied_timeline: list[dict[str, int]] = []
+    applied_timeline: list[dict[str, Any]] = []
+    v2a_latencies_s: list[float] = []
+    pgo_durations_s: list[float] = []
     events_by_type: Counter[str] = Counter()
     for event in getattr(slam.loop_worker, "events", ()):
         if not isinstance(event, dict):
@@ -464,12 +466,28 @@ def _summarize_loop_events(slam: Any) -> dict[str, Any]:
                         verified_pairs.add((int(i), int(j)))
         elif etype == "loop_applied":
             applied_loops = int(event.get("loops", applied_loops))
+            ev_v2a = [float(x) for x in (event.get("verification_to_apply_s") or ())]
+            v2a_latencies_s.extend(ev_v2a)
+            if "pgo_elapsed_s" in event:
+                pgo_durations_s.append(float(event["pgo_elapsed_s"]))
             applied_timeline.append(
                 {
                     "loops": int(applied_loops),
                     "revision": int(event.get("revision", -1)),
+                    "pgo_elapsed_s": float(event.get("pgo_elapsed_s", 0.0)),
                 }
             )
+    if v2a_latencies_s:
+        arr = np.asarray(v2a_latencies_s, dtype=np.float64)
+        v2a_summary = {
+            "count": int(len(arr)),
+            "mean_s": float(np.mean(arr)),
+            "p50_s": float(np.percentile(arr, 50)),
+            "p95_s": float(np.percentile(arr, 95)),
+            "max_s": float(np.max(arr)),
+        }
+    else:
+        v2a_summary = {"count": 0, "mean_s": 0.0, "p50_s": 0.0, "p95_s": 0.0, "max_s": 0.0}
     return {
         "verified_loops": int(len(verified_pairs)),
         "applied_loops": int(applied_loops),
@@ -479,6 +497,7 @@ def _summarize_loop_events(slam: Any) -> dict[str, Any]:
         "events_by_type": dict(sorted(events_by_type.items())),
         "verified_pairs": [[int(a), int(b)] for a, b in sorted(verified_pairs)],
         "applied_timeline": applied_timeline,
+        "verification_to_apply_latency_s": v2a_summary,
     }
 
 

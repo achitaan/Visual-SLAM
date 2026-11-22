@@ -81,6 +81,7 @@ class MapState:
         self.retained_source_observations = {}
         self.revision = 0
         self.geometry_revision = 0
+        self.pose_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
         self.index = IncrementalMapIndex()
@@ -469,20 +470,28 @@ class MapState:
                 self.retained_source_observations = retained_registry
             self.revision += 1
             self.geometry_revision += 1
+            self.pose_revision += 1
             return True
 
-    def apply_snapshot_corrections(self, revision, geometry_revision, original, corrected, scales=None):
+    def apply_snapshot_corrections(self, revision, geometry_revision, original, corrected, scales=None, *, pose_revision=None):
         """Allow append-only progress, but never rebase across changed snapshot geometry."""
         with self.lock:
             ids = sorted(original)
             current = sorted(self.keyframes)
-            if (self.geometry_revision != geometry_revision or not ids
-                    or current[:len(ids)] != ids or set(corrected) != set(original)):
-                return False
-            if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
-                return False
-            if self.revision != revision and len(current) == len(ids):
-                return False
+            if pose_revision is not None:
+                if (self.pose_revision != pose_revision or not ids
+                        or current[:len(ids)] != ids or set(corrected) != set(original)):
+                    return False
+                if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
+                    return False
+            else:
+                if (self.geometry_revision != geometry_revision or not ids
+                        or current[:len(ids)] != ids or set(corrected) != set(original)):
+                    return False
+                if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
+                    return False
+                if self.revision != revision and len(current) == len(ids):
+                    return False
             if isinstance(scales,dict) and set(scales)!=set(ids):
                 return False
             values = (np.ones(len(ids)) if scales is None else

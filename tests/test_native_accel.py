@@ -269,6 +269,51 @@ def test_native_lk_parity_vs_opencv():
     assert float(np.median(diffs)) < 0.05
 
 
+def test_native_pgo_parity_vs_python(monkeypatch):
+    if native_accel._get_pgo_lib() is None:
+        pytest.skip("libfast_pgo.so not built on this host")
+    from scipy.spatial.transform import Rotation
+    import pose_graph
+
+    rng = np.random.default_rng(7)
+    n = 48
+    gt = []
+    cur = np.eye(4)
+    for _ in range(n):
+        gt.append(cur.copy())
+        step = np.eye(4)
+        step[:3, :3] = Rotation.from_euler("y", 2.0 * np.pi / 20.0).as_matrix()
+        step[:3, 3] = [0.0, 0.0, 2.0]
+        cur = cur @ step
+
+    poses = [gt[0].copy()]
+    for i in range(1, n):
+        rel = np.linalg.inv(gt[i - 1]) @ gt[i]
+        noise = np.eye(4)
+        noise[:3, :3] = Rotation.from_rotvec(rng.normal(0.0, 0.004, 3)).as_matrix()
+        noise[:3, 3] = rng.normal(0.0, 0.04, 3)
+        poses.append(poses[-1] @ rel @ noise)
+
+    info_o = np.diag([1000.0] * 3 + [10.0] * 3)
+    info_l = np.diag([2000.0] * 3 + [20.0] * 3)
+    edges = [(i, i + 1, np.linalg.inv(poses[i]) @ poses[i + 1], info_o, "odometry") for i in range(n - 1)]
+    for i, j in ((0, 20), (2, 22), (5, 25), (10, 30), (15, 35), (4, 44)):
+        edges.append((i, j, np.linalg.inv(gt[i]) @ gt[j], info_l, "loop"))
+
+    diag_nat = {}
+    res_nat = pose_graph.optimize_sparse_se3(poses, edges, max_evaluations=60, diagnostics=diag_nat)
+    assert "native" in diag_nat.get("solver", "")
+
+    monkeypatch.setenv("VISUAL_SLAM_DISABLE_NATIVE", "1")
+    diag_py = {}
+    res_py = pose_graph.optimize_sparse_se3(poses, edges, max_evaluations=60, diagnostics=diag_py)
+    assert "native" not in diag_py.get("solver", "")
+
+    max_diff = max(float(np.max(np.abs(a - b))) for a, b in zip(res_nat, res_py))
+    assert max_diff < 1e-9
+    assert abs(diag_nat["final_cost"] - diag_py["final_cost"]) < 1e-9
+
+
 def test_disable_native_env_clean_fallback(monkeypatch):
     monkeypatch.setenv("VISUAL_SLAM_DISABLE_NATIVE", "1")
     assert not native_accel.native_enabled()
@@ -280,3 +325,5 @@ def test_disable_native_env_clean_fallback(monkeypatch):
     ) is None
     assert native_accel.extract_sift_grid_avx512(img, target_features=50) is None
     assert native_accel.build_lk_pyramid_avx512(img) is None
+    assert native_accel._get_pgo_lib() is None
+

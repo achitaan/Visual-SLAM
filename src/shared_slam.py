@@ -8112,6 +8112,10 @@ class SharedSlam:
                         bundle_kwargs["selected_keyframes"] = covis_window
                         bundle_kwargs["max_landmarks"] = 350
                         bundle_kwargs["cull_outliers_chi2"] = True
+                    self.loop_worker.poll(
+                        self.map,
+                        wait=bool(getattr(self.loop_worker, "pending_loops", None)),
+                    )
                     report = local_bundle_adjustment(
                         self.map,
                         self.K,

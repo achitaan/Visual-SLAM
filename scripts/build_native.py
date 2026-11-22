@@ -26,6 +26,7 @@ KERNELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("fast_sift", ("avx512f", "avx512bw", "avx512vl")),
     ("fast_ba", ()),
     ("fast_lk", ("avx512f",)),
+    ("fast_pgo", ()),
 )
 
 
@@ -74,7 +75,7 @@ def build_kernels(compiler: str | None = None, force: bool = False) -> list[str]
             cxx,
             "-O3",
             "-march=native",
-            "-ffast-math",
+            *([] if name in ("fast_pgo", "fast_ba") else ["-ffast-math"]),
             "-shared",
             "-fPIC",
             str(src),

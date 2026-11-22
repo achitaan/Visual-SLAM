@@ -336,6 +336,14 @@ class LiveLoopWorker:
             first = state.keyframes[first_id]
             if latest.frame - first.frame < 150:
                 return
+            last_sched_frame = getattr(self, "_last_scheduled_frame", -10**9)
+            if (
+                not self.pending_loops
+                and not self.finalizing
+                and (latest.frame - last_sched_frame) < 10
+            ):
+                return
+            self._last_scheduled_frame = int(latest.frame)
             if self.cpu_optimizations or self.use_vlad_retrieval:
                 # Only the newest 2 keyframes can have depth_points updated by triangulation.
                 refresh_cutoff = latest_id - 1

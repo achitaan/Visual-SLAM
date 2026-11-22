@@ -1922,147 +1922,171 @@ class SharedSlam:
         with self.map.lock:
             track_revision = int(self.map.revision)
             track_geometry_revision = int(self.map.geometry_revision)
-        proj_frustum_uv = None
-        if (not relocalize and candidate_ids is None
-                and self.config.use_incremental_map_index
-                and len(self.map.index) == len(self.map.landmarks)):
-            ambiguous_landmarks = self._landmark_pixel_identity_conflicts(None)
-            predicted = self._motion_prediction()
-            T_cw = np.linalg.inv(predicted)
-            frustum = self.map.index.query_frustum(
-                T_cw, self.K, size,
-                max_depth=1e6,
-                margin_px=40.0,
-                include_far_bearings=bool(self.config.use_far_stereo_points),
-                exclude_conflicted=True,
-                max_landmarks=self.config.max_landmarks,
-            )
-            map_landmarks = self.map.landmarks
-            landmarks = [
-                map_landmarks[lid_int]
-                for lid_int in frustum.landmark_ids.tolist()
-                if lid_int in map_landmarks
-            ]
-            if not landmarks:
-                return None, {}
-            if getattr(self.config, "use_projective_tracking", False):
-                if len(landmarks) == len(frustum.landmark_ids):
-                    proj_frustum_uv = frustum
-                else:
-                    from map_index import FrustumQueryResult
-
-                    kr = np.asarray(
-                        [i for i, lid in enumerate(frustum.landmark_ids.tolist()) if lid in map_landmarks],
-                        dtype=np.intp,
-                    )
-                    proj_frustum_uv = FrustumQueryResult(
-                        landmark_ids=frustum.landmark_ids[kr],
-                        projected_uv=frustum.projected_uv[kr],
-                        depths=frustum.depths[kr],
-                    )
-        else:
-            cache = None
-            if self.performance.cpu_optimizations:
-                cache = self._cached_landmarks()
-                landmarks = cache[2]
-            else:
-                landmarks = list(self.map.landmarks.values())
-            if candidate_ids is not None:
-                landmarks = [l for l in landmarks if l.id in candidate_ids]
-                cache = None
-            ambiguous_landmarks = self._landmark_pixel_identity_conflicts(landmarks)
-            if ambiguous_landmarks:
-                landmarks = [l for l in landmarks if l.id not in ambiguous_landmarks]
-                cache = None
-            if not landmarks:
-                return None, {}
-            if not relocalize:
-                predicted = self._motion_prediction()
-                projected, z = project(
-                    cache[3] if cache is not None else np.array([l.position for l in landmarks]), predicted, self.K
-                )
-                visible = (
-                    (z > 0)
-                    & (projected[:, 0] >= -40)
-                    & (projected[:, 0] < size[0] + 40)
-                    & (projected[:, 1] >= -40)
-                    & (projected[:, 1] < size[1] + 40)
-                )
-                landmarks = [l for l, ok in zip(landmarks, visible) if ok]
-                if len(landmarks) > self.config.max_landmarks:
-                    landmarks.sort(
-                        key=lambda l: (max(l.observations), len(l.observations)),
-                        reverse=True,
-                    )
-                    landmarks = landmarks[: self.config.max_landmarks]
-            if not landmarks:
-                return None, {}
         arbitration = self._arbitration_context if self.config.stereo_pose_arbitration else None
-        used_projective = False
-        if proj_frustum_uv is not None and len(pixels) > 0 and len(desc) > 0:
-            from local_map_tracker import match_landmarks_by_projection
+        latest_kf_frame = (
+            self.map.keyframes[max(self.map.keyframes)].frame
+            if self.map.keyframes else -10**9
+        )
+        try_lk_first = (
+            not relocalize
+            and candidate_ids is None
+            and self.performance.cpu_optimizations
+            and self.previous_gray is not None
+            and len(self.previous_tracks) >= 100
+            and frame_token is not None
+            and (int(frame_token) - int(latest_kf_frame)) < max(1, int(self.config.keyframe_interval) - 1)
+            and not self._tracking_trace_enabled(getattr(self, "_tracking_trace_frame", -1))
+            and self.config.use_incremental_map_index
+            and len(self.map.index) == len(self.map.landmarks)
+        )
 
-            lm_descs = np.asarray([l.descriptor for l in landmarks], dtype=np.float32)
-            lm_octs = np.asarray([int(getattr(l, "octave", 0)) for l in landmarks], dtype=np.int16)
-            frame_feats = {
-                "pixels": pixels,
-                "descriptors": desc,
-                "octaves": (
-                    self._current_octaves
-                    if self._current_octaves is not None and len(self._current_octaves) == len(pixels)
-                    else None
-                ),
-            }
-            with self.profile.measure("projective_matching"):
-                proj_map = match_landmarks_by_projection(
-                    proj_frustum_uv, frame_feats, lm_descs, lm_octs,
-                    radius_px=42.0, ratio=0.78, max_octave_diff=1,
+        def _run_descriptor_matching():
+            proj_frustum_uv = None
+            if (not relocalize and candidate_ids is None
+                    and self.config.use_incremental_map_index
+                    and len(self.map.index) == len(self.map.landmarks)):
+                ambig = self._landmark_pixel_identity_conflicts(None)
+                predicted = self._motion_prediction()
+                T_cw = np.linalg.inv(predicted)
+                frustum = self.map.index.query_frustum(
+                    T_cw, self.K, size,
+                    max_depth=1e6,
+                    margin_px=40.0,
+                    include_far_bearings=bool(self.config.use_far_stereo_points),
+                    exclude_conflicted=True,
+                    max_landmarks=self.config.max_landmarks,
                 )
-                min_proj_ok = max(self.config.min_inliers * 2, 30)
-                if len(proj_map) < min_proj_ok:
+                map_landmarks = self.map.landmarks
+                landmarks = [
+                    map_landmarks[lid_int]
+                    for lid_int in frustum.landmark_ids.tolist()
+                    if lid_int in map_landmarks
+                ]
+                if not landmarks:
+                    return None, None, ambig
+                if getattr(self.config, "use_projective_tracking", False):
+                    if len(landmarks) == len(frustum.landmark_ids):
+                        proj_frustum_uv = frustum
+                    else:
+                        from map_index import FrustumQueryResult
+
+                        kr = np.asarray(
+                            [i for i, lid in enumerate(frustum.landmark_ids.tolist()) if lid in map_landmarks],
+                            dtype=np.intp,
+                        )
+                        proj_frustum_uv = FrustumQueryResult(
+                            landmark_ids=frustum.landmark_ids[kr],
+                            projected_uv=frustum.projected_uv[kr],
+                            depths=frustum.depths[kr],
+                        )
+            else:
+                cache = None
+                if self.performance.cpu_optimizations:
+                    cache = self._cached_landmarks()
+                    landmarks = cache[2]
+                else:
+                    landmarks = list(self.map.landmarks.values())
+                if candidate_ids is not None:
+                    landmarks = [l for l in landmarks if l.id in candidate_ids]
+                    cache = None
+                ambig = self._landmark_pixel_identity_conflicts(landmarks)
+                if ambig:
+                    landmarks = [l for l in landmarks if l.id not in ambig]
+                    cache = None
+                if not landmarks:
+                    return None, None, ambig
+                if not relocalize:
+                    predicted = self._motion_prediction()
+                    projected, z = project(
+                        cache[3] if cache is not None else np.array([l.position for l in landmarks]), predicted, self.K
+                    )
+                    visible = (
+                        (z > 0)
+                        & (projected[:, 0] >= -40)
+                        & (projected[:, 0] < size[0] + 40)
+                        & (projected[:, 1] >= -40)
+                        & (projected[:, 1] < size[1] + 40)
+                    )
+                    landmarks = [l for l, ok in zip(landmarks, visible) if ok]
+                    if len(landmarks) > self.config.max_landmarks:
+                        landmarks.sort(
+                            key=lambda l: (max(l.observations), len(l.observations)),
+                            reverse=True,
+                        )
+                        landmarks = landmarks[: self.config.max_landmarks]
+                if not landmarks:
+                    return None, None, ambig
+            used_projective = False
+            if proj_frustum_uv is not None and len(pixels) > 0 and len(desc) > 0:
+                from local_map_tracker import match_landmarks_by_projection
+
+                lm_descs = np.asarray([l.descriptor for l in landmarks], dtype=np.float32)
+                lm_octs = np.asarray([int(getattr(l, "octave", 0)) for l in landmarks], dtype=np.int16)
+                frame_feats = {
+                    "pixels": pixels,
+                    "descriptors": desc,
+                    "octaves": (
+                        self._current_octaves
+                        if self._current_octaves is not None and len(self._current_octaves) == len(pixels)
+                        else None
+                    ),
+                }
+                with self.profile.measure("projective_matching"):
                     proj_map = match_landmarks_by_projection(
                         proj_frustum_uv, frame_feats, lm_descs, lm_octs,
-                        radius_px=96.0, ratio=0.80, max_octave_diff=2,
+                        radius_px=42.0, ratio=0.78, max_octave_diff=1,
                     )
-            if len(proj_map) >= min_proj_ok:
-                used_projective = True
+                    min_proj_ok = max(self.config.min_inliers * 2, 30)
+                    if len(proj_map) < min_proj_ok:
+                        proj_map = match_landmarks_by_projection(
+                            proj_frustum_uv, frame_feats, lm_descs, lm_octs,
+                            radius_px=96.0, ratio=0.80, max_octave_diff=2,
+                        )
+                if len(proj_map) >= min_proj_ok:
+                    used_projective = True
+                    if arbitration is not None:
+                        arbitration['excluded_landmarks'].update(
+                            int(lid) for lid, fidx in proj_map.items()
+                            if fidx in arbitration['excluded_targets']
+                        )
+                        proj_map = {
+                            int(lid): int(fidx)
+                            for lid, fidx in proj_map.items()
+                            if fidx not in arbitration['excluded_targets']
+                            and int(lid) not in arbitration['excluded_landmarks']
+                        }
+                    cands = {int(lid): (pixels[fidx], int(fidx)) for lid, fidx in proj_map.items()}
+            if not used_projective:
+                descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
+                pairs = self._match(descriptors, desc)
                 if arbitration is not None:
                     arbitration['excluded_landmarks'].update(
-                        int(lid) for lid, fidx in proj_map.items()
-                        if fidx in arbitration['excluded_targets']
-                    )
-                    proj_map = {
-                        int(lid): int(fidx)
-                        for lid, fidx in proj_map.items()
-                        if fidx not in arbitration['excluded_targets']
-                        and int(lid) not in arbitration['excluded_landmarks']
-                    }
-                candidates = {int(lid): (pixels[fidx], int(fidx)) for lid, fidx in proj_map.items()}
-        if not used_projective:
-            # Keep geometry unique by LM while retaining linked SIFT orientation
-            # descriptors from bounded anchor/latest keyframes for appearance.
-            descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
-            pairs = self._match(descriptors, desc)
-            if arbitration is not None:
-                # A held detector observation may map to a different older landmark
-                # than the source snapshot. Exclude every linked descriptor/flow ID.
-                arbitration['excluded_landmarks'].update(
-                    int(descriptor_landmark_ids[a])
-                    for a, b in pairs if b in arbitration['excluded_targets'])
-                pairs = np.asarray([(a, b) for a, b in pairs
-                                    if b not in arbitration['excluded_targets']
-                                    and int(descriptor_landmark_ids[a])
-                                    not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
-            pairs = self._collapse_landmark_matches(pairs, descriptor_landmark_ids, pixels)
-            candidates = {int(descriptor_landmark_ids[a]): (pixels[b], int(b))
-                          for a, b in pairs}
-        descriptor_candidates = candidates.copy()
-        if self.config.stereo_descriptor_association_retry:
-            descriptor_candidates = {
-                int(landmark_id): (
-                    np.asarray(value[0], np.float32).copy(), int(value[1]))
-                for landmark_id, value in candidates.items()
-            }
+                        int(descriptor_landmark_ids[a])
+                        for a, b in pairs if b in arbitration['excluded_targets'])
+                    pairs = np.asarray([(a, b) for a, b in pairs
+                                        if b not in arbitration['excluded_targets']
+                                        and int(descriptor_landmark_ids[a])
+                                        not in arbitration['excluded_landmarks']], int).reshape(-1, 2)
+                pairs = self._collapse_landmark_matches(pairs, descriptor_landmark_ids, pixels)
+                cands = {int(descriptor_landmark_ids[a]): (pixels[b], int(b))
+                         for a, b in pairs}
+            desc_cands = cands.copy()
+            if self.config.stereo_descriptor_association_retry:
+                desc_cands = {
+                    int(landmark_id): (
+                        np.asarray(value[0], np.float32).copy(), int(value[1]))
+                    for landmark_id, value in cands.items()
+                }
+            return cands, desc_cands, ambig
+
+        if try_lk_first:
+            ambiguous_landmarks = self._landmark_pixel_identity_conflicts(None)
+            candidates = {}
+            descriptor_candidates = {}
+        else:
+            candidates, descriptor_candidates, ambiguous_landmarks = _run_descriptor_matching()
+            if candidates is None:
+                return None, {}
         flow_conflicts = 0
         flow_visibility_rejections = 0
         previous_tracks = (self.previous_tracks if arbitration is None else
@@ -2229,6 +2253,14 @@ class SharedSlam:
                             if feature in excl_targets or pkey in excl_pixels:
                                 continue
                         candidates[lid] = (p, feature)
+        if try_lk_first and len(candidates) < 80:
+            desc_cands, desc_retry_cands, _ = _run_descriptor_matching()
+            if desc_cands is not None:
+                descriptor_candidates = desc_retry_cands
+                for lid_k, val_k in candidates.items():
+                    if lid_k not in desc_cands:
+                        desc_cands[lid_k] = val_k
+                candidates = desc_cands
         candidates = self._collapse_track_candidates(candidates, pixels)
         if len(candidates) < self.config.min_inliers:
             return None, {

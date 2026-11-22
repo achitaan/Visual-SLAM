@@ -545,10 +545,12 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
+    import gc
     import cv2 as cv
     from StereoVisualOdometry import StereoVisualOdometry
     from shared_slam import SharedSlam, StereoCamera
 
+    gc.set_threshold(50000, 20, 20)
     np.random.seed(args.seed)
     cv.setRNGSeed(args.seed)
     cv.setNumThreads(args.opencv_threads)

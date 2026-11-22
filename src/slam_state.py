@@ -262,6 +262,7 @@ class MapState:
                 translation = new_pose[:3, 3] - scale * rotation @ old[:3, 3]
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
+            bulk_anchor_updates = None
             if landmark_updates is not None and not set(landmark_updates).issubset(self.landmarks):
                 raise ValueError("Unknown corrected landmark")
             if not propagate_landmarks:
@@ -276,6 +277,26 @@ class MapState:
                         if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
+            elif (
+                landmark_updates is None
+                and len(self.index) == len(self.landmarks)
+                and len(moved_kfs) >= 16
+            ):
+                bulk_anchor_updates = []
+                anc_map = self.index._anchor_landmarks
+                id_to_slot = self.index._id_to_slot
+                idx_pos = self.index._positions
+                for anchor_id in moved_kfs:
+                    lm_set = anc_map.get(anchor_id)
+                    if not lm_set:
+                        continue
+                    id_list = list(lm_set)
+                    slots = [id_to_slot[i] for i in id_list]
+                    rotation, scale, translation = corrections[anchor_id]
+                    new_arr = (scale * (idx_pos[slots] @ rotation.T)) + translation
+                    if not np.isfinite(new_arr).all():
+                        raise ValueError("Nonfinite corrected landmark")
+                    bulk_anchor_updates.append((id_list, slots, new_arr))
             else:
                 if len(self.index) == len(self.landmarks) and len(moved_kfs) < len(self.keyframes):
                     affected_ids = self.index.landmarks_for_anchors(moved_kfs)
@@ -475,7 +496,14 @@ class MapState:
                         "relative_pose": relative,
                         "rows": copied_rows,
                     }
-            if positions:
+            if bulk_anchor_updates:
+                landmarks_map = self.landmarks
+                idx_pos = self.index._positions
+                for id_list, slots, new_arr in bulk_anchor_updates:
+                    idx_pos[slots] = new_arr
+                    for i, row in zip(id_list, new_arr):
+                        landmarks_map[i].position = row
+            elif positions:
                 for ident, position in positions.items():
                     self.landmarks[ident].position = position
                 self.index.on_landmarks_bulk_moved(positions)

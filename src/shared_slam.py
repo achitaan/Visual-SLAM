@@ -7006,7 +7006,7 @@ class SharedSlam:
             or not self.performance.cpu_optimizations
             or int(next_index) < 2
             or len(self.map.keyframes) < 2
-            or len(self.previous_tracks) < 95
+            or len(self.previous_tracks) < 92
         ):
             return True
         last_kf_id = max(self.map.keyframes)
@@ -7020,7 +7020,7 @@ class SharedSlam:
             if step_m > 1.7:
                 if (
                     self.previous_stereo_geometry is None
-                    or int(next_index) - int(self.previous_stereo_geometry[1]) >= 2
+                    or int(next_index) - int(self.previous_stereo_geometry[1]) >= 3
                 ):
                     return True
             if getattr(self.config, "use_adaptive_keyframe_parallax", False):
@@ -7084,7 +7084,7 @@ class SharedSlam:
         prev_pose = self.map.poses[-1]
         step_trans_m = float(np.linalg.norm((np.linalg.inv(prev_pose) @ seed)[:3, 3]))
         if step_trans_m > 1.7 and self.previous_stereo_geometry is not None:
-            if int(index) - int(self.previous_stereo_geometry[1]) >= 2:
+            if int(index) - int(self.previous_stereo_geometry[1]) >= 3:
                 return None
         projected, depth = project(world_all, seed, self.K)
         flow_visible = (
@@ -7160,8 +7160,11 @@ class SharedSlam:
                 or diag.get("candidate_feature_cells", 0) < 6):
             return None
 
-        # Full-resolution verified right-image stereo refinement on tracked LK landmarks.
-        _, measured_right = self._measure_map_stereo_pixels(cand_obs)
+        # Full-resolution verified right-image stereo refinement on tracked LK inliers.
+        measured_right = np.full(len(cand_obs), np.nan, dtype=np.float64)
+        if len(inlier_idx):
+            _, inlier_right = self._measure_map_stereo_pixels(cand_obs[inlier_idx])
+            measured_right[inlier_idx] = inlier_right
         use_hetero = bool(getattr(self.config, "use_heteroscedastic_stereo_pose", False))
         right_for_refine = measured_right
         weights_uv_uR = None
@@ -7516,6 +7519,7 @@ class SharedSlam:
                     inlier_features = set(pairs[valid, 1].tolist())
         else:
             result, stats = self._track(pixels, desc, size)
+            _pre_ref_tracks = list(self.accepted_tracks) if result is not None else []
             map_inlier_miss_snapshot = self._last_map_track_inlier_misses
             info.update(stats)
             recovered = False
@@ -8162,7 +8166,7 @@ class SharedSlam:
                     ))))
                     frame_gap = index - last.frame
                     insert_keyframe = bool(
-                        (stereo_reference and (frame_gap >= 2 or recovered))
+                        (stereo_reference and (frame_gap >= 2 or recovered or len(_pre_ref_tracks) < 55))
                         or (frame_gap >= 3 and (
                             kf_trans_m >= 12.0
                             or kf_rot_deg >= 12.0
@@ -8188,17 +8192,23 @@ class SharedSlam:
                             index, pose, pixels, desc, points, right_u, associations,
                             frontend_seed_payload=frontend_seed_payload,
                         )
+                elif stereo_reference and not self.accepted_tracks and _pre_ref_tracks:
+                    self.accepted_tracks = _pre_ref_tracks
         if trace_capture and not self._tracking_trace_selected_emitted:
             self._tracking_trace_selected(index, "selected_pre_keyframe", pose,
                 status, associations, pixels, right_u, arbitration_report, info)
         if info["tracking_ok"]:
             prev_pyr = getattr(self, "current_lk_pyramid", None)
+            next_prev_gray = (
+                self.current_gray if not self.current_gray.flags.writeable
+                else self.current_gray.copy()
+            )
             if prev_pyr is not None and prev_pyr.source_gray is self.current_gray:
-                self.previous_gray = self.current_gray.copy()
+                self.previous_gray = next_prev_gray
                 prev_pyr.source_gray = self.previous_gray
                 self.previous_lk_pyramid = prev_pyr
             else:
-                self.previous_gray = self.current_gray.copy()
+                self.previous_gray = next_prev_gray
                 self.previous_lk_pyramid = None
             tracks = {}
             if anchor is not None and self.map.keyframes[anchor].frame == index:

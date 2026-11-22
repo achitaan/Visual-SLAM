@@ -23,6 +23,17 @@ class OwnedObservation(Observation):
         self.pixel=pixel
         self.right_u=right_u
 
+    @classmethod
+    def from_f32_bytes(cls, x: float, y: float, buf: bytes, pid_i32: tuple[int, int], right_u: float | None):
+        obj = cls.__new__(cls)
+        obj._pixel_state = (buf, _FLOAT32_DTYPE, (2,))
+        obj._legacy_pixel = None
+        obj._identity_owned = True
+        obj._identity_key = (x, y)
+        obj._pixel_id_i32 = pid_i32
+        obj.right_u = right_u
+        return obj
+
     @property
     def pixel(self):
         state=self._pixel_state

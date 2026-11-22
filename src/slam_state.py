@@ -128,6 +128,71 @@ class MapState:
         self.index.on_landmark_added(landmark)
         return ident
 
+    def add_landmarks_batch(
+        self,
+        positions: np.ndarray,
+        descriptors: np.ndarray,
+        anchor: int,
+        pixels: np.ndarray,
+        right_us: np.ndarray,
+        octaves: list[int] | np.ndarray,
+        *,
+        is_far: bool = False,
+    ) -> list[int]:
+        """Bulk-insert verified single-observation landmarks with bit-exact ID order."""
+        n = len(positions)
+        if n == 0:
+            return []
+        pos_arr = np.ascontiguousarray(positions, dtype=np.float64).reshape(n, 3)
+        if not np.isfinite(pos_arr).all():
+            raise ValueError("Nonfinite landmark")
+        desc_arr = np.ascontiguousarray(descriptors)
+        px_arr = np.ascontiguousarray(pixels, dtype=np.float32).reshape(n, 2)
+        px_finite = np.isfinite(px_arr).all(axis=1).tolist()
+        px_bytes = px_arr.tobytes()
+        px_list = px_arr.tolist()
+        ru_list = np.asarray(right_us, dtype=np.float64).tolist()
+        oct_list = octaves.tolist() if isinstance(octaves, np.ndarray) else list(octaves)
+
+        from owned_observation import OwnedObservation, _UNPACK_2I
+        anchor_id = int(anchor)
+        start_id = self.next_landmark
+        self.next_landmark = start_id + n
+        ids_list = list(range(start_id, start_id + n))
+        pid_i32_list: list[tuple[int, int] | None] = [None] * n
+        landmarks = self.landmarks
+        hms = self._high_miss_landmarks
+        is_far_b = bool(is_far)
+        _from_f32 = OwnedObservation.from_f32_bytes
+
+        for k in range(n):
+            ident = start_id + k
+            if px_finite[k]:
+                buf = px_bytes[k * 8 : (k + 1) * 8]
+                pid = _UNPACK_2I(buf)
+                pid_i32_list[k] = pid
+                x, y = px_list[k]
+                obs = _from_f32(x, y, buf, pid, ru_list[k])
+            else:
+                obs = OwnedObservation(px_arr[k], ru_list[k])
+            lm = Landmark(
+                ident,
+                pos_arr[k],
+                desc_arr[k],
+                anchor_id,
+                {anchor_id: obs},
+                octave=int(oct_list[k]),
+                is_far=is_far_b,
+            )
+            lm._high_miss_set = hms
+            landmarks[ident] = lm
+
+        self._high_miss_tracked_count += n
+        self.index.on_landmarks_added_batch(
+            ids_list, pos_arr, anchor_id, pid_i32_list, is_far=is_far_b
+        )
+        return ids_list
+
     def high_miss_landmarks(self, min_misses: int = 5) -> dict[int, Landmark]:
         """Return landmarks with misses >= min_misses in O(|dropped|) when tracked."""
         if (
@@ -263,10 +328,45 @@ class MapState:
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
             bulk_anchor_updates = None
-            if landmark_updates is not None and not set(landmark_updates).issubset(self.landmarks):
+            if landmark_updates is not None and not all(i in self.landmarks for i in landmark_updates):
                 raise ValueError("Unknown corrected landmark")
             if not propagate_landmarks:
                 if landmark_updates is not None:
+                    if len(landmark_updates) >= 32 and len(self.index) == len(self.landmarks):
+                        id_list = list(landmark_updates.keys())
+                        id_to_slot = self.index._id_to_slot
+                        slots = [id_to_slot[i] for i in id_list]
+                        new_arr = np.asarray(list(landmark_updates.values()), dtype=np.float64)
+                        if new_arr.shape != (len(id_list), 3):
+                            new_arr = np.vstack([np.asarray(v, dtype=np.float64).reshape(3) for v in landmark_updates.values()])
+                        else:
+                            new_arr = np.ascontiguousarray(new_arr, dtype=np.float64).copy()
+                        if not np.isfinite(new_arr).all():
+                            raise ValueError("Nonfinite corrected landmark")
+                        bulk_anchor_updates = [(id_list, slots, new_arr)]
+                    else:
+                        for ident, raw_pos in landmark_updates.items():
+                            if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                    and raw_pos.shape == (3,)):
+                                pos = raw_pos.copy()
+                            else:
+                                pos = np.asarray(raw_pos, float).reshape(3).copy()
+                            x, y, z = pos.tolist()
+                            if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
+                                raise ValueError("Nonfinite corrected landmark")
+                            positions[ident] = pos
+            elif (
+                len(self.index) == len(self.landmarks)
+                and (moved_kfs or landmark_updates)
+            ):
+                bulk_anchor_updates = []
+                anc_map = self.index._anchor_landmarks
+                id_to_slot = self.index._id_to_slot
+                idx_pos = self.index._positions
+                if landmark_updates:
+                    upd_ids = []
+                    upd_slots = []
+                    upd_rows = []
                     for ident, raw_pos in landmark_updates.items():
                         if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
                                 and raw_pos.shape == (3,)):
@@ -276,21 +376,23 @@ class MapState:
                         x, y, z = pos.tolist()
                         if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                             raise ValueError("Nonfinite corrected landmark")
-                        positions[ident] = pos
-            elif (
-                landmark_updates is None
-                and len(self.index) == len(self.landmarks)
-                and len(moved_kfs) >= 16
-            ):
-                bulk_anchor_updates = []
-                anc_map = self.index._anchor_landmarks
-                id_to_slot = self.index._id_to_slot
-                idx_pos = self.index._positions
+                        upd_ids.append(ident)
+                        upd_slots.append(id_to_slot[ident])
+                        upd_rows.append(pos)
+                    if upd_ids:
+                        bulk_anchor_updates.append(
+                            (upd_ids, upd_slots, np.asarray(upd_rows, dtype=np.float64))
+                        )
                 for anchor_id in moved_kfs:
                     lm_set = anc_map.get(anchor_id)
                     if not lm_set:
                         continue
-                    id_list = list(lm_set)
+                    if landmark_updates:
+                        id_list = [i for i in lm_set if i not in landmark_updates]
+                    else:
+                        id_list = list(lm_set)
+                    if not id_list:
+                        continue
                     slots = [id_to_slot[i] for i in id_list]
                     rotation, scale, translation = corrections[anchor_id]
                     new_arr = (scale * (idx_pos[slots] @ rotation.T)) + translation

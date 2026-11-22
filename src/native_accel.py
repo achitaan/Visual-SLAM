@@ -427,6 +427,47 @@ def _get_ba_lib() -> ctypes.CDLL | None:
             ctypes.POINTER(ctypes.c_double),  # out_optimality
         ]
         lib.solve_schur_local_bundle_cpp.restype = ctypes.c_int32
+        lib.refine_stereo_pose_lm_f64.argtypes = [
+            ctypes.POINTER(ctypes.c_double),  # R_cw
+            ctypes.POINTER(ctypes.c_double),  # t_cw
+            ctypes.POINTER(ctypes.c_double),  # pts_w
+            ctypes.POINTER(ctypes.c_double),  # obs
+            ctypes.POINTER(ctypes.c_double),  # weights
+            ctypes.POINTER(ctypes.c_uint8),   # mask
+            ctypes.c_int32,   # n
+            ctypes.c_double,  # fx
+            ctypes.c_double,  # fy
+            ctypes.c_double,  # cx
+            ctypes.c_double,  # cy
+            ctypes.c_double,  # fb
+            ctypes.c_double,  # doff
+            ctypes.c_double,  # delta_huber
+            ctypes.c_int32,   # max_iter
+            ctypes.POINTER(ctypes.c_double),  # out_initial_cost
+            ctypes.POINTER(ctypes.c_double),  # out_final_cost
+            ctypes.POINTER(ctypes.c_int32),   # out_converged
+            ctypes.POINTER(ctypes.c_double),  # out_H_final
+        ]
+        lib.refine_stereo_pose_lm_f64.restype = ctypes.c_int32
+        lib.refine_bidirectional_stereo_lm_f64.argtypes = [
+            ctypes.POINTER(ctypes.c_double),  # R_io
+            ctypes.POINTER(ctypes.c_double),  # t_io
+            ctypes.POINTER(ctypes.c_double),  # src_pts
+            ctypes.POINTER(ctypes.c_double),  # tgt_pix
+            ctypes.c_int32,   # n1
+            ctypes.POINTER(ctypes.c_double),  # tgt_pts
+            ctypes.POINTER(ctypes.c_double),  # src_pix
+            ctypes.c_int32,   # n2
+            ctypes.c_double,  # fx
+            ctypes.c_double,  # fy
+            ctypes.c_double,  # cx
+            ctypes.c_double,  # cy
+            ctypes.c_double,  # f_scale
+            ctypes.c_int32,   # max_iter
+            ctypes.POINTER(ctypes.c_double),  # out_initial_cost
+            ctypes.POINTER(ctypes.c_double),  # out_final_cost
+        ]
+        lib.refine_bidirectional_stereo_lm_f64.restype = ctypes.c_int32
         lib._configured = True
     return lib
 
@@ -525,6 +566,115 @@ def solve_schur_local_bundle_cpp(
     if ok != 1:
         return None
     return fp, xp, int(out_status.value), int(out_nfev.value), float(out_cost.value), float(out_opt.value)
+
+
+def refine_stereo_pose_lm_cpp(
+    R_cw: np.ndarray,
+    t_cw: np.ndarray,
+    pts_w: np.ndarray,
+    obs: np.ndarray,
+    weights: np.ndarray,
+    mask: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    fb: float,
+    doff: float,
+    delta_huber: float,
+    max_iter: int,
+) -> tuple[np.ndarray, np.ndarray, float, float, bool, np.ndarray] | None:
+    """Native C++ 6-DoF Huber-IRLS LM stereo pose refiner."""
+    lib = _get_ba_lib()
+    if lib is None:
+        return None
+    n = len(pts_w)
+    R_arr = np.ascontiguousarray(R_cw, dtype=np.float64).reshape(3, 3).copy()
+    t_arr = np.ascontiguousarray(t_cw, dtype=np.float64).reshape(3).copy()
+    pts_c = np.ascontiguousarray(pts_w, dtype=np.float64).reshape(n, 3)
+    obs_c = np.ascontiguousarray(obs, dtype=np.float64).reshape(n, 3)
+    w_c = np.ascontiguousarray(weights, dtype=np.float64).reshape(n, 3)
+    m_c = np.ascontiguousarray(mask, dtype=np.uint8).reshape(n, 3)
+    out_init = ctypes.c_double(0.0)
+    out_final = ctypes.c_double(0.0)
+    out_conv = ctypes.c_int32(0)
+    H_out = np.zeros((6, 6), dtype=np.float64)
+    ok = lib.refine_stereo_pose_lm_f64(
+        R_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        t_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        pts_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        obs_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        w_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        m_c.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        int(n),
+        float(fx),
+        float(fy),
+        float(cx),
+        float(cy),
+        float(fb),
+        float(doff),
+        float(delta_huber),
+        int(max_iter),
+        ctypes.byref(out_init),
+        ctypes.byref(out_final),
+        ctypes.byref(out_conv),
+        H_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+    )
+    if ok != 1:
+        return None
+    return R_arr, t_arr, float(out_init.value), float(out_final.value), bool(out_conv.value), H_out
+
+
+def refine_bidirectional_stereo_lm_cpp(
+    R_init: np.ndarray,
+    t_init: np.ndarray,
+    src_pts: np.ndarray,
+    tgt_pix: np.ndarray,
+    tgt_pts: np.ndarray,
+    src_pix: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    f_scale: float = 1.5,
+    max_iter: int = 15,
+) -> tuple[np.ndarray, np.ndarray, float, float] | None:
+    """Native C++ 6-DoF Huber-IRLS LM bidirectional stereo pose refiner."""
+    lib = _get_ba_lib()
+    if lib is None:
+        return None
+    n1 = len(src_pts)
+    n2 = len(tgt_pts)
+    R_arr = np.ascontiguousarray(R_init, dtype=np.float64).reshape(3, 3).copy()
+    t_arr = np.ascontiguousarray(t_init, dtype=np.float64).reshape(3).copy()
+    sp = np.ascontiguousarray(src_pts, dtype=np.float64).reshape(n1, 3)
+    tpix = np.ascontiguousarray(tgt_pix, dtype=np.float64).reshape(n1, 2)
+    tp = np.ascontiguousarray(tgt_pts, dtype=np.float64).reshape(n2, 3)
+    spix = np.ascontiguousarray(src_pix, dtype=np.float64).reshape(n2, 2)
+    out_init = ctypes.c_double(0.0)
+    out_final = ctypes.c_double(0.0)
+    _dbl_p = ctypes.POINTER(ctypes.c_double)
+    ok = lib.refine_bidirectional_stereo_lm_f64(
+        R_arr.ctypes.data_as(_dbl_p),
+        t_arr.ctypes.data_as(_dbl_p),
+        sp.ctypes.data_as(_dbl_p) if n1 else None,
+        tpix.ctypes.data_as(_dbl_p) if n1 else None,
+        int(n1),
+        tp.ctypes.data_as(_dbl_p) if n2 else None,
+        spix.ctypes.data_as(_dbl_p) if n2 else None,
+        int(n2),
+        float(fx),
+        float(fy),
+        float(cx),
+        float(cy),
+        float(f_scale),
+        int(max_iter),
+        ctypes.byref(out_init),
+        ctypes.byref(out_final),
+    )
+    if ok != 1:
+        return None
+    return R_arr, t_arr, float(out_init.value), float(out_final.value)
 
 
 def _get_lk_lib() -> ctypes.CDLL | None:

@@ -410,8 +410,12 @@ def local_bundle_adjustment(
         else:
             window_landmark_pool = list(state.landmarks.values())
         scored_landmarks = []
+        multi_obs_pool = []
         for l in window_landmark_pool:
             obs = l.observations
+            if len(obs) < 2:
+                continue
+            multi_obs_pool.append(l)
             cnt = 0
             for k in obs:
                 if k in selected_set:
@@ -422,14 +426,18 @@ def local_bundle_adjustment(
         landmarks = [item[2] for item in scored_landmarks]
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
         if state.metric and use_heteroscedastic_weights and len(landmarks) > max_landmarks:
-            stereo_lms = [
-                l for l in landmarks
-                if any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
-            ]
-            bearing_lms = [
-                l for l in landmarks
-                if not any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
-            ]
+            stereo_lms = []
+            bearing_lms = []
+            for l in landmarks:
+                has_stereo = False
+                for k, o in l.observations.items():
+                    if k in selected_set and o.right_u is not None:
+                        has_stereo = True
+                        break
+                if has_stereo:
+                    stereo_lms.append(l)
+                else:
+                    bearing_lms.append(l)
             max_bearing = max(10, int(0.25 * max_landmarks))
             stereo_quota = max_landmarks - min(len(bearing_lms), max_bearing)
             chosen = stereo_lms[:stereo_quota]
@@ -529,8 +537,8 @@ def local_bundle_adjustment(
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
             (landmark.position.copy() if snapshot_enabled else landmark.position, k, o)
-            for landmark in window_landmark_pool
-            if landmark.id not in optimized_ids and len(landmark.observations) >= 2
+            for landmark in multi_obs_pool
+            if landmark.id not in optimized_ids
             for k, o in landmark.observations.items()
             if k in free_set
         ]
@@ -538,8 +546,8 @@ def local_bundle_adjustment(
         if snapshot_enabled:
             held_out_ids = [
                 int(landmark.id)
-                for landmark in window_landmark_pool
-                if landmark.id not in optimized_ids and len(landmark.observations) >= 2
+                for landmark in multi_obs_pool
+                if landmark.id not in optimized_ids
                 for k, _ in landmark.observations.items()
                 if k in free_set
             ]
@@ -684,12 +692,16 @@ def local_bundle_adjustment(
                     for ident, keyframe_id in restored_boundary_row_ids
                 ] if snapshot_enabled else None),
             }
-        single_view = [
-            (landmark.id, landmark.anchor, landmark.position.copy() if snapshot_enabled else landmark.position)
-            for landmark in window_landmark_pool
-            if landmark.id not in optimized_ids and len(landmark.observations) == 1
-            and landmark.anchor in free_set and landmark.anchor in landmark.observations
-        ]
+        single_view = (
+            [
+                (landmark.id, landmark.anchor, landmark.position.copy() if snapshot_enabled else landmark.position)
+                for landmark in window_landmark_pool
+                if landmark.id not in optimized_ids and len(landmark.observations) == 1
+                and landmark.anchor in free_set and landmark.anchor in landmark.observations
+            ]
+            if (provider_enabled or snapshot_enabled)
+            else None
+        )
         single_view_observation_rows = [] if provider_enabled else None
         if provider_enabled:
             for ident, anchor, _position in single_view:
@@ -2738,7 +2750,8 @@ def local_bundle_adjustment(
         affected_final_cost=after+held_after,
         optimized_landmarks=len(landmarks) + (len(extra_ids) if owned_training_rows is not None else 0),
         anchor_propagated_single_view_landmarks=(
-            len(single_view) - (len(extra_ids) if owned_training_rows is not None else 0)
+            (len(single_view) if single_view is not None else 0)
+            - (len(extra_ids) if owned_training_rows is not None else 0)
         ),
         max_camera_translation_change=float(max(
             np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
@@ -3168,6 +3181,14 @@ def local_bundle_adjustment(
             }
             for ident, point_index in extra_index.items():
                 updates[ident] = points[point_index].copy()
+        if single_view is None:
+            single_view = [
+                (landmark.id, landmark.anchor, landmark.position)
+                for landmark in window_landmark_pool
+                if landmark.id not in optimized_ids and len(landmark.observations) == 1
+                and landmark.anchor in free_set and landmark.anchor in landmark.observations
+            ]
+            report["anchor_propagated_single_view_landmarks"] = len(single_view)
         if single_view:
             by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
             for ident, anchor, position in single_view:

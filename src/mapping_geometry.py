@@ -487,6 +487,7 @@ def _estimate_pose_hypothesis(
         if initial_pose is not None
         else (cv.SOLVEPNP_AP3P, cv.SOLVEPNP_EPNP)
     )
+    best_candidate = None
     for flag_idx, pnp_flag in enumerate(pnp_flags):
         ok, rv, tv, inliers = cv.solvePnPRansac(
             pts_f64,
@@ -507,6 +508,8 @@ def _estimate_pose_hypothesis(
         ):
             if flag_idx + 1 < len(pnp_flags):
                 continue
+            if best_candidate is not None:
+                break
             diagnostics.update(
                 candidate_inliers=0 if inliers is None else len(inliers),
                 pose_rejection_reason=(
@@ -533,6 +536,8 @@ def _estimate_pose_hypothesis(
         ):
             if flag_idx + 1 < len(pnp_flags):
                 continue
+            if best_candidate is not None:
+                break
             diagnostics.update(
                 candidate_inliers=len(ids),
                 candidate_inlier_ratio=len(ids) / len(pts_f64),
@@ -553,14 +558,22 @@ def _estimate_pose_hypothesis(
                 ),
             )
             return None
-        diagnostics.update(
-            candidate_inliers=len(ids),
-            candidate_inlier_ratio=len(ids) / len(pts_f64),
-            candidate_median_reprojection_px=med_err,
-            candidate_feature_cells=cells,
-        )
-        return pose, ids, med_err
-    return None
+        cand = (pose, ids, med_err, cells)
+        if best_candidate is None or (len(ids), -med_err) > (len(best_candidate[1]), -best_candidate[2]):
+            best_candidate = cand
+        if flag_idx + 1 < len(pnp_flags) and (len(ids) / len(pts_f64) < 0.40 or med_err > 0.9):
+            continue
+        break
+    if best_candidate is None:
+        return None
+    pose, ids, med_err, cells = best_candidate
+    diagnostics.update(
+        candidate_inliers=len(ids),
+        candidate_inlier_ratio=len(ids) / len(pts_f64),
+        candidate_median_reprojection_px=med_err,
+        candidate_feature_cells=cells,
+    )
+    return pose, ids, med_err
 
 
 def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed):
@@ -788,6 +801,29 @@ def refine_bidirectional_stereo(pose, source_points, target_pixels, target_point
 
     R = np.asarray(pose[:3, :3], dtype=np.float64).copy()
     t = np.asarray(pose[:3, 3], dtype=np.float64).copy()
+
+    from native_accel import refine_bidirectional_stereo_lm_cpp
+
+    native_bi = refine_bidirectional_stereo_lm_cpp(
+        R, t, src_pts, tgt_pix, tgt_pts, src_pix, fx, fy, cx, cy, f_scale=f_scale, max_iter=15
+    )
+    if native_bi is not None:
+        R, t, before, cur_cost = native_bi
+        report = {'applied': False, 'initial_cost': before, 'final_cost': cur_cost,
+                  'forward_observations': n1, 'reverse_observations': n2}
+        if not (np.isfinite(R).all() and np.isfinite(t).all()) or not cur_cost < before:
+            return pose, report
+        _, _, e1, e2, z1, z2 = _eval(R, t)
+        if (np.any(z1 <= 0) or np.any(z2 <= 0) or
+                np.median(np.linalg.norm(e1, axis=1)) > 1.5 or
+                np.median(np.linalg.norm(e2, axis=1)) > 1.5):
+            return pose, report
+        candidate = np.eye(4)
+        candidate[:3, :3] = R
+        candidate[:3, 3] = t
+        report['applied'] = True
+        return candidate, report
+
     c1, c2, e1, e2, z1, z2 = _eval(R, t)
     before = _cost(e1, e2)
     cur_cost = before

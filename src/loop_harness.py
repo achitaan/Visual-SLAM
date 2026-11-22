@@ -550,7 +550,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     from StereoVisualOdometry import StereoVisualOdometry
     from shared_slam import SharedSlam, StereoCamera
 
-    gc.set_threshold(50000, 20, 20)
+    gc.set_threshold(50000, 20, 200)
     np.random.seed(args.seed)
     cv.setRNGSeed(args.seed)
     cv.setNumThreads(args.opencv_threads)

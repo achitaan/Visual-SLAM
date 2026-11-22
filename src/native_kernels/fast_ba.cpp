@@ -720,4 +720,416 @@ int32_t solve_schur_local_bundle_cpp(
     return 1;
 }
 
+static inline bool solve_6x6(const double H_in[36], const double g_in[6], double step[6]) {
+    double A[6][7];
+    for (int r = 0; r < 6; ++r) {
+        for (int c = 0; c < 6; ++c) A[r][c] = H_in[r * 6 + c];
+        A[r][6] = -g_in[r];
+    }
+    for (int k = 0; k < 6; ++k) {
+        int piv = k;
+        double max_v = std::abs(A[k][k]);
+        for (int r = k + 1; r < 6; ++r) {
+            double v = std::abs(A[r][k]);
+            if (v > max_v) { max_v = v; piv = r; }
+        }
+        if (!std::isfinite(max_v) || max_v < 1e-18) return false;
+        if (piv != k) {
+            for (int c = k; c < 7; ++c) std::swap(A[k][c], A[piv][c]);
+        }
+        const double inv_p = 1.0 / A[k][k];
+        for (int r = k + 1; r < 6; ++r) {
+            const double f = A[r][k] * inv_p;
+            for (int c = k + 1; c < 7; ++c) A[r][c] -= f * A[k][c];
+        }
+    }
+    for (int r = 5; r >= 0; --r) {
+        double s = A[r][6];
+        for (int c = r + 1; c < 6; ++c) s -= A[r][c] * step[c];
+        step[r] = s / A[r][r];
+        if (!std::isfinite(step[r])) return false;
+    }
+    return true;
+}
+
+static inline void mat3_mul(const double A[9], const double B[9], double C[9]) {
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            C[r * 3 + c] = A[r * 3 + 0] * B[0 * 3 + c]
+                         + A[r * 3 + 1] * B[1 * 3 + c]
+                         + A[r * 3 + 2] * B[2 * 3 + c];
+        }
+    }
+}
+
+int32_t refine_stereo_pose_lm_f64(
+    double* R_cw,                  // [9] in/out
+    double* t_cw,                  // [3] in/out
+    const double* pts_w,           // [n * 3]
+    const double* obs,             // [n * 3] (u, v, uR)
+    const double* weights,         // [n * 3]
+    const uint8_t* mask,           // [n * 3]
+    int32_t n,
+    double fx, double fy, double cx, double cy,
+    double fb, double doff,
+    double delta_huber,
+    int32_t max_iter,
+    double* out_initial_cost,
+    double* out_final_cost,
+    int32_t* out_converged,
+    double* out_H_final            // [36]
+) {
+    if (n <= 0) {
+        *out_initial_cost = 0.0;
+        *out_final_cost = 0.0;
+        *out_converged = 0;
+        std::memset(out_H_final, 0, 36 * sizeof(double));
+        return 1;
+    }
+
+    auto eval_cost = [&](const double R[9], const double t[3]) -> double {
+        double cost = 0.0;
+        for (int32_t i = 0; i < n; ++i) {
+            const double* p = pts_w + i * 3;
+            const double x = R[0] * p[0] + R[1] * p[1] + R[2] * p[2] + t[0];
+            const double y = R[3] * p[0] + R[4] * p[1] + R[5] * p[2] + t[1];
+            const double z = R[6] * p[0] + R[7] * p[1] + R[8] * p[2] + t[2];
+            const bool valid = z > 1e-3;
+            const double inv_z = valid ? (1.0 / z) : 0.0;
+            const double u = fx * x * inv_z + cx;
+            const double v = fy * y * inv_z + cy;
+            const double uR = u - fb * inv_z - doff;
+            const double* o = obs + i * 3;
+            const double* w = weights + i * 3;
+            const uint8_t* m = mask + i * 3;
+            const double raw[3] = {
+                valid ? std::clamp(u - o[0], -1e4, 1e4) : 1e4,
+                valid ? std::clamp(v - o[1], -1e4, 1e4) : 1e4,
+                valid ? std::clamp(uR - o[2], -1e4, 1e4) : 1e4
+            };
+            for (int c = 0; c < 3; ++c) {
+                if (!m[c]) continue;
+                const double wr = raw[c] * w[c];
+                const double a = std::abs(wr);
+                cost += (a <= delta_huber) ? (0.5 * wr * wr) : (delta_huber * (a - 0.5 * delta_huber));
+            }
+        }
+        return cost;
+    };
+
+    double cur_cost = eval_cost(R_cw, t_cw);
+    *out_initial_cost = cur_cost;
+    double lam = 1e-3;
+    int32_t converged = 0;
+    double H_final[36];
+    std::memset(H_final, 0, sizeof(H_final));
+
+    for (int32_t it = 0; it < max_iter; ++it) {
+        double H[36];
+        double g[6];
+        std::memset(H, 0, sizeof(H));
+        std::memset(g, 0, sizeof(g));
+
+        for (int32_t i = 0; i < n; ++i) {
+            const double* p = pts_w + i * 3;
+            const double x = R_cw[0] * p[0] + R_cw[1] * p[1] + R_cw[2] * p[2] + t_cw[0];
+            const double y = R_cw[3] * p[0] + R_cw[4] * p[1] + R_cw[5] * p[2] + t_cw[1];
+            const double z = R_cw[6] * p[0] + R_cw[7] * p[1] + R_cw[8] * p[2] + t_cw[2];
+            if (z <= 1e-3) continue;
+            const double iz = 1.0 / z;
+            const double u = fx * x * iz + cx;
+            const double v = fy * y * iz + cy;
+            const double uR = u - fb * iz - doff;
+            const double* o = obs + i * 3;
+            const double r0 = std::clamp(u - o[0], -1e4, 1e4);
+            const double r1 = std::clamp(v - o[1], -1e4, 1e4);
+            if (std::abs(r0) >= 1e4 || std::abs(r1) >= 1e4) continue;
+            const double r2 = std::clamp(uR - o[2], -1e4, 1e4);
+            const double iz2 = iz * iz;
+            const double* w = weights + i * 3;
+            const uint8_t* m = mask + i * 3;
+
+            const double raw[3] = {r0, r1, r2};
+            const double J[3][6] = {
+                {-fx * x * y * iz2, fx * (1.0 + x * x * iz2), -fx * y * iz, fx * iz, 0.0, -fx * x * iz2},
+                {-fy * (1.0 + y * y * iz2), fy * x * y * iz2, fy * x * iz, 0.0, fy * iz, -fy * y * iz2},
+                {(-fx * x + fb) * y * iz2, fx + (fx * x - fb) * x * iz2, -fx * y * iz, fx * iz, 0.0, (-fx * x + fb) * iz2}
+            };
+            for (int c = 0; c < 3; ++c) {
+                if (!m[c]) continue;
+                const double wc = w[c];
+                if (wc <= 0.0) continue;
+                const double wr = raw[c] * wc;
+                const double a = std::abs(wr);
+                const double irls = (a <= delta_huber) ? 1.0 : (delta_huber / std::max(a, 1e-12));
+                const double ww = wc * wc * irls;
+                const double wgr = wc * irls * wr;
+                const double* Jc = J[c];
+                for (int r = 0; r < 6; ++r) {
+                    const double Jr = Jc[r];
+                    g[r] += Jr * wgr;
+                    const double Jrw = Jr * ww;
+                    for (int k = r; k < 6; ++k) {
+                        H[r * 6 + k] += Jrw * Jc[k];
+                    }
+                }
+            }
+        }
+        for (int r = 0; r < 6; ++r) {
+            for (int k = 0; k < r; ++k) H[r * 6 + k] = H[k * 6 + r];
+        }
+        std::memcpy(H_final, H, sizeof(H));
+
+        bool finite_hg = true;
+        double max_g = 0.0;
+        for (int r = 0; r < 6; ++r) {
+            if (!std::isfinite(g[r])) finite_hg = false;
+            max_g = std::max(max_g, std::abs(g[r]));
+            for (int k = 0; k < 6; ++k) {
+                if (!std::isfinite(H[r * 6 + k])) finite_hg = false;
+            }
+        }
+        if (!finite_hg) break;
+        if (max_g < 1e-9) { converged = 1; break; }
+
+        double diag[6];
+        for (int r = 0; r < 6; ++r) diag[r] = std::max(H[r * 6 + r], 1e-6);
+
+        bool accepted = false;
+        for (int lm_try = 0; lm_try < 6; ++lm_try) {
+            double H_d[36];
+            std::memcpy(H_d, H, sizeof(H));
+            for (int r = 0; r < 6; ++r) H_d[r * 6 + r] += lam * diag[r];
+            double step[6];
+            if (!solve_6x6(H_d, g, step)) {
+                lam = std::min(lam * 10.0, 1e8);
+                continue;
+            }
+            double dR[9], R_cand[9], t_cand[3];
+            rotvec_to_mat(step, dR);
+            mat3_mul(dR, R_cw, R_cand);
+            t_cand[0] = dR[0] * t_cw[0] + dR[1] * t_cw[1] + dR[2] * t_cw[2] + step[3];
+            t_cand[1] = dR[3] * t_cw[0] + dR[4] * t_cw[1] + dR[5] * t_cw[2] + step[4];
+            t_cand[2] = dR[6] * t_cw[0] + dR[7] * t_cw[1] + dR[8] * t_cw[2] + step[5];
+            const double cost_c = eval_cost(R_cand, t_cand);
+            if (std::isfinite(cost_c) && cost_c < cur_cost) {
+                const double rel_impr = (cur_cost - cost_c) / std::max(cur_cost, 1e-12);
+                std::memcpy(R_cw, R_cand, 9 * sizeof(double));
+                std::memcpy(t_cw, t_cand, 3 * sizeof(double));
+                cur_cost = cost_c;
+                lam = std::max(lam * 0.3, 1e-7);
+                accepted = true;
+                double sn2 = 0.0;
+                for (int r = 0; r < 6; ++r) sn2 += step[r] * step[r];
+                if (std::sqrt(sn2) < 1e-7 || rel_impr < 1e-9) converged = 1;
+                break;
+            }
+            lam = std::min(lam * 5.0, 1e8);
+        }
+        if (converged || !accepted) {
+            if (!accepted) {
+                double gn2 = 0.0;
+                for (int r = 0; r < 6; ++r) gn2 += g[r] * g[r];
+                if (std::sqrt(gn2) < 1e-5) converged = 1;
+            }
+            break;
+        }
+    }
+
+    *out_final_cost = cur_cost;
+    *out_converged = converged;
+    std::memcpy(out_H_final, H_final, sizeof(H_final));
+    return 1;
+}
+
+int32_t refine_bidirectional_stereo_lm_f64(
+    double* R_io,                  // [9] in/out (T_s_t rotation)
+    double* t_io,                  // [3] in/out (T_s_t translation)
+    const double* src_pts,         // [n1 * 3]
+    const double* tgt_pix,         // [n1 * 2]
+    int32_t n1,
+    const double* tgt_pts,         // [n2 * 3]
+    const double* src_pix,         // [n2 * 2]
+    int32_t n2,
+    double fx, double fy, double cx, double cy,
+    double f_scale,
+    int32_t max_iter,
+    double* out_initial_cost,
+    double* out_final_cost
+) {
+    auto eval_cost = [&](const double R[9], const double t[3]) -> double {
+        double cost = 0.0;
+        for (int32_t i = 0; i < n1; ++i) {
+            const double dx = src_pts[i * 3 + 0] - t[0];
+            const double dy = src_pts[i * 3 + 1] - t[1];
+            const double dz = src_pts[i * 3 + 2] - t[2];
+            // c1 = R^T @ d1
+            const double x = R[0] * dx + R[3] * dy + R[6] * dz;
+            const double y = R[1] * dx + R[4] * dy + R[7] * dz;
+            const double z = R[2] * dx + R[5] * dy + R[8] * dz;
+            double eu = 1e4, ev = 1e4;
+            if (z > 0.0) {
+                const double iz = 1.0 / std::max(z, 1e-9);
+                eu = std::clamp(fx * x * iz + cx - tgt_pix[i * 2 + 0], -1e4, 1e4);
+                ev = std::clamp(fy * y * iz + cy - tgt_pix[i * 2 + 1], -1e4, 1e4);
+            }
+            const double au = std::abs(eu), av = std::abs(ev);
+            cost += (au <= f_scale) ? (0.5 * eu * eu) : (f_scale * (au - 0.5 * f_scale));
+            cost += (av <= f_scale) ? (0.5 * ev * ev) : (f_scale * (av - 0.5 * f_scale));
+        }
+        for (int32_t i = 0; i < n2; ++i) {
+            const double px = tgt_pts[i * 3 + 0];
+            const double py = tgt_pts[i * 3 + 1];
+            const double pz = tgt_pts[i * 3 + 2];
+            // c2 = R @ X_t + t
+            const double x = R[0] * px + R[1] * py + R[2] * pz + t[0];
+            const double y = R[3] * px + R[4] * py + R[5] * pz + t[1];
+            const double z = R[6] * px + R[7] * py + R[8] * pz + t[2];
+            double eu = 1e4, ev = 1e4;
+            if (z > 0.0) {
+                const double iz = 1.0 / std::max(z, 1e-9);
+                eu = std::clamp(fx * x * iz + cx - src_pix[i * 2 + 0], -1e4, 1e4);
+                ev = std::clamp(fy * y * iz + cy - src_pix[i * 2 + 1], -1e4, 1e4);
+            }
+            const double au = std::abs(eu), av = std::abs(ev);
+            cost += (au <= f_scale) ? (0.5 * eu * eu) : (f_scale * (au - 0.5 * f_scale));
+            cost += (av <= f_scale) ? (0.5 * ev * ev) : (f_scale * (av - 0.5 * f_scale));
+        }
+        return cost;
+    };
+
+    double cur_cost = eval_cost(R_io, t_io);
+    *out_initial_cost = cur_cost;
+    double lam = 1e-3;
+
+    for (int32_t it = 0; it < max_iter; ++it) {
+        double H[36];
+        double g[6];
+        std::memset(H, 0, sizeof(H));
+        std::memset(g, 0, sizeof(g));
+
+        // Forward terms
+        for (int32_t i = 0; i < n1; ++i) {
+            const double dx = src_pts[i * 3 + 0] - t_io[0];
+            const double dy = src_pts[i * 3 + 1] - t_io[1];
+            const double dz = src_pts[i * 3 + 2] - t_io[2];
+            const double x = R_io[0] * dx + R_io[3] * dy + R_io[6] * dz;
+            const double y = R_io[1] * dx + R_io[4] * dy + R_io[7] * dz;
+            const double z = R_io[2] * dx + R_io[5] * dy + R_io[8] * dz;
+            if (z <= 1e-9) continue;
+            const double iz = 1.0 / z;
+            const double eu = fx * x * iz + cx - tgt_pix[i * 2 + 0];
+            const double ev = fy * y * iz + cy - tgt_pix[i * 2 + 1];
+            if (std::abs(eu) >= 1e4 || std::abs(ev) >= 1e4) continue;
+            const double iz2 = iz * iz;
+            const double au = std::abs(eu), av = std::abs(ev);
+            const double wu = (au <= f_scale) ? 1.0 : (f_scale / std::max(au, 1e-12));
+            const double wv = (av <= f_scale) ? 1.0 : (f_scale / std::max(av, 1e-12));
+            const double Ju[6] = {fx * x * y * iz2, -fx * (1.0 + x * x * iz2), fx * y * iz, -fx * iz, 0.0, fx * x * iz2};
+            const double Jv[6] = {fy * (1.0 + y * y * iz2), -fy * x * y * iz2, -fy * x * iz, 0.0, -fy * iz, fy * y * iz2};
+            for (int r = 0; r < 6; ++r) {
+                g[r] += Ju[r] * wu * eu + Jv[r] * wv * ev;
+                const double Jur = Ju[r] * wu, Jvr = Jv[r] * wv;
+                for (int k = r; k < 6; ++k) {
+                    H[r * 6 + k] += Jur * Ju[k] + Jvr * Jv[k];
+                }
+            }
+        }
+
+        // Reverse terms
+        for (int32_t i = 0; i < n2; ++i) {
+            const double px = tgt_pts[i * 3 + 0];
+            const double py = tgt_pts[i * 3 + 1];
+            const double pz = tgt_pts[i * 3 + 2];
+            const double x = R_io[0] * px + R_io[1] * py + R_io[2] * pz + t_io[0];
+            const double y = R_io[3] * px + R_io[4] * py + R_io[5] * pz + t_io[1];
+            const double z = R_io[6] * px + R_io[7] * py + R_io[8] * pz + t_io[2];
+            if (z <= 1e-9) continue;
+            const double iz = 1.0 / z;
+            const double eu = fx * x * iz + cx - src_pix[i * 2 + 0];
+            const double ev = fy * y * iz + cy - src_pix[i * 2 + 1];
+            if (std::abs(eu) >= 1e4 || std::abs(ev) >= 1e4) continue;
+            const double iz2 = iz * iz;
+            const double au = std::abs(eu), av = std::abs(ev);
+            const double wu = (au <= f_scale) ? 1.0 : (f_scale / std::max(au, 1e-12));
+            const double wv = (av <= f_scale) ? 1.0 : (f_scale / std::max(av, 1e-12));
+            const double du0 = fx * iz, du2 = -fx * x * iz2;
+            const double dv1 = fy * iz, dv2 = -fy * y * iz2;
+            const double dut0 = du0 * R_io[0] + du2 * R_io[6];
+            const double dut1 = du0 * R_io[1] + du2 * R_io[7];
+            const double dut2 = du0 * R_io[2] + du2 * R_io[8];
+            const double dvt0 = dv1 * R_io[3] + dv2 * R_io[6];
+            const double dvt1 = dv1 * R_io[4] + dv2 * R_io[7];
+            const double dvt2 = dv1 * R_io[5] + dv2 * R_io[8];
+            const double Ju2[6] = {
+                py * dut2 - pz * dut1,
+                pz * dut0 - px * dut2,
+                px * dut1 - py * dut0,
+                dut0, dut1, dut2
+            };
+            const double Jv2[6] = {
+                py * dvt2 - pz * dvt1,
+                pz * dvt0 - px * dvt2,
+                px * dvt1 - py * dvt0,
+                dvt0, dvt1, dvt2
+            };
+            for (int r = 0; r < 6; ++r) {
+                g[r] += Ju2[r] * wu * eu + Jv2[r] * wv * ev;
+                const double Jur = Ju2[r] * wu, Jvr = Jv2[r] * wv;
+                for (int k = r; k < 6; ++k) {
+                    H[r * 6 + k] += Jur * Ju2[k] + Jvr * Jv2[k];
+                }
+            }
+        }
+        for (int r = 0; r < 6; ++r) {
+            for (int k = 0; k < r; ++k) H[r * 6 + k] = H[k * 6 + r];
+        }
+
+        double max_g = 0.0;
+        for (int r = 0; r < 6; ++r) max_g = std::max(max_g, std::abs(g[r]));
+        if (max_g < 1e-9) break;
+
+        double diag[6];
+        for (int r = 0; r < 6; ++r) diag[r] = std::max(H[r * 6 + r], 1e-6);
+
+        bool accepted = false;
+        for (int lm_try = 0; lm_try < 6; ++lm_try) {
+            double H_d[36];
+            std::memcpy(H_d, H, sizeof(H));
+            for (int r = 0; r < 6; ++r) H_d[r * 6 + r] += lam * diag[r];
+            double step[6];
+            if (!solve_6x6(H_d, g, step)) {
+                lam *= 10.0;
+                continue;
+            }
+            double dR[9], R_cand[9], t_cand[3];
+            rotvec_to_mat(step, dR);
+            mat3_mul(R_io, dR, R_cand);
+            t_cand[0] = t_io[0] + R_io[0] * step[3] + R_io[1] * step[4] + R_io[2] * step[5];
+            t_cand[1] = t_io[1] + R_io[3] * step[3] + R_io[4] * step[4] + R_io[5] * step[5];
+            t_cand[2] = t_io[2] + R_io[6] * step[3] + R_io[7] * step[4] + R_io[8] * step[5];
+            const double new_cost = eval_cost(R_cand, t_cand);
+            if (new_cost < cur_cost) {
+                const double gain = cur_cost - new_cost;
+                std::memcpy(R_io, R_cand, 9 * sizeof(double));
+                std::memcpy(t_io, t_cand, 3 * sizeof(double));
+                cur_cost = new_cost;
+                lam = std::max(lam * 0.3, 1e-7);
+                accepted = true;
+                double sn2 = 0.0;
+                for (int r = 0; r < 6; ++r) sn2 += step[r] * step[r];
+                if (gain <= 1e-8 * std::max(1.0, cur_cost) && std::sqrt(sn2) < 1e-6) {
+                    lam = -1.0;
+                }
+                break;
+            }
+            lam *= 5.0;
+        }
+        if (!accepted || lam < 0.0) break;
+    }
+
+    *out_final_cost = cur_cost;
+    return 1;
+}
+
 }  // extern "C"

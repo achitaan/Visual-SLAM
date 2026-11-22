@@ -273,6 +273,73 @@ class IncrementalMapIndex:
                         self._add_claim(lm_id, kf_i, pixel)
         self._struct_version += 1
 
+    def on_landmarks_added_batch(
+        self,
+        ids_list: list[int],
+        positions_arr: np.ndarray,
+        anchor_id: int,
+        pid_i32_list: list[tuple[int, int] | None],
+        is_far: bool = False,
+    ) -> None:
+        """Bulk-insert brand-new single-observation landmarks anchored at anchor_id."""
+        count = len(ids_list)
+        if count == 0:
+            return
+        start = self._size
+        end = start + count
+        while end > self._capacity:
+            self._grow()
+        self._size = end
+        self._ids[start:end] = ids_list
+        self._positions[start:end] = positions_arr
+        self._is_far[start:end] = is_far
+        self._is_conflicted[start:end] = False
+        self._num_obs[start:end] = 1
+        self._max_obs_kf[start:end] = anchor_id
+
+        id_to_slot = self._id_to_slot
+        vis_counts = self._visible_counts
+        found_counts = self._found_counts
+        lm_anchor = self._landmark_anchor
+        lm_kfs = self._landmark_kfs
+        conflict_counts = self._conflict_counts
+        is_conflicted = self._is_conflicted
+        pixel_claims = self._pixel_claims
+        lm_pixel_keys = self._landmark_pixel_keys
+        add_claim_key = self._add_claim_key
+
+        anc_set = self._anchor_landmarks.get(anchor_id)
+        if anc_set is None:
+            self._anchor_landmarks[anchor_id] = set(ids_list)
+        else:
+            anc_set.update(ids_list)
+
+        kf_set = self._kf_landmarks.get(anchor_id)
+        if kf_set is None:
+            self._kf_landmarks[anchor_id] = set(ids_list)
+        else:
+            kf_set.update(ids_list)
+
+        has_conflicts = bool(conflict_counts)
+        for offset, lm_id in enumerate(ids_list):
+            slot = start + offset
+            id_to_slot[lm_id] = slot
+            vis_counts[lm_id] = 1
+            found_counts[lm_id] = 2
+            lm_anchor[lm_id] = anchor_id
+            lm_kfs[lm_id] = {anchor_id}
+            if has_conflicts and lm_id in conflict_counts:
+                is_conflicted[slot] = True
+            pkey = pid_i32_list[offset]
+            if pkey is not None:
+                bucket_key = (anchor_id, pkey)
+                if bucket_key not in pixel_claims:
+                    lm_pixel_keys[lm_id] = {bucket_key}
+                    pixel_claims[bucket_key] = {lm_id}
+                else:
+                    add_claim_key(lm_id, anchor_id, pkey)
+        self._struct_version += count
+
     def on_observation_added(
         self,
         landmark_id: int,

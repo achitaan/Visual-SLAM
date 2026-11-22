@@ -1225,35 +1225,49 @@ class SharedSlam:
             _lm_ids_arr = frame.landmark_ids
             _n_oct = len(kf_octaves)
             _add_lm = self.map.add_landmark
+            _add_lm_batch = self.map.add_landmarks_batch
+            _valid_single = (
+                (_lm_ids_arr < 0)
+                & np.isfinite(map_points).all(axis=1)
+                & np.isfinite(map_right_u)
+            ).tolist()
+            _batch_f0: list[int] = []
+
+            def _flush_batch():
+                if not _batch_f0:
+                    return
+                idx_arr = np.asarray(_batch_f0, dtype=np.intp)
+                if _n_oct >= len(pixels):
+                    octs = kf_octaves[idx_arr]
+                else:
+                    octs = [int(kf_octaves[f]) if f < _n_oct else 0 for f in _batch_f0]
+                lids = _add_lm_batch(
+                    _world_map[idx_arr],
+                    desc[idx_arr],
+                    ident,
+                    pixels[idx_arr],
+                    map_right_u[idx_arr],
+                    octs,
+                    is_far=False,
+                )
+                _lm_ids_arr[idx_arr] = lids
+                _batch_f0.clear()
+
             for group_id, members in enumerate(groups):
                 if group_id in blocked_groups:
                     continue
                 if len(members) == 1:
                     f0 = members[0]
-                    if _lm_ids_arr[f0] >= 0:
+                    if _valid_single[f0]:
+                        _batch_f0.append(f0)
                         continue
-                    v0 = map_points[f0]
-                    r0 = float(map_right_u[f0])
-                    verified_group = (
-                        _isfinite(float(v0[0])) and _isfinite(float(v0[1]))
-                        and _isfinite(float(v0[2])) and _isfinite(r0)
-                    )
-                    if verified_group:
-                        lm_oct = int(kf_octaves[f0]) if f0 < _n_oct else 0
-                        lid = _add_lm(
-                            _world_map[f0],
-                            desc[f0],
-                            ident,
-                            {ident: OwnedObservation(pixels[f0], r0)},
-                            octave=lm_oct,
-                            is_far=False,
-                        )
-                        _lm_ids_arr[f0] = lid
+                    if _lm_ids_arr[f0] >= 0:
                         continue
                     values = map_points[f0:f0 + 1]
                     rights = map_right_u[f0:f0 + 1]
                     seed_values = values
                     seed_right = None
+                    verified_group = False
                 else:
                     if any(_lm_ids_arr[feature] >= 0 for feature in members):
                         continue
@@ -1314,6 +1328,7 @@ class SharedSlam:
                                                rtol=1e-6, atol=1e-6)
                         ):
                             continue
+                _flush_batch()
                 feature = members[0]
                 world = _R_kf @ seed_values[0] + _t_kf
                 lm_oct = int(kf_octaves[feature]) if feature < _n_oct else 0
@@ -1330,6 +1345,7 @@ class SharedSlam:
                     is_far=False,
                 )
                 _lm_ids_arr[members] = lid
+            _flush_batch()
             if getattr(self.config, "use_projective_tracking", False) and ident > 0:
                 from local_map_tracker import fuse_neighbor_landmarks
 
@@ -2278,23 +2294,34 @@ class SharedSlam:
                 if len(valid_j):
                     landmarks_map = self.map.landmarks
                     n_pixels = len(pixels)
-                    if n_pixels:
+                    valid_j_list = valid_j.tolist()
+                    if n_pixels and valid_j_list:
                         px_order = np.argsort(pixels[:, 0], kind="mergesort")
                         px_sx = pixels[px_order, 0]
                         px_sy = pixels[px_order, 1]
+                        flowed_sub_x = flowed_pts[valid_j, 0]
+                        lo_list = np.searchsorted(px_sx, flowed_sub_x - 3.001, side="left").tolist()
+                        hi_list = np.searchsorted(px_sx, flowed_sub_x + 3.001, side="right").tolist()
+                        px_sx_l = px_sx.tolist()
+                        px_sy_l = px_sy.tolist()
+                        px_ord_l = px_order.tolist()
+                    else:
+                        lo_list = hi_list = px_sx_l = px_sy_l = px_ord_l = None
                     excl_targets = arbitration['excluded_targets'] if arbitration is not None else None
                     excl_pixels = arbitration['excluded_target_pixels'] if arbitration is not None else None
                     use_fast_key = (self._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
-                    for j in valid_j.tolist():
+                    flowed_xy = flowed_pts[valid_j].tolist() if valid_j_list else ()
+                    for idx_pos, j in enumerate(valid_j_list):
                         lid = previous_tracks[j][0]
                         if lid not in landmarks_map:
                             continue
                         p = flowed_pts[j]
+                        px0, py0 = flowed_xy[idx_pos]
                         descriptor_match = candidates.get(lid)
                         if descriptor_match is not None:
                             dm = descriptor_match[0]
-                            dx_m = float(p[0]) - float(dm[0])
-                            dy_m = float(p[1]) - float(dm[1])
+                            dx_m = px0 - float(dm[0])
+                            dy_m = py0 - float(dm[1])
                             if (dx_m * dx_m + dy_m * dy_m) > 9.0:
                                 # Forward/backward flow can consistently follow the
                                 # wrong repeat on railings or lane markings. It must
@@ -2303,23 +2330,24 @@ class SharedSlam:
                                 continue
                         feature = -1
                         if n_pixels:
-                            px0 = float(p[0])
-                            py0 = float(p[1])
-                            lo = int(np.searchsorted(px_sx, px0 - 3.001, side="left"))
-                            hi = int(np.searchsorted(px_sx, px0 + 3.001, side="right"))
+                            lo = lo_list[idx_pos]
+                            hi = hi_list[idx_pos]
                             if hi > lo:
-                                sub_y = px_sy[lo:hi]
-                                in_y = np.flatnonzero(np.abs(sub_y - py0) <= 3.001)
-                                if len(in_y):
-                                    cand_idx = px_order[lo + in_y]
-                                    if len(cand_idx) > 1:
-                                        cand_idx = np.sort(cand_idx)
-                                    dists = np.linalg.norm(pixels[cand_idx] - p, axis=1)
-                                    best_k = int(np.argmin(dists))
-                                    if dists[best_k] <= 3.0:
-                                        feature = int(cand_idx[best_k])
+                                best_d2 = 9.000001
+                                best_idx = -1
+                                for k in range(lo, hi):
+                                    dy = px_sy_l[k] - py0
+                                    if -3.001 <= dy <= 3.001:
+                                        dx = px_sx_l[k] - px0
+                                        d2 = dx * dx + dy * dy
+                                        if d2 <= 9.0:
+                                            orig_i = px_ord_l[k]
+                                            if d2 < best_d2 or (d2 == best_d2 and orig_i < best_idx):
+                                                best_d2 = d2
+                                                best_idx = orig_i
+                                feature = best_idx
                         if arbitration is not None:
-                            pkey = (float(p[0]), float(p[1])) if use_fast_key else self._physical_pixel_key(p)
+                            pkey = (px0, py0) if use_fast_key else self._physical_pixel_key(p)
                             if feature in excl_targets or pkey in excl_pixels:
                                 continue
                         candidates[lid] = (p, feature)
@@ -7065,17 +7093,20 @@ class SharedSlam:
         background thread for scheduled/parallax keyframes and low-track frames
         while keeping intermediate non-keyframes lightweight.
         """
+        idx = int(next_index)
         if (
             self.stereo is None
             or not self.performance.cpu_optimizations
-            or int(next_index) < 2
+            or idx < 2
             or len(self.map.keyframes) < 2
             or len(self.previous_tracks) < 92
         ):
+            self._last_eager_prefetch_index = idx
             return True
         last_kf_id = max(self.map.keyframes)
         last_kf = self.map.keyframes[last_kf_id]
-        if int(next_index) - int(last_kf.frame) >= int(self.config.keyframe_interval):
+        if idx - int(last_kf.frame) >= int(self.config.keyframe_interval):
+            self._last_eager_prefetch_index = idx
             return True
         if len(self.map.poses) >= 2:
             p_curr = self.map.poses[-1]
@@ -7084,16 +7115,18 @@ class SharedSlam:
             if step_m > 1.7:
                 if (
                     self.previous_stereo_geometry is None
-                    or int(next_index) - int(self.previous_stereo_geometry[1]) >= 3
+                    or idx - int(self.previous_stereo_geometry[1]) >= 3
                 ):
+                    self._last_eager_prefetch_index = idx
                     return True
             if getattr(self.config, "use_adaptive_keyframe_parallax", False):
-                horizon = max(1, int(next_index) - (len(self.map.poses) - 1))
+                horizon = max(1, idx - (len(self.map.poses) - 1))
                 kf_dist = float(np.linalg.norm(p_curr[:3, 3] - last_kf.pose[:3, 3]))
                 if (
                     kf_dist + step_m * horizon >= 11.8
                     and kf_dist + step_m * (horizon - 1) < 11.8
                 ):
+                    self._last_eager_prefetch_index = idx
                     return True
         return False
 

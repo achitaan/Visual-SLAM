@@ -81,7 +81,7 @@ def _clone_half_sgbm(src: Any) -> Any:
         uniquenessRatio=src.getUniquenessRatio(),
         speckleWindowSize=max(0, int(src.getSpeckleWindowSize()) // 2),
         speckleRange=src.getSpeckleRange(),
-        mode=src.getMode(),
+        mode=cv.STEREO_SGBM_MODE_SGBM_3WAY,
     )
 
 
@@ -290,8 +290,8 @@ def _compute_disparity_f32(
     """
     h, w = gray.shape[:2]
     if half_sgbm is not None and w >= 640 and h >= 240:
-        hl = cv.resize(gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
-        hr = cv.resize(right_gray, (w // 2, h // 2), interpolation=cv.INTER_AREA)
+        hl = cv.resize(gray, (w // 2, h // 2), interpolation=cv.INTER_LINEAR)
+        hr = cv.resize(right_gray, (w // 2, h // 2), interpolation=cv.INTER_LINEAR)
         raw = half_sgbm.compute(hl, hr)
         valid_h = np.where(raw > 0, np.uint8(255), np.uint8(0))
         dh = raw.astype(np.float32) * np.float32(2.0 / 16.0)

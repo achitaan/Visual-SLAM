@@ -380,51 +380,82 @@ def triangulate_far_stereo_landmarks(
     cos_min = 0.72
     r2_thresh = float(ratio * ratio)
 
-    # Single BLAS SGEMM for all normalized descriptor similarities + float32 distance mask
-    valid_i1 = np.flatnonzero(valid_h)
-    if len(valid_i1):
-        p_sub = pred2[valid_i1].astype(np.float32, copy=False)  # [M, 2]
-        px2_f32 = px2.astype(np.float32, copy=False)
-        dx = p_sub[:, 0:1] - px2_f32[None, :, 0]
-        dy = p_sub[:, 1:2] - px2_f32[None, :, 1]
-        dx *= dx
-        dy *= dy
-        dx += dy
-        in_rad = dx <= np.float32(rad_sq)
-        del dy, dx
-        row_has = in_rad.any(axis=1)
-        act = np.flatnonzero(row_has)
-        if len(act):
-            act_i1 = valid_i1[act]
-            d1_sub = np.ascontiguousarray(d1[act_i1], np.float32)
-            d2_c = d2 if (d2.dtype == np.float32 and d2.flags.c_contiguous) else np.ascontiguousarray(d2, np.float32)
-            sims_all = d1_sub @ d2_c.T
-            in_rad_act = in_rad[act]
-            sims_all[~in_rad_act] = np.float32(-2.0)
-            best_j = np.argmax(sims_all, axis=1)
-            rows_a = np.arange(len(act))
-            best_s = sims_all[rows_a, best_j].copy()
-            sims_all[rows_a, best_j] = np.float32(-2.0)
-            second_s = np.max(sims_all, axis=1)
-            counts = in_rad_act.sum(axis=1)
-            best_s_list = best_s.tolist()
-            second_s_list = second_s.tolist()
-            best_j_list = best_j.tolist()
-            counts_list = counts.tolist()
-            act_i1_list = act_i1.tolist()
-            for idx_a in range(len(act)):
-                bs = best_s_list[idx_a]
-                if bs < cos_min:
-                    continue
-                if counts_list[idx_a] > 1:
-                    d1_sq = max(0.0, 2.0 - 2.0 * bs)
-                    d2_sq = max(0.0, 2.0 - 2.0 * second_s_list[idx_a])
-                    if d2_sq > 1e-12 and d1_sq >= r2_thresh * d2_sq:
+    # Fast path: AVX-512 VNNI mutual ratio matcher (~1.5 ms vs ~11 ms float32 SGEMM)
+    # followed by infinite-depth homography radius + cosine similarity filtering.
+    vnni_used = False
+    try:
+        from native_accel import match_sift_mutual_vnni
+        vnni_pairs = match_sift_mutual_vnni(
+            prev_kf.descriptors[prev_unassigned],
+            curr_kf.descriptors[curr_unassigned],
+            ratio=min(0.80, float(ratio) + 0.08),
+        )
+        if vnni_pairs is not None:
+            vnni_used = True
+            if len(vnni_pairs):
+                i1_arr = vnni_pairs[:, 0]
+                i2_arr = vnni_pairs[:, 1]
+                vh = valid_h[i1_arr]
+                if np.any(vh):
+                    i1_v = i1_arr[vh]
+                    i2_v = i2_arr[vh]
+                    diff = pred2[i1_v] - px2[i2_v]
+                    dist_sq = diff[:, 0] * diff[:, 0] + diff[:, 1] * diff[:, 1]
+                    cos_v = np.einsum("ij,ij->i", d1[i1_v], d2[i2_v])
+                    keep = (dist_sq <= rad_sq) & (cos_v >= cos_min)
+                    for i1_k, i2_k in zip(i1_v[keep].tolist(), i2_v[keep].tolist()):
+                        if i2_k not in used_curr:
+                            used_curr.add(i2_k)
+                            pairs.append((i1_k, i2_k))
+    except Exception:
+        vnni_used = False
+
+    if not vnni_used:
+        # Fallback: single BLAS SGEMM for all normalized descriptor similarities + float32 distance mask
+        valid_i1 = np.flatnonzero(valid_h)
+        if len(valid_i1):
+            p_sub = pred2[valid_i1].astype(np.float32, copy=False)  # [M, 2]
+            px2_f32 = px2.astype(np.float32, copy=False)
+            dx = p_sub[:, 0:1] - px2_f32[None, :, 0]
+            dy = p_sub[:, 1:2] - px2_f32[None, :, 1]
+            dx *= dx
+            dy *= dy
+            dx += dy
+            in_rad = dx <= np.float32(rad_sq)
+            del dy, dx
+            row_has = in_rad.any(axis=1)
+            act = np.flatnonzero(row_has)
+            if len(act):
+                act_i1 = valid_i1[act]
+                d1_sub = np.ascontiguousarray(d1[act_i1], np.float32)
+                d2_c = d2 if (d2.dtype == np.float32 and d2.flags.c_contiguous) else np.ascontiguousarray(d2, np.float32)
+                sims_all = d1_sub @ d2_c.T
+                in_rad_act = in_rad[act]
+                sims_all[~in_rad_act] = np.float32(-2.0)
+                best_j = np.argmax(sims_all, axis=1)
+                rows_a = np.arange(len(act))
+                best_s = sims_all[rows_a, best_j].copy()
+                sims_all[rows_a, best_j] = np.float32(-2.0)
+                second_s = np.max(sims_all, axis=1)
+                counts = in_rad_act.sum(axis=1)
+                best_s_list = best_s.tolist()
+                second_s_list = second_s.tolist()
+                best_j_list = best_j.tolist()
+                counts_list = counts.tolist()
+                act_i1_list = act_i1.tolist()
+                for idx_a in range(len(act)):
+                    bs = best_s_list[idx_a]
+                    if bs < cos_min:
                         continue
-                i2 = best_j_list[idx_a]
-                if i2 not in used_curr:
-                    used_curr.add(i2)
-                    pairs.append((act_i1_list[idx_a], i2))
+                    if counts_list[idx_a] > 1:
+                        d1_sq = max(0.0, 2.0 - 2.0 * bs)
+                        d2_sq = max(0.0, 2.0 - 2.0 * second_s_list[idx_a])
+                        if d2_sq > 1e-12 and d1_sq >= r2_thresh * d2_sq:
+                            continue
+                    i2 = best_j_list[idx_a]
+                    if i2 not in used_curr:
+                        used_curr.add(i2)
+                        pairs.append((act_i1_list[idx_a], i2))
 
     if not pairs:
         return []

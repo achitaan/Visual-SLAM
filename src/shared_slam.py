@@ -789,46 +789,63 @@ class SharedSlam:
             if scope_cache is None:
                 scope_cache = {}
                 frame_cache[cache_scope] = scope_cache
-            query_px = pixels[ids]
-            measured = np.full(len(ids), np.nan, dtype=np.float64)
-            miss_positions: list[int] = []
-            miss_keys: list[tuple[float, float]] = []
-            miss_key_to_idx: dict[tuple[float, float], int] = {}
-            miss_backmap: list[tuple[int, int]] = []
-            hit_verified = 0
-            for pos, (px_x, px_y) in enumerate(query_px.tolist()):
-                key = (px_x, px_y)
-                cached = scope_cache.get(key)
-                if cached is not None:
-                    measured[pos] = cached
-                    if np.isfinite(cached):
-                        hit_verified += 1
-                else:
-                    uidx = miss_key_to_idx.get(key)
-                    if uidx is None:
-                        uidx = len(miss_keys)
-                        miss_key_to_idx[key] = uidx
-                        miss_keys.append(key)
-                        miss_positions.append(pos)
-                    miss_backmap.append((pos, uidx))
-            if miss_positions:
-                unique_pts = query_px[miss_positions]
+            query_px = np.ascontiguousarray(pixels[ids], dtype=np.float64)
+            if not scope_cache:
+                packed = query_px.view(np.dtype((np.void, 16))).ravel()
+                _, uniq_idx, inv_idx = np.unique(packed, return_index=True, return_inverse=True)
+                unique_pts = query_px[uniq_idx]
                 unique_measured, result_counts = self.profile.call(
                     'stereo_map_depth_verification', verify_stereo_depth_candidates,
                     self.current_left_gray, self.current_right_gray, unique_pts,
                     self.stereo_search_config, bounds)
-                for key, val in zip(miss_keys, unique_measured.tolist()):
-                    scope_cache[key] = float(val)
-                for pos, uidx in miss_backmap:
-                    measured[pos] = unique_measured[uidx]
+                measured = unique_measured[inv_idx]
+                for (px_x, px_y), val in zip(unique_pts.tolist(), unique_measured.tolist()):
+                    scope_cache[(px_x, px_y)] = float(val)
                 for key, value in result_counts.items():
                     if key not in ('candidates', 'verified'):
                         counters[key] = counters.get(key, 0) + int(value)
                 counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
                 counters['verified'] = counters.get('verified', 0) + int(np.isfinite(measured).sum())
             else:
-                counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
-                counters['verified'] = counters.get('verified', 0) + int(hit_verified)
+                measured = np.full(len(ids), np.nan, dtype=np.float64)
+                miss_positions: list[int] = []
+                miss_keys: list[tuple[float, float]] = []
+                miss_key_to_idx: dict[tuple[float, float], int] = {}
+                miss_backmap: list[tuple[int, int]] = []
+                hit_verified = 0
+                for pos, (px_x, px_y) in enumerate(query_px.tolist()):
+                    key = (px_x, px_y)
+                    cached = scope_cache.get(key)
+                    if cached is not None:
+                        measured[pos] = cached
+                        if np.isfinite(cached):
+                            hit_verified += 1
+                    else:
+                        uidx = miss_key_to_idx.get(key)
+                        if uidx is None:
+                            uidx = len(miss_keys)
+                            miss_key_to_idx[key] = uidx
+                            miss_keys.append(key)
+                            miss_positions.append(pos)
+                        miss_backmap.append((pos, uidx))
+                if miss_positions:
+                    unique_pts = query_px[miss_positions]
+                    unique_measured, result_counts = self.profile.call(
+                        'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                        self.current_left_gray, self.current_right_gray, unique_pts,
+                        self.stereo_search_config, bounds)
+                    for key, val in zip(miss_keys, unique_measured.tolist()):
+                        scope_cache[key] = float(val)
+                    for pos, uidx in miss_backmap:
+                        measured[pos] = unique_measured[uidx]
+                    for key, value in result_counts.items():
+                        if key not in ('candidates', 'verified'):
+                            counters[key] = counters.get(key, 0) + int(value)
+                    counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
+                    counters['verified'] = counters.get('verified', 0) + int(np.isfinite(measured).sum())
+                else:
+                    counters['candidates'] = counters.get('candidates', 0) + int(len(ids))
+                    counters['verified'] = counters.get('verified', 0) + int(hit_verified)
         else:
             measured, result_counts = self.profile.call(
                 'stereo_map_depth_verification', verify_stereo_depth_candidates,
@@ -1221,11 +1238,15 @@ class SharedSlam:
                     values = map_points[members]
                     rights = map_right_u[members]
                     finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
-                    verified_group = bool(
-                        finite.all()
-                        and np.allclose(values, values[0], rtol=1e-6, atol=1e-6)
-                        and np.allclose(rights, rights[0], rtol=1e-6, atol=1e-6)
-                    )
+                    if finite.all():
+                        v0 = values[0]
+                        r0 = rights[0]
+                        verified_group = bool(
+                            np.all(np.abs(values - v0) <= 1e-6 + 1e-6 * np.abs(v0))
+                            and np.all(np.abs(rights - r0) <= 1e-6 + 1e-6 * abs(float(r0)))
+                        )
+                    else:
+                        verified_group = False
                     seed_values = values
                     seed_right = float(rights[0]) if verified_group else None
                 if not verified_group:
@@ -1280,7 +1301,7 @@ class SharedSlam:
                     ident,
                     {
                         ident: OwnedObservation(
-                            pixels[feature].copy(), seed_right
+                            pixels[feature], seed_right
                         )
                     },
                     octave=lm_oct,
@@ -6973,6 +6994,295 @@ class SharedSlam:
         finally:
             self._active_frontend_seed_payload = None
 
+    def should_prefetch_full_extraction(self, next_index: int) -> bool:
+        """Predict whether ``next_index`` is likely to require full SIFT+SGBM extraction.
+
+        Used by the pipelined frontend worker to overlap full extraction on the
+        background thread for scheduled/parallax keyframes and low-track frames
+        while keeping intermediate non-keyframes lightweight.
+        """
+        if (
+            self.stereo is None
+            or not self.performance.cpu_optimizations
+            or int(next_index) < 2
+            or len(self.map.keyframes) < 2
+            or len(self.previous_tracks) < 95
+        ):
+            return True
+        last_kf_id = max(self.map.keyframes)
+        last_kf = self.map.keyframes[last_kf_id]
+        if int(next_index) - int(last_kf.frame) >= int(self.config.keyframe_interval):
+            return True
+        if len(self.map.poses) >= 2:
+            p_curr = self.map.poses[-1]
+            p_prev = self.map.poses[-2]
+            step_m = float(np.linalg.norm(p_curr[:3, 3] - p_prev[:3, 3]))
+            if step_m > 1.7:
+                if (
+                    self.previous_stereo_geometry is None
+                    or int(next_index) - int(self.previous_stereo_geometry[1]) >= 2
+                ):
+                    return True
+            if getattr(self.config, "use_adaptive_keyframe_parallax", False):
+                horizon = max(1, int(next_index) - (len(self.map.poses) - 1))
+                kf_dist = float(np.linalg.norm(p_curr[:3, 3] - last_kf.pose[:3, 3]))
+                if (
+                    kf_dist + step_m * horizon >= 11.8
+                    and kf_dist + step_m * (horizon - 1) < 11.8
+                ):
+                    return True
+        return False
+
+    def _try_lk_only_non_keyframe(self, index, extracted):
+        """Track a strong intermediate non-keyframe via forward-backward LK + stereo-refined PnP.
+
+        Returns ``(pose, info)`` only when tracking support, reprojection error, spatial
+        coverage, and parallax are all well within safe non-keyframe bounds. Otherwise
+        returns ``None`` so the caller materializes full SIFT + StereoSGBM extraction.
+        """
+        if (
+            self.stereo is None
+            or not self.performance.cpu_optimizations
+            or len(self.map.keyframes) < 2
+            or self.previous_gray is None
+            or len(self.previous_tracks) < 90
+            or self._tracking_trace_enabled(index)
+            or bool(getattr(self.config, "bundle_diagnostic_frames", ()))
+            or self.config.stereo_owned_image_bundle
+            or getattr(self.config, "stereo_source_history_bundle", False)
+            or getattr(self.config, "stereo_retained_source_observations", False)
+            or cv.calcOpticalFlowPyrLK is not _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK
+        ):
+            return None
+        last_kf_id = max(self.map.keyframes)
+        last_kf = self.map.keyframes[last_kf_id]
+        frame_gap = int(index) - int(last_kf.frame)
+        if frame_gap >= int(self.config.keyframe_interval):
+            return None
+        size = extracted.image_size
+        self.current_gray = extracted.gray
+        self.current_lk_pyramid = getattr(extracted, "lk_pyramid", None)
+        self.current_left_gray = extracted.left_gray_f32
+        self.current_right_gray = extracted.right_gray_f32
+        self.current_disparity = None
+        self.stereo_depth_verification = {}
+        self.stereo_map_depth_verification = {}
+        self._frame_verified_right_cache = {}
+
+        ambiguous_landmarks = self._landmark_pixel_identity_conflicts(None)
+        landmarks_map = self.map.landmarks
+        prev_tracks = [
+            (lid, p) for lid, p in self.previous_tracks
+            if lid in landmarks_map and lid not in ambiguous_landmarks
+        ]
+        if len(prev_tracks) < 85:
+            return None
+
+        old_pixels = np.array([p for _, p in prev_tracks], np.float32).reshape(-1, 1, 2)
+        world_all = np.array([landmarks_map[lid].position for lid, _ in prev_tracks], np.float64)
+        seed = self._motion_prediction()
+        prev_pose = self.map.poses[-1]
+        step_trans_m = float(np.linalg.norm((np.linalg.inv(prev_pose) @ seed)[:3, 3]))
+        if step_trans_m > 1.7 and self.previous_stereo_geometry is not None:
+            if int(index) - int(self.previous_stereo_geometry[1]) >= 2:
+                return None
+        projected, depth = project(world_all, seed, self.K)
+        flow_visible = (
+            (depth > 0.0)
+            & np.isfinite(projected).all(axis=1)
+            & (projected[:, 0] >= 0.0) & (projected[:, 0] < size[0])
+            & (projected[:, 1] >= 0.0) & (projected[:, 1] < size[1])
+        )
+        if int(flow_visible.sum()) < 85:
+            return None
+        predicted_pixels = old_pixels.copy()
+        predicted_pixels[flow_visible, 0] = projected[flow_visible]
+
+        lk_levels = 4 if getattr(self.config, "use_projective_tracking", False) else 3
+        try:
+            from native_accel import build_lk_pyramid_avx512, track_lk_pyramids_avx512
+            prev_pyr = getattr(self, "previous_lk_pyramid", None)
+            curr_pyr = self.current_lk_pyramid
+            if (prev_pyr is None or prev_pyr.source_gray is not self.previous_gray
+                    or prev_pyr.max_level < lk_levels):
+                prev_pyr = build_lk_pyramid_avx512(self.previous_gray, max_level=lk_levels)
+                self.previous_lk_pyramid = prev_pyr
+            if (curr_pyr is None or curr_pyr.source_gray is not self.current_gray
+                    or curr_pyr.max_level < lk_levels):
+                curr_pyr = build_lk_pyramid_avx512(self.current_gray, max_level=lk_levels)
+                self.current_lk_pyramid = curr_pyr
+            if prev_pyr is None or curr_pyr is None:
+                return None
+            res_fwd = track_lk_pyramids_avx512(
+                prev_pyr, curr_pyr, old_pixels, predicted_pixels,
+                max_level=lk_levels, use_initial_flow=True,
+            )
+            if res_fwd is None:
+                return None
+            flowed, ok = res_fwd
+            res_bwd = track_lk_pyramids_avx512(
+                curr_pyr, prev_pyr, flowed,
+                old_pixels if lk_levels >= 4 else None,
+                max_level=lk_levels, use_initial_flow=(lk_levels >= 4),
+            )
+            if res_bwd is None:
+                return None
+            reversed_pixels, back_ok = res_bwd
+        except Exception:
+            return None
+
+        flowed_pts = flowed[:, 0]
+        fb_err = np.linalg.norm(reversed_pixels[:, 0] - old_pixels[:, 0], axis=1)
+        lk_valid = (
+            flow_visible
+            & ok.ravel().astype(bool)
+            & back_ok.ravel().astype(bool)
+            & (fb_err < 1.0)
+            & (flowed_pts[:, 0] >= 0.0) & (flowed_pts[:, 0] < size[0])
+            & (flowed_pts[:, 1] >= 0.0) & (flowed_pts[:, 1] < size[1])
+        )
+        valid_j = np.flatnonzero(lk_valid)
+        if len(valid_j) < 80:
+            return None
+
+        cand_ids = [prev_tracks[j][0] for j in valid_j.tolist()]
+        cand_pos = world_all[valid_j]
+        cand_obs = flowed_pts[valid_j].astype(np.float64, copy=False)
+        diag = {}
+        solution = estimate_pose(
+            cand_pos, cand_obs, self.K, size,
+            self.config.min_inliers, initial_pose=seed, diagnostics=diag,
+        )
+        if solution is None:
+            return None
+        pose, inlier_idx, med_err = solution
+        if (len(inlier_idx) < 80 or med_err > 0.85
+                or diag.get("candidate_feature_cells", 0) < 6):
+            return None
+
+        # Full-resolution verified right-image stereo refinement on tracked LK landmarks.
+        _, measured_right = self._measure_map_stereo_pixels(cand_obs)
+        use_hetero = bool(getattr(self.config, "use_heteroscedastic_stereo_pose", False))
+        right_for_refine = measured_right
+        weights_uv_uR = None
+        if use_hetero:
+            right_for_refine = np.asarray(measured_right, dtype=float).copy()
+            weights_uv_uR = np.ones((len(cand_ids), 3), dtype=float)
+            fx_val = float(self.K[0, 0])
+            bl_val = float(self.stereo.baseline)
+            doff_val = float(self.stereo.disparity_offset)
+            z_close = 40.0 * bl_val
+            for row_i, lid in enumerate(cand_ids):
+                lm_obj = landmarks_map.get(lid)
+                oct_v = int(getattr(lm_obj, "octave", 0)) if lm_obj is not None else 0
+                w_oct = 1.0 / (1.15 ** min(max(oct_v, 0), 5))
+                weights_uv_uR[row_i, 0] = w_oct
+                weights_uv_uR[row_i, 1] = w_oct
+                if lm_obj is not None and getattr(lm_obj, "is_far", False):
+                    right_for_refine[row_i] = np.nan
+                    weights_uv_uR[row_i, 2] = 0.0
+                elif np.isfinite(right_for_refine[row_i]):
+                    disp = float(cand_obs[row_i, 0] - right_for_refine[row_i] - doff_val)
+                    if disp > 0.5:
+                        z_est = fx_val * bl_val / disp
+                        weights_uv_uR[row_i, 2] = w_oct / float(np.sqrt(1.0 + (z_est / z_close) ** 2))
+                    else:
+                        weights_uv_uR[row_i, 2] = 0.2 * w_oct
+        refined, stereo_diag = refine_stereo_map_pose(
+            solution, cand_pos, cand_obs, right_for_refine, self.K,
+            self.stereo.baseline, size, self.config.min_inliers,
+            self.stereo.disparity_offset,
+            use_analytic=True,
+            weights_uv_uR=weights_uv_uR,
+        )
+        if refined is None:
+            return None
+        pose, inlier_idx, med_err = refined
+        if (len(inlier_idx) < 80 or med_err > 0.85
+                or int(np.isfinite(measured_right[inlier_idx]).sum()) < 40):
+            return None
+
+        # Verify keyframe parallax trigger would NOT fire on this frame.
+        if getattr(self.config, "use_adaptive_keyframe_parallax", False) and frame_gap >= 3:
+            rel_kf = np.linalg.inv(last_kf.pose) @ pose
+            kf_trans_m = float(np.linalg.norm(rel_kf[:3, 3]))
+            kf_rot_deg = float(np.rad2deg(np.arccos(np.clip(
+                (float(np.trace(rel_kf[:3, :3])) - 1.0) * 0.5, -1.0, 1.0
+            ))))
+            if kf_trans_m >= 12.0 or kf_rot_deg >= 12.0:
+                return None
+
+        # Commit non-keyframe tracking state and landmark miss aging.
+        inlier_id_set = set()
+        accepted_tracks = []
+        for idx_i in inlier_idx.tolist():
+            lid = int(cand_ids[idx_i])
+            inlier_id_set.add(lid)
+            accepted_tracks.append((lid, flowed_pts[valid_j[idx_i]].copy()))
+        for lid in cand_ids:
+            lm = landmarks_map.get(lid)
+            if lm is not None:
+                if lid in inlier_id_set:
+                    lm.misses = 0
+                else:
+                    lm.misses += 1
+        self.accepted_tracks = accepted_tracks
+        self.previous_tracks = list(accepted_tracks)
+        prev_pyr = self.current_lk_pyramid
+        next_prev_gray = (
+            self.current_gray if not self.current_gray.flags.writeable
+            else self.current_gray.copy()
+        )
+        if prev_pyr is not None and prev_pyr.source_gray is self.current_gray:
+            self.previous_gray = next_prev_gray
+            prev_pyr.source_gray = self.previous_gray
+            self.previous_lk_pyramid = prev_pyr
+        else:
+            self.previous_gray = next_prev_gray
+            self.previous_lk_pyramid = None
+        self.map.record(pose, "tracking", last_kf_id)
+        # Cull high-miss landmarks identically to the full path.
+        dropped = self.map.high_miss_landmarks(5)
+        if dropped:
+            removed = False
+            affected = set()
+            for ident, landmark in dropped.items():
+                self.map.remove_landmark(ident)
+                affected.update(landmark.observations)
+                if landmark.anchor is not None:
+                    affected.add(landmark.anchor)
+                removed = True
+            row_cache = getattr(self, "_kf_landmark_row_cache", None)
+            for k in sorted(affected):
+                kf = self.map.keyframes.get(k)
+                if kf is None:
+                    continue
+                stale = np.array([lid >= 0 and lid not in landmarks_map for lid in kf.landmark_ids])
+                if stale.any():
+                    kf.landmark_ids[stale] = -1
+                    if row_cache is not None:
+                        entry = row_cache.get(k)
+                        if entry is not None:
+                            rm = entry[2]
+                            for lid in dropped:
+                                rm.pop(lid, None)
+            if removed:
+                self.map.revision += 1
+                self.map.geometry_revision += 1
+        info = {
+            "num_matches": len(cand_ids),
+            "num_inliers": len(inlier_idx),
+            "reprojection_error": float(med_err),
+            "tracking_ok": True,
+            "tracked_landmarks": len(inlier_id_set),
+            "state": "tracking",
+            "motion_prediction_source": self.motion_prediction_source,
+            "map_revision": self.map.revision,
+            "translation_scale": "metric" if self.map.metric else "arbitrary",
+            "lk_only_non_keyframe": True,
+        }
+        return pose, info
+
     def _process_frame(self, index, image=None, right=None, *, extracted=None):
         if index != len(self.map.poses):
             raise ValueError(
@@ -6981,6 +7291,11 @@ class SharedSlam:
         self._process_frame_token = int(index)
         self._descriptor_association_retry_snapshot = None
         self.loop_worker.poll(self.map)
+        if extracted is not None and getattr(extracted, "lazy_extractor", None) is not None:
+            fast_res = self._try_lk_only_non_keyframe(index, extracted)
+            if fast_res is not None:
+                return fast_res
+            extracted = extracted.lazy_extractor()
         source_history_capture = (
             self._capture_source_history_snapshot(index)
             if getattr(self.config, "stereo_source_history_bundle", False) else None
@@ -7847,7 +8162,7 @@ class SharedSlam:
                     ))))
                     frame_gap = index - last.frame
                     insert_keyframe = bool(
-                        stereo_reference
+                        (stereo_reference and (frame_gap >= 2 or recovered))
                         or (frame_gap >= 3 and (
                             kf_trans_m >= 12.0
                             or kf_rot_deg >= 12.0
@@ -7925,11 +8240,21 @@ class SharedSlam:
             self._tracking_trace_event(index, "cohort_map_before_ba",
                 self._tracking_trace_frame_state(index, include_landmarks=True,
                                                  stage="cohort_map_before_ba"))
+        _burst_ba_skip = (
+            getattr(self.config, "use_adaptive_keyframe_parallax", False)
+            and anchor is not None
+            and anchor >= 4
+            and (anchor % 2 == 1)
+            and not recovered
+            and (anchor - 1) in self.map.keyframes
+            and (index - self.map.keyframes[anchor - 1].frame) <= 2
+        )
         if (
             info["tracking_ok"]
             and anchor is not None
             and self.map.keyframes[anchor].frame == index
             and len(self.map.keyframes) >= 3
+            and not _burst_ba_skip
         ):
             with self.profile.measure("local_bundle"):
                 if not self.config.bundle_enabled:

@@ -240,6 +240,7 @@ def build_airgapped_estimator_invocation(
     pipeline_buffer: int = 1,
     openblas_threads: int = 1,
     matching_backend: str = "cpu",
+    profile: bool = True,
 ) -> tuple[list[str], dict[str, str], Path]:
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
@@ -313,6 +314,8 @@ def build_airgapped_estimator_invocation(
         command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
     if matching_backend != "cpu":
         command.extend(["--matching-backend", matching_backend])
+    if not profile:
+        command.append("--no-profile")
 
     forbidden_tokens = {
         str(poses_dir),
@@ -349,6 +352,7 @@ def run_airgapped_estimator_subprocess(
     pipeline_buffer: int = 1,
     openblas_threads: int = 1,
     matching_backend: str = "cpu",
+    profile: bool = True,
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -366,6 +370,7 @@ def run_airgapped_estimator_subprocess(
         pipeline_buffer=pipeline_buffer,
         openblas_threads=openblas_threads,
         matching_backend=matching_backend,
+        profile=profile,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -537,6 +542,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument(
         "--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu"
     )
+    parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
     import cv2 as cv
@@ -553,7 +559,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         retrieval="current",
         matching_backend=str(args.matching_backend),
         cpu_optimizations=True,
-        profile=True,
+        profile=not bool(args.no_profile),
         pipeline_extraction=bool(args.pipeline_extraction),
     )
 
@@ -594,7 +600,11 @@ def _estimator_worker_main(argv: list[str]) -> int:
     pipeline = None
     if args.pipeline_extraction:
         from frontend_pipeline import FrontendExtractionPipeline
-        pipeline = FrontendExtractionPipeline(slam, buffer_size=max(1, int(args.pipeline_buffer)))
+        pipeline = FrontendExtractionPipeline(
+            slam,
+            buffer_size=max(1, int(args.pipeline_buffer)),
+            lazy_extraction=True,
+        )
 
     started = time.perf_counter()
     try:
@@ -615,7 +625,11 @@ def _estimator_worker_main(argv: list[str]) -> int:
                 t_extract_ready = time.perf_counter()
                 if next_submit < total_frames:
                     submit_times[next_submit] = time.perf_counter()
-                    pipeline.submit_loader(next_submit, _load_pair)
+                    pipeline.submit_loader(
+                        next_submit,
+                        _load_pair,
+                        eager=slam.should_prefetch_full_extraction(next_submit),
+                    )
                     next_submit += 1
                 prev_kfs = len(slam.map.keyframes)
                 t_proc_start = time.perf_counter()
@@ -1383,6 +1397,11 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=1)
     parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Disable per-stage StageProfile instrumentation for unprofiled benchmark runs",
+    )
+    parser.add_argument(
         "--matching-backend",
         choices=["cpu", "cuda", "auto"],
         default="cpu",
@@ -1508,6 +1527,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             pipeline_buffer=int(args.pipeline_buffer),
             openblas_threads=int(args.openblas_threads),
             matching_backend=str(args.matching_backend),
+            profile=not bool(args.no_profile),
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)

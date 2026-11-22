@@ -340,7 +340,7 @@ class LiveLoopWorker:
             if (
                 not self.pending_loops
                 and not self.finalizing
-                and (latest.frame - last_sched_frame) < 10
+                and (latest.frame - last_sched_frame) < 20
             ):
                 return
             self._last_scheduled_frame = int(latest.frame)

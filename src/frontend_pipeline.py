@@ -41,6 +41,7 @@ class ExtractedFrame:
     io_elapsed_s: float = 0.0
     extract_elapsed_s: float = 0.0
     lk_pyramid: Any = None
+    lazy_extractor: Callable[[], ExtractedFrame] | None = None
 
 
 def _clone_sgbm(src: Any) -> Any:
@@ -316,6 +317,7 @@ def extract_frame_owned(
     half_sgbm: Any = None,
     sgbm_executor: ThreadPoolExecutor | None = None,
     io_elapsed_s: float = 0.0,
+    precomputed_lk_pyramid: Any = None,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
     if image is None:
@@ -402,13 +404,14 @@ def extract_frame_owned(
             capture_supported=capture_supported,
         )
 
-    lk_pyramid = None
-    try:
-        from native_accel import build_lk_pyramid_avx512
-        lk_levels = 4 if getattr(config, "use_projective_tracking", False) else 3
-        lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
-    except Exception:
-        lk_pyramid = None
+    lk_pyramid = precomputed_lk_pyramid
+    if lk_pyramid is None:
+        try:
+            from native_accel import build_lk_pyramid_avx512
+            lk_levels = 4 if getattr(config, "use_projective_tracking", False) else 3
+            lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
+        except Exception:
+            lk_pyramid = None
 
     for _arr in (pixels, desc):
         if isinstance(_arr, np.ndarray) and _arr.base is None:
@@ -459,6 +462,7 @@ class FrontendExtractionPipeline:
         *,
         buffer_size: int = 2,
         concurrent_stereo: bool = True,
+        lazy_extraction: bool = False,
     ) -> None:
         if buffer_size < 1:
             raise ValueError("buffer_size must be >= 1")
@@ -466,6 +470,7 @@ class FrontendExtractionPipeline:
         self._inverse_K = slam.inverse_K.copy()
         self._stereo_Q = slam.stereo.Q.copy() if slam.stereo is not None else None
         self._stereo_search_config = slam.stereo_search_config
+        self._lazy_extraction = bool(lazy_extraction and slam.stereo is not None)
         self._detector = _clone_sift(slam.config, has_stereo=slam.stereo is not None)
         src_sgbm = (
             (getattr(slam, "_fast_stereo_sgbm", None) or slam.stereo.stereo)
@@ -477,6 +482,11 @@ class FrontendExtractionPipeline:
         self._sgbm_executor: ThreadPoolExecutor | None = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="frontend-sgbm")
             if (concurrent_stereo and self._sgbm is not None)
+            else None
+        )
+        self._lazy_sgbm_executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="frontend-lazy-sgbm")
+            if (self._lazy_extraction and concurrent_stereo and self._sgbm is not None)
             else None
         )
         self._in_q: queue.Queue[Any] = queue.Queue(maxsize=int(buffer_size))
@@ -492,6 +502,73 @@ class FrontendExtractionPipeline:
         )
         self._thread.start()
 
+    def _build_lazy_frame(
+        self,
+        index: int,
+        image: np.ndarray,
+        right: np.ndarray | None,
+        io_dt: float,
+    ) -> ExtractedFrame:
+        t0 = time.perf_counter()
+        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        right_gray = (
+            cv.cvtColor(right, cv.COLOR_BGR2GRAY)
+            if (right is not None and right.ndim == 3)
+            else right
+        )
+        image_size = (int(image.shape[1]), int(image.shape[0]))
+        lk_pyramid = None
+        try:
+            from native_accel import build_lk_pyramid_avx512
+            lk_levels = 4 if getattr(self._config, "use_projective_tracking", False) else 3
+            lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
+        except Exception:
+            lk_pyramid = None
+        left_f32 = gray if gray.dtype == np.uint8 else np.asarray(gray, np.float32)
+        right_f32 = (
+            right_gray
+            if (right_gray is None or right_gray.dtype == np.uint8)
+            else np.asarray(right_gray, np.float32)
+        )
+        light_dt = max(time.perf_counter() - t0, 0.0)
+
+        def _materialize() -> ExtractedFrame:
+            return extract_frame_owned(
+                index,
+                gray,
+                right_gray,
+                config=self._config,
+                inverse_K=self._inverse_K,
+                stereo_Q=self._stereo_Q,
+                stereo_search_config=self._stereo_search_config,
+                detector=self._detector,
+                sgbm=self._sgbm,
+                half_sgbm=self._half_sgbm,
+                sgbm_executor=self._lazy_sgbm_executor,
+                io_elapsed_s=io_dt,
+                precomputed_lk_pyramid=lk_pyramid,
+            )
+
+        return ExtractedFrame(
+            index=int(index),
+            image_size=image_size,
+            gray=gray,
+            left_gray_f32=left_f32,
+            right_gray_f32=right_f32,
+            pixels=np.empty((0, 2), dtype=np.float32),
+            descriptors=np.empty((0, 128), dtype=np.float32),
+            octaves=np.empty(0, dtype=np.int16),
+            points=np.empty((0, 3), dtype=np.float64),
+            right_u=np.empty(0, dtype=np.float64),
+            disparity=None,
+            supported_extraction=None,
+            stereo_depth_verification={},
+            io_elapsed_s=float(io_dt),
+            extract_elapsed_s=float(light_dt),
+            lk_pyramid=lk_pyramid,
+            lazy_extractor=_materialize,
+        )
+
     def _worker_loop(self) -> None:
         try:
             while not self._stop_event.is_set():
@@ -501,7 +578,7 @@ class FrontendExtractionPipeline:
                     continue
                 if item is _STOP:
                     break
-                index, loader, image, right = item
+                index, loader, image, right, eager = item
                 try:
                     io_dt = 0.0
                     if loader is not None:
@@ -518,20 +595,23 @@ class FrontendExtractionPipeline:
                         else:
                             image, right = loader(index)
                         io_dt = max(time.perf_counter() - t_io, 0.0)
-                    extracted = extract_frame_owned(
-                        index,
-                        image,
-                        right,
-                        config=self._config,
-                        inverse_K=self._inverse_K,
-                        stereo_Q=self._stereo_Q,
-                        stereo_search_config=self._stereo_search_config,
-                        detector=self._detector,
-                        sgbm=self._sgbm,
-                        half_sgbm=self._half_sgbm,
-                        sgbm_executor=self._sgbm_executor,
-                        io_elapsed_s=io_dt,
-                    )
+                    if self._lazy_extraction and index >= 2 and not eager:
+                        extracted = self._build_lazy_frame(index, image, right, io_dt)
+                    else:
+                        extracted = extract_frame_owned(
+                            index,
+                            image,
+                            right,
+                            config=self._config,
+                            inverse_K=self._inverse_K,
+                            stereo_Q=self._stereo_Q,
+                            stereo_search_config=self._stereo_search_config,
+                            detector=self._detector,
+                            sgbm=self._sgbm,
+                            half_sgbm=self._half_sgbm,
+                            sgbm_executor=self._sgbm_executor,
+                            io_elapsed_s=io_dt,
+                        )
                     self._put_output((index, extracted, None))
                 except BaseException as exc:
                     self._put_output((index, None, exc))
@@ -558,6 +638,8 @@ class FrontendExtractionPipeline:
         index: int,
         image: np.ndarray,
         right: np.ndarray | None = None,
+        *,
+        eager: bool = False,
     ) -> None:
         if self._closed:
             raise RuntimeError("FrontendExtractionPipeline is closed")
@@ -568,7 +650,7 @@ class FrontendExtractionPipeline:
         self._next_submit_index += 1
         while not self._stop_event.is_set():
             try:
-                self._in_q.put((int(index), None, image, right), timeout=0.05)
+                self._in_q.put((int(index), None, image, right, bool(eager)), timeout=0.05)
                 return
             except queue.Full:
                 continue
@@ -577,6 +659,8 @@ class FrontendExtractionPipeline:
         self,
         index: int,
         loader: Callable[[int], tuple[np.ndarray, np.ndarray | None]],
+        *,
+        eager: bool = False,
     ) -> None:
         if self._closed:
             raise RuntimeError("FrontendExtractionPipeline is closed")
@@ -587,7 +671,7 @@ class FrontendExtractionPipeline:
         self._next_submit_index += 1
         while not self._stop_event.is_set():
             try:
-                self._in_q.put((int(index), loader, None, None), timeout=0.05)
+                self._in_q.put((int(index), loader, None, None, bool(eager)), timeout=0.05)
                 return
             except queue.Full:
                 continue
@@ -637,6 +721,9 @@ class FrontendExtractionPipeline:
         if self._sgbm_executor is not None:
             self._sgbm_executor.shutdown(wait=True, cancel_futures=True)
             self._sgbm_executor = None
+        if self._lazy_sgbm_executor is not None:
+            self._lazy_sgbm_executor.shutdown(wait=True, cancel_futures=True)
+            self._lazy_sgbm_executor = None
 
     def __enter__(self) -> "FrontendExtractionPipeline":
         return self

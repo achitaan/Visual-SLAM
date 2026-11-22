@@ -23,7 +23,10 @@ class SupportedStereoFrame:
 
     def __post_init__(self):
         for name in ('pixels', 'descriptors', 'points', 'right_u', 'landmark_ids'):
-            array = np.array(getattr(self, name), copy=True)
+            val = getattr(self, name)
+            if type(val) is np.ndarray and not val.flags.writeable and val.base is None:
+                continue
+            array = np.array(val, copy=True)
             array.setflags(write=False)
             object.__setattr__(self, name, array)
 
@@ -43,7 +46,10 @@ class SupportedStereoHoldout:
     def __post_init__(self):
         # Own snapshots, never views into mutable map/cache arrays.
         for name in ('points', 'left', 'right_u', 'source_ids', 'target_ids', 'landmark_ids'):
-            value = np.array(getattr(self, name), copy=True)
+            val = getattr(self, name)
+            if type(val) is np.ndarray and not val.flags.writeable and val.base is None:
+                continue
+            value = np.array(val, copy=True)
             value.setflags(write=False)
             object.__setattr__(self, name, value)
 

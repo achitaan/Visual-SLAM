@@ -3242,8 +3242,31 @@ class SharedSlam:
         fallback_descs = None
         lm_cache_get = lm_cache.get
         gen_get = gen.get
+        # Between map revisions (all non-keyframes) and unchanged keyframe count,
+        # no landmark's anchor/observations/keyframe rows can change.
+        cur_rev = (cur_map_id, self.map.revision, len(keyframes), self.map.next_landmark, sum(gen.values()) if gen else 0)
+        fast_rev = getattr(self, "_lm_desc_fast_rev", None)
+        if fast_rev == cur_rev:
+            fast_slots = self._lm_desc_fast_slots
+            fast_get = fast_slots.get
+        else:
+            fast_slots = {}
+            self._lm_desc_fast_slots = fast_slots
+            self._lm_desc_fast_rev = cur_rev
+            fast_get = fast_slots.get
         for landmark in landmarks:
-            lid = int(landmark.id)
+            lid = landmark.id
+            fslots = fast_get(lid)
+            if fslots is not None and fallback_descs is None:
+                if len(fslots) == 1:
+                    pool_slots.append(fslots[0])
+                    identifiers.append(lid)
+                else:
+                    for s in fslots:
+                        pool_slots.append(s)
+                        identifiers.append(lid)
+                continue
+            lid = int(lid)
             anchor = landmark.anchor
             obs = landmark.observations
             n_obs = len(obs)
@@ -3267,6 +3290,8 @@ class SharedSlam:
             ):
                 cached = entry[6]
                 slots = entry[7]
+                if slots is not None:
+                    fast_slots[lid] = slots
             else:
                 if entry is not None and entry[7] is not None:
                     free_slots.extend(entry[7])
@@ -3300,6 +3325,8 @@ class SharedSlam:
                     cached = tuple(dedup)
                 slots = _alloc_pool_slots(cached)
                 lm_cache[lid] = (id(landmark), anchor, n_obs, latest, g_a, g_l, cached, slots)
+                if slots is not None:
+                    fast_slots[lid] = slots
             if fallback_descs is None:
                 if slots is not None:
                     if len(slots) == 1:

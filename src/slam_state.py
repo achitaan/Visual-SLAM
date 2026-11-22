@@ -87,6 +87,7 @@ class MapState:
         self.index = IncrementalMapIndex()
         self._high_miss_landmarks: set[int] = set()
         self._high_miss_tracked_count: int = 0
+        self._stereo_motion_by_anchor: dict[int, list[tuple[int, int]]] = {}
 
     def add_stereo_motion(self, previous, current, measurement):
         """Retain independently verified metric motion between accepted frames."""
@@ -101,6 +102,13 @@ class MapState:
                 raise ValueError('Stereo motion already recorded')
             # Append-only evidence accompanies recorded frames, without changing geometry.
             self.stereo_motion[key] = measurement.copy()
+            a0 = self.pose_anchors[previous]
+            a1 = self.pose_anchors[current]
+            if a0 != a1:
+                if a0 is not None:
+                    self._stereo_motion_by_anchor.setdefault(a0, []).append(key)
+                if a1 is not None:
+                    self._stereo_motion_by_anchor.setdefault(a1, []).append(key)
 
     def add_landmark(self, position, descriptor, anchor, observations, *, octave=0, is_far=False):
         position = np.asarray(position, float).reshape(3)
@@ -193,7 +201,7 @@ class MapState:
             scales = scales or {i: 1.0 for i in corrected}
             for ident, pose in corrected.items():
                 old_pose = self.keyframes[ident].pose
-                if not (
+                if pose is not old_pose and not (
                     isinstance(pose, np.ndarray)
                     and pose.dtype == np.float64
                     and isinstance(old_pose, np.ndarray)
@@ -208,16 +216,16 @@ class MapState:
                 ):
                     raise ValueError("Invalid correction scale")
             if (
-                not np.allclose(corrected[0], self.keyframes[0].pose, atol=1e-8)
-                or abs(scales[0] - 1) > 1e-8
-            ):
+                corrected[0] is not self.keyframes[0].pose
+                and not np.allclose(corrected[0], self.keyframes[0].pose, atol=1e-8)
+            ) or abs(scales[0] - 1) > 1e-8:
                 raise ValueError("Origin must remain fixed")
             # Joint local solves may optimize an accepted intermediate camera.
             # Validate all overrides before changing any landmark or pose. A
             # keyframe has one authoritative pose in `corrected`, never two.
             intermediate = {}
-            keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
             if frame_updates is not None:
+                keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
                 if not (len(self.poses) == len(self.statuses) == len(self.pose_anchors)
                         == len(self.relative_poses)):
                     raise ValueError('Inconsistent intermediate frame state')
@@ -240,7 +248,7 @@ class MapState:
                 old = keyframe.pose
                 new_pose = corrected[ident]
                 scale = scales[ident]
-                if scale == 1.0 and np.array_equal(new_pose, old):
+                if scale == 1.0 and (new_pose is old or np.array_equal(new_pose, old)):
                     continue
                 moved_kfs.add(ident)
                 rotation = new_pose[:3, :3] @ old[:3, :3].T

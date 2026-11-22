@@ -410,6 +410,13 @@ def extract_frame_owned(
     except Exception:
         lk_pyramid = None
 
+    for _arr in (pixels, desc):
+        if isinstance(_arr, np.ndarray) and _arr.base is None:
+            _arr.setflags(write=False)
+    if supported_extraction is not None:
+        for _arr in supported_extraction:
+            if isinstance(_arr, np.ndarray) and _arr.base is None:
+                _arr.setflags(write=False)
     extract_elapsed_s = max(time.perf_counter() - t0, 0.0)
     return ExtractedFrame(
         index=int(index),

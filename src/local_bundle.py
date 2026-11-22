@@ -464,7 +464,10 @@ def local_bundle_adjustment(
                     **({"landmark_role": "selected"}
                        if landmark_policy == "joint_tracks" else {}),
                 })
-        base = {k: state.keyframes[k].pose.copy() for k in state.keyframes}
+        base = {
+            k: (state.keyframes[k].pose.copy() if snapshot_enabled else state.keyframes[k].pose)
+            for k in state.keyframes
+        }
         records = [
             (i, k, o)
             for i, l in enumerate(landmarks)
@@ -734,7 +737,20 @@ def local_bundle_adjustment(
         ]
         motion_checks = []
         diagnostic_motion_checks = [] if snapshot_enabled else None
-        for (first, second), measurement in state.stereo_motion.items():
+        sm_by_anchor = getattr(state, "_stereo_motion_by_anchor", None)
+        if sm_by_anchor is not None and not snapshot_enabled and len(state.stereo_motion) > 32:
+            seen_edges = set()
+            cand_edges = []
+            for a in free_set:
+                bucket = sm_by_anchor.get(a)
+                if bucket:
+                    for edge_key in bucket:
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            cand_edges.append((edge_key, state.stereo_motion[edge_key]))
+        else:
+            cand_edges = state.stereo_motion.items()
+        for (first, second), measurement in cand_edges:
             a0 = state.pose_anchors[first]
             a1 = state.pose_anchors[second]
             # A shared rigid correction preserves relative motion within one anchor.
@@ -768,10 +784,12 @@ def local_bundle_adjustment(
     )
 
     def unpack(x):
-        poses = {k: p.copy() for k, p in base.items()}
+        poses = dict(base)
         for k, offset in pose_offset.items():
-            poses[k][:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
-            poses[k][:3, 3] = x[offset + 3 : offset + 6]
+            p = base[k].copy()
+            p[:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
+            p[:3, 3] = x[offset + 3 : offset + 6]
+            poses[k] = p
         vector_points = x[point_offset:point_limit].reshape(-1, 3)
         if not target_relative_point_offsets:
             return poses, vector_points

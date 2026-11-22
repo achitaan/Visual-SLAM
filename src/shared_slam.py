@@ -2150,7 +2150,34 @@ class SharedSlam:
             reversed_pixels = None
             back_ok = None
             used_fast_lk = False
-            if cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK:
+            cached_lk = getattr(self, "_cached_lk_flow", None)
+            if (
+                cached_lk is not None
+                and cached_lk[0] == getattr(self, "_process_frame_token", -1)
+                and cached_lk[1] == id(self.previous_gray)
+                and cached_lk[2] == id(self.current_gray)
+                and cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK
+            ):
+                lk_map = cached_lk[3]
+                n_pt = len(previous_tracks)
+                hit_all = True
+                f_arr = np.empty((n_pt, 1, 2), dtype=np.float32)
+                ok_arr = np.empty((n_pt, 1), dtype=np.uint8)
+                rev_arr = np.empty((n_pt, 1, 2), dtype=np.float32)
+                bok_arr = np.empty((n_pt, 1), dtype=np.uint8)
+                for j, (lid, _) in enumerate(previous_tracks):
+                    entry = lk_map.get(lid)
+                    if entry is None:
+                        hit_all = False
+                        break
+                    f_arr[j, 0] = entry[0]
+                    ok_arr[j, 0] = entry[1]
+                    rev_arr[j, 0] = entry[2]
+                    bok_arr[j, 0] = entry[3]
+                if hit_all:
+                    flowed, ok, reversed_pixels, back_ok = f_arr, ok_arr, rev_arr, bok_arr
+                    used_fast_lk = True
+            if not used_fast_lk and cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK:
                 try:
                     from native_accel import build_lk_pyramid_avx512, track_lk_pyramids_avx512
                     prev_pyr = getattr(self, "previous_lk_pyramid", None)
@@ -7132,7 +7159,19 @@ class SharedSlam:
             return None
 
         flowed_pts = flowed[:, 0]
-        fb_err = np.linalg.norm(reversed_pixels[:, 0] - old_pixels[:, 0], axis=1)
+        rev_pts = reversed_pixels[:, 0]
+        ok_flat = ok.ravel()
+        bok_flat = back_ok.ravel()
+        self._cached_lk_flow = (
+            int(index),
+            id(self.previous_gray),
+            id(self.current_gray),
+            {
+                prev_tracks[j][0]: (flowed_pts[j], ok_flat[j], rev_pts[j], bok_flat[j])
+                for j in range(len(prev_tracks))
+            },
+        )
+        fb_err = np.linalg.norm(rev_pts - old_pixels[:, 0], axis=1)
         lk_valid = (
             flow_visible
             & ok.ravel().astype(bool)
@@ -7292,6 +7331,7 @@ class SharedSlam:
                 "Frames must arrive in consecutive order, starting at zero"
             )
         self._process_frame_token = int(index)
+        self._cached_lk_flow = None
         self._descriptor_association_retry_snapshot = None
         self.loop_worker.poll(self.map)
         if extracted is not None and getattr(extracted, "lazy_extractor", None) is not None:

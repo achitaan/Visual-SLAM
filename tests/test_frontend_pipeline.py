@@ -207,3 +207,42 @@ def test_concurrent_stereo_matches_sequential_and_shuts_down_cleanly():
             assert a.stereo_depth_verification == b.stereo_depth_verification
     finally:
         slam.close(finish=False)
+
+
+def test_lazy_extraction_materializes_bit_exact_and_respects_eager_hint():
+    K, stereo = _make_stereo_camera()
+    cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")
+    frames = [_synthetic_stereo_pair(seed=101, shift=10 + i) for i in range(4)]
+    slam = SharedSlam(K, stereo=stereo, config=cfg)
+    try:
+        eager_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, lazy_extraction=False) as p_ref:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_ref.submit(i, im_l, im_r)
+                eager_out.append(p_ref.get(i))
+
+        lazy_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, lazy_extraction=True) as p_lazy:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_lazy.submit(i, im_l, im_r, eager=(i == 3))
+                lazy_out.append(p_lazy.get(i))
+        assert p_lazy._lazy_sgbm_executor is None
+
+        # Frames 0, 1 are always eager; frame 2 is lazy; frame 3 requested eager=True.
+        assert lazy_out[0].lazy_extractor is None
+        assert lazy_out[1].lazy_extractor is None
+        assert lazy_out[2].lazy_extractor is not None
+        assert lazy_out[3].lazy_extractor is None
+
+        mat2 = lazy_out[2].lazy_extractor()
+        for a, b in zip(eager_out, [lazy_out[0], lazy_out[1], mat2, lazy_out[3]]):
+            np.testing.assert_array_equal(a.pixels, b.pixels)
+            np.testing.assert_array_equal(a.descriptors, b.descriptors)
+            np.testing.assert_array_equal(a.octaves, b.octaves)
+            np.testing.assert_array_equal(a.disparity, b.disparity)
+            np.testing.assert_array_equal(a.points, b.points)
+            np.testing.assert_array_equal(a.right_u, b.right_u)
+            assert a.stereo_depth_verification == b.stereo_depth_verification
+    finally:
+        slam.close(finish=False)
+

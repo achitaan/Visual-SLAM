@@ -10,8 +10,10 @@ namespace {
 constexpr float PI_F = 3.14159265358979323846f;
 constexpr float RAD2DEG = 180.0f / PI_F;
 constexpr float DEG2RAD = PI_F / 180.0f;
-constexpr int32_t Q_SHIFT = 5;            // Q5 fixed point for int16 octave -1 (0..255 -> 0..8160)
-constexpr float INV_Q = 1.0f / 32.0f;
+constexpr int32_t Q_SHIFT = 7;            // Q7 fixed point for int16 gpyr (0..255 -> 0..32640)
+constexpr int32_t DOG_SHIFT = 9;          // Q9 fixed point for int16 dogpyr (1/512 gray level, range [-64,+64])
+constexpr float INV_Q = 1.0f / 128.0f;
+constexpr float INV_DOG_Q = 1.0f / 512.0f;
 
 // Fast accurate AVX-512 atan2 in degrees [0, 360), max error < 0.05 deg.
 inline __m512 fast_atan2_deg_avx512(__m512 y, __m512 x) {
@@ -43,7 +45,7 @@ inline __m512 fast_atan2_deg_avx512(__m512 y, __m512 x) {
 }
 
 void make_gaussian_kernel(float sigma, float half_w[25], int32_t& rad) {
-    rad = static_cast<int32_t>(std::ceil(2.2f * sigma));
+    rad = static_cast<int32_t>(std::ceil(2.6f * sigma));
     if (rad < 1) rad = 1;
     if (rad > 20) rad = 20;
     const float inv2s2 = -0.5f / (sigma * sigma);
@@ -71,16 +73,16 @@ void make_gaussian_kernel_q15(float sigma, int16_t hw_q15[25], int32_t& rad) {
 }
 
 // =========================================================================
-// Q5 int16_t 32-wide AVX-512BW Gaussian + DoG + Upsample for Octave -1
-// Cuts DRAM bandwidth in HALF and doubles SIMD width (32 pixels / vector)!
+// Q7 int16_t gpyr + Q9 int16_t dogpyr 32-wide AVX-512BW Gaussian + DoG
+// Exact int32 vpmaddwd Q22 accumulation -> Q9 DoG directly before rounding!
 // =========================================================================
 
 void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
                             int16_t* __restrict dst, int16_t* __restrict row_tmp) {
     const int32_t dh = h * 2;
     const int32_t dw = w * 2;
-    const __m512i v24 = _mm512_set1_epi16(24);  // 0.75 * 32
-    const __m512i v8  = _mm512_set1_epi16(8);   // 0.25 * 32
+    const __m512i v96 = _mm512_set1_epi16(96);  // 0.75 * 128
+    const __m512i v32 = _mm512_set1_epi16(32);  // 0.25 * 128
     alignas(64) static constexpr int16_t IL_LO[32] = {
         0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39,
         8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47};
@@ -94,31 +96,31 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         const uint8_t* sr = src + static_cast<size_t>(y) * w;
         int16_t* tr = row_tmp + static_cast<size_t>(y) * dw;
         tr[0] = static_cast<int16_t>(sr[0] << Q_SHIFT);
-        tr[1] = static_cast<int16_t>(24 * sr[0] + 8 * sr[std::min(1, w - 1)]);
+        tr[1] = static_cast<int16_t>(96 * sr[0] + 32 * sr[std::min(1, w - 1)]);
         int32_t x = 1;
         for (; x + 32 < w; x += 32) {
             const __m512i vc = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x)));
             const __m512i vl = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x - 1)));
             const __m512i vr = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x + 1)));
-            const __m512i c24 = _mm512_mullo_epi16(vc, v24);
-            const __m512i ev = _mm512_add_epi16(c24, _mm512_mullo_epi16(vl, v8));
-            const __m512i od = _mm512_add_epi16(c24, _mm512_mullo_epi16(vr, v8));
+            const __m512i c96 = _mm512_mullo_epi16(vc, v96);
+            const __m512i ev = _mm512_add_epi16(c96, _mm512_mullo_epi16(vl, v32));
+            const __m512i od = _mm512_add_epi16(c96, _mm512_mullo_epi16(vr, v32));
             _mm512_storeu_si512(tr + 2 * x,      _mm512_permutex2var_epi16(ev, il_lo, od));
             _mm512_storeu_si512(tr + 2 * x + 32, _mm512_permutex2var_epi16(ev, il_hi, od));
         }
         for (; x < w - 1; ++x) {
             const int32_t c = sr[x];
-            tr[2 * x]     = static_cast<int16_t>(24 * c + 8 * sr[x - 1]);
-            tr[2 * x + 1] = static_cast<int16_t>(24 * c + 8 * sr[x + 1]);
+            tr[2 * x]     = static_cast<int16_t>(96 * c + 32 * sr[x - 1]);
+            tr[2 * x + 1] = static_cast<int16_t>(96 * c + 32 * sr[x + 1]);
         }
         if (w > 1) {
-            tr[2 * (w - 1)]     = static_cast<int16_t>(24 * sr[w - 1] + 8 * sr[w - 2]);
+            tr[2 * (w - 1)]     = static_cast<int16_t>(96 * sr[w - 1] + 32 * sr[w - 2]);
             tr[2 * (w - 1) + 1] = static_cast<int16_t>(sr[w - 1] << Q_SHIFT);
         }
     }
 
-    const __m512i w075 = _mm512_set1_epi16(24576);  // 0.75 * 32768
-    const __m512i w025 = _mm512_set1_epi16(8192);   // 0.25 * 32768
+    const __m512i w31 = _mm512_set1_epi32((1 << 16) | 3);  // pairs: (3, 1)
+    const __m512i v_rnd2 = _mm512_set1_epi32(2);
     for (int32_t dy = 0; dy < dh; ++dy) {
         const int32_t sy = dy >> 1;
         const int32_t sy_other = (dy & 1) ? std::min(sy + 1, h - 1) : std::max(sy - 1, 0);
@@ -126,21 +128,12 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         const int16_t* r_oth  = row_tmp + static_cast<size_t>(sy_other) * dw;
         int16_t* dr = dst + static_cast<size_t>(dy) * dw;
         int32_t x = 0;
-        for (; x + 63 < dw; x += 64) {
-            __m512i v0 = _mm512_add_epi16(
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_main + x), w075),
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_oth + x), w025));
-            __m512i v1 = _mm512_add_epi16(
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_main + x + 32), w075),
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_oth + x + 32), w025));
-            _mm512_storeu_si512(dr + x, v0);
-            _mm512_storeu_si512(dr + x + 32, v1);
-        }
         for (; x + 31 < dw; x += 32) {
-            __m512i v0 = _mm512_add_epi16(
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_main + x), w075),
-                _mm512_mulhrs_epi16(_mm512_loadu_si512(r_oth + x), w025));
-            _mm512_storeu_si512(dr + x, v0);
+            __m512i m = _mm512_loadu_si512(r_main + x);
+            __m512i o = _mm512_loadu_si512(r_oth + x);
+            __m512i lo = _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(_mm512_unpacklo_epi16(m, o), w31), v_rnd2), 2);
+            __m512i hi = _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(_mm512_unpackhi_epi16(m, o), w31), v_rnd2), 2);
+            _mm512_storeu_si512(dr + x, _mm512_packs_epi32(lo, hi));
         }
         for (; x < dw; ++x) dr[x] = static_cast<int16_t>((3 * r_main[x] + r_oth[x] + 2) >> 2);
     }
@@ -162,30 +155,23 @@ inline void blur_row_h_i16_fixed_avx512(const int16_t* __restrict srow, int16_t*
 
     __m512i vw[RAD + 1];
     for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_epi16(hw[k]);
+    const __m512i v_zero = _mm512_setzero_si512();
+    const __m512i v_half = _mm512_set1_epi32(16384);
 
     int32_t x = RAD;
     const int32_t x_mid_end = w - RAD;
-    for (; x + 63 < x_mid_end; x += 64) {
-        __m512i a0 = _mm512_mulhrs_epi16(_mm512_loadu_si512(srow + x), vw[0]);
-        __m512i a1 = _mm512_mulhrs_epi16(_mm512_loadu_si512(srow + x + 32), vw[0]);
-        #pragma GCC unroll 12
-        for (int32_t k = 1; k <= RAD; ++k) {
-            a0 = _mm512_add_epi16(a0, _mm512_mulhrs_epi16(
-                _mm512_add_epi16(_mm512_loadu_si512(srow + x - k), _mm512_loadu_si512(srow + x + k)), vw[k]));
-            a1 = _mm512_add_epi16(a1, _mm512_mulhrs_epi16(
-                _mm512_add_epi16(_mm512_loadu_si512(srow + x + 32 - k), _mm512_loadu_si512(srow + x + 32 + k)), vw[k]));
-        }
-        _mm512_storeu_si512(trow + x, a0);
-        _mm512_storeu_si512(trow + x + 32, a1);
-    }
     for (; x + 31 < x_mid_end; x += 32) {
-        __m512i a0 = _mm512_mulhrs_epi16(_mm512_loadu_si512(srow + x), vw[0]);
+        const __m512i c0 = _mm512_loadu_si512(srow + x);
+        __m512i a_lo = _mm512_add_epi32(v_half, _mm512_madd_epi16(_mm512_unpacklo_epi16(c0, v_zero), vw[0]));
+        __m512i a_hi = _mm512_add_epi32(v_half, _mm512_madd_epi16(_mm512_unpackhi_epi16(c0, v_zero), vw[0]));
         #pragma GCC unroll 12
         for (int32_t k = 1; k <= RAD; ++k) {
-            a0 = _mm512_add_epi16(a0, _mm512_mulhrs_epi16(
-                _mm512_add_epi16(_mm512_loadu_si512(srow + x - k), _mm512_loadu_si512(srow + x + k)), vw[k]));
+            const __m512i vl = _mm512_loadu_si512(srow + x - k);
+            const __m512i vr = _mm512_loadu_si512(srow + x + k);
+            a_lo = _mm512_add_epi32(a_lo, _mm512_madd_epi16(_mm512_unpacklo_epi16(vl, vr), vw[k]));
+            a_hi = _mm512_add_epi32(a_hi, _mm512_madd_epi16(_mm512_unpackhi_epi16(vl, vr), vw[k]));
         }
-        _mm512_storeu_si512(trow + x, a0);
+        _mm512_storeu_si512(trow + x, _mm512_packs_epi32(_mm512_srai_epi32(a_lo, 15), _mm512_srai_epi32(a_hi, 15)));
     }
     for (; x < x_mid_end; ++x) {
         int32_t acc = static_cast<int32_t>(hw[0]) * srow[x];
@@ -228,6 +214,9 @@ void gaussian_blur_ring_i16_fixed_avx512(
 
     __m512i vw[RAD + 1];
     for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_epi16(hw[k]);
+    const __m512i v_zero = _mm512_setzero_si512();
+    const __m512i v_half = _mm512_set1_epi32(16384);
+    const __m512i v_dhalf = _mm512_set1_epi32(4096);  // 0.5 << 13 for Q22 -> Q9 rounding
 
     for (int32_t y = 0; y < h; ++y) {
         const int32_t need_ry = std::min(y + RAD, h - 1);
@@ -250,41 +239,41 @@ void gaussian_blur_ring_i16_fixed_avx512(
         int16_t* dogrow = WRITE_DOG ? (dog_dst + row_off) : nullptr;
 
         int32_t x = 0;
-        for (; x + 63 < w; x += 64) {
-            __m512i a0 = _mm512_mulhrs_epi16(_mm512_loadu_si512(r0 + x), vw[0]);
-            __m512i a1 = _mm512_mulhrs_epi16(_mm512_loadu_si512(r0 + x + 32), vw[0]);
+        for (; x + 31 < w; x += 32) {
+            const __m512i c0 = _mm512_loadu_si512(r0 + x);
+            __m512i a_lo = _mm512_madd_epi16(_mm512_unpacklo_epi16(c0, v_zero), vw[0]);
+            __m512i a_hi = _mm512_madd_epi16(_mm512_unpackhi_epi16(c0, v_zero), vw[0]);
             #pragma GCC unroll 12
             for (int32_t k = 1; k <= RAD; ++k) {
-                a0 = _mm512_add_epi16(a0, _mm512_mulhrs_epi16(
-                    _mm512_add_epi16(_mm512_loadu_si512(r_up[k] + x), _mm512_loadu_si512(r_dn[k] + x)), vw[k]));
-                a1 = _mm512_add_epi16(a1, _mm512_mulhrs_epi16(
-                    _mm512_add_epi16(_mm512_loadu_si512(r_up[k] + x + 32), _mm512_loadu_si512(r_dn[k] + x + 32)), vw[k]));
+                const __m512i vu = _mm512_loadu_si512(r_up[k] + x);
+                const __m512i vd = _mm512_loadu_si512(r_dn[k] + x);
+                a_lo = _mm512_add_epi32(a_lo, _mm512_madd_epi16(_mm512_unpacklo_epi16(vu, vd), vw[k]));
+                a_hi = _mm512_add_epi32(a_hi, _mm512_madd_epi16(_mm512_unpackhi_epi16(vu, vd), vw[k]));
             }
             if constexpr (WRITE_G) {
-                _mm512_storeu_si512(drow + x, a0);
-                _mm512_storeu_si512(drow + x + 32, a1);
+                const __m512i res = _mm512_packs_epi32(
+                    _mm512_srai_epi32(_mm512_add_epi32(a_lo, v_half), 15),
+                    _mm512_srai_epi32(_mm512_add_epi32(a_hi, v_half), 15));
+                _mm512_storeu_si512(drow + x, res);
             }
             if constexpr (WRITE_DOG) {
-                _mm512_storeu_si512(dogrow + x, _mm512_sub_epi16(a0, _mm512_loadu_si512(srow + x)));
-                _mm512_storeu_si512(dogrow + x + 32, _mm512_sub_epi16(a1, _mm512_loadu_si512(srow + x + 32)));
+                // Compute Q9 DoG directly from Q22 accumulator: (a - (s << 15) + 4096) >> 13
+                const __m512i sv = _mm512_loadu_si512(srow + x);
+                const __m512i s_lo = _mm512_slli_epi32(_mm512_unpacklo_epi16(sv, v_zero), 15);
+                const __m512i s_hi = _mm512_slli_epi32(_mm512_unpackhi_epi16(sv, v_zero), 15);
+                const __m512i d_lo = _mm512_srai_epi32(_mm512_add_epi32(_mm512_sub_epi32(a_lo, s_lo), v_dhalf), 13);
+                const __m512i d_hi = _mm512_srai_epi32(_mm512_add_epi32(_mm512_sub_epi32(a_hi, s_hi), v_dhalf), 13);
+                _mm512_storeu_si512(dogrow + x, _mm512_packs_epi32(d_lo, d_hi));
             }
-        }
-        for (; x + 31 < w; x += 32) {
-            __m512i a0 = _mm512_mulhrs_epi16(_mm512_loadu_si512(r0 + x), vw[0]);
-            #pragma GCC unroll 12
-            for (int32_t k = 1; k <= RAD; ++k) {
-                a0 = _mm512_add_epi16(a0, _mm512_mulhrs_epi16(
-                    _mm512_add_epi16(_mm512_loadu_si512(r_up[k] + x), _mm512_loadu_si512(r_dn[k] + x)), vw[k]));
-            }
-            if constexpr (WRITE_G) _mm512_storeu_si512(drow + x, a0);
-            if constexpr (WRITE_DOG) _mm512_storeu_si512(dogrow + x, _mm512_sub_epi16(a0, _mm512_loadu_si512(srow + x)));
         }
         for (; x < w; ++x) {
             int32_t acc = static_cast<int32_t>(hw[0]) * r0[x];
             for (int32_t k = 1; k <= RAD; ++k) acc += static_cast<int32_t>(hw[k]) * (static_cast<int32_t>(r_up[k][x]) + r_dn[k][x]);
-            int16_t val = static_cast<int16_t>((acc + 16384) >> 15);
-            if constexpr (WRITE_G) drow[x] = val;
-            if constexpr (WRITE_DOG) dogrow[x] = static_cast<int16_t>(val - srow[x]);
+            if constexpr (WRITE_G) drow[x] = static_cast<int16_t>((acc + 16384) >> 15);
+            if constexpr (WRITE_DOG) {
+                int32_t diff = (acc - (static_cast<int32_t>(srow[x]) << 15) + 4096) >> 13;
+                dogrow[x] = static_cast<int16_t>(std::max(-32768, std::min(32767, diff)));
+            }
         }
     }
 }
@@ -756,14 +745,14 @@ int32_t extract_sift_grid_avx512(
     // instead of flooring to 0 when contrast_threshold=0.02.
     const float final_thresh = (contrast_threshold / nOctaveLayers) * 255.0f;
     const float pre_thresh = 0.5f * final_thresh;
-    const int16_t pre_thresh_i16 = static_cast<int16_t>(std::floor(pre_thresh * 32.0f));
+    const int16_t pre_thresh_i16 = static_cast<int16_t>(std::floor(pre_thresh * static_cast<float>(1 << DOG_SHIFT)));
     const __m512i v_pt16 = _mm512_set1_epi16(pre_thresh_i16);
     const __m512i v_z16 = _mm512_setzero_si512();
 
     std::vector<RawExtremum> raw_ext;
     raw_ext.reserve(8192);
 
-    // 1+2. Unified Q5 int16_t 32-wide AVX-512BW Gaussian + DoG pyramid and extrema scan
+    // 1+2. Unified Q7 gpyr + Q9 dogpyr 32-wide AVX-512BW pyramid and extrema scan
     for (int32_t o = 0; o < n_octaves; ++o) {
         const int32_t oh = g_ws.oct_h[o];
         const int32_t ow = g_ws.oct_w[o];
@@ -920,7 +909,7 @@ int32_t extract_sift_grid_avx512(
                         const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
                         const float dy = 0.5f * (dc[idx + ow] - dc[idx - ow]);
                         const float ds = 0.5f * (dn[idx] - dp[idx]);
-                        const float contr = (v0 + 0.5f * (dx * xc + dy * xr + ds * xi)) * INV_Q;
+                        const float contr = (v0 + 0.5f * (dx * xc + dy * xr + ds * xi)) * INV_DOG_Q;
                         if (std::abs(contr) < final_thresh) continue;
 
                         const float dxx = dc[idx + 1] + dc[idx - 1] - 2.0f * v0;
@@ -975,10 +964,10 @@ int32_t extract_sift_grid_avx512(
         return raw_ext[a].response > raw_ext[b].response;
     });
 
-    // Spatially pre-select up to target_features extrema (plus 5% margin) before computing
+    // Spatially pre-select up to target_features extrema (plus 15% margin) before computing
     // orientation histograms, avoiding wasted orientation work on dense-cell surplus extrema.
     const int32_t pre_ori_cap = std::min(static_cast<int32_t>(ext_order.size()),
-                                         std::max(target_features, static_cast<int32_t>(target_features * 1.05)));
+                                         std::max(target_features, static_cast<int32_t>(target_features * 1.15)));
     if (static_cast<int32_t>(ext_order.size()) > pre_ori_cap) {
         const int32_t cols = std::max(1, grid_cols);
         const int32_t rows = std::max(1, grid_rows);

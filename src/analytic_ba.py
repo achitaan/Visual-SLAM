@@ -383,6 +383,41 @@ def refine_stereo_pose_analytic(
     R_cw = T_init[:3, :3].T.copy()
     t_cw = (-R_cw @ T_init[:3, 3]).copy()
 
+    from native_accel import refine_stereo_pose_lm_cpp
+
+    native_res = refine_stereo_pose_lm_cpp(
+        R_cw, t_cw, pts_w, obs, weights, mask,
+        fx, fy, cx, cy, fb, doff, delta_huber, max(1, int(max_iter)),
+    )
+    if native_res is not None:
+        R_cw, t_cw, initial_cost, cur_cost, converged, H_final = native_res
+        T_wc_out = np.eye(4, dtype=np.float64)
+        T_wc_out[:3, :3] = R_cw.T
+        T_wc_out[:3, 3] = -R_cw.T @ t_cw
+        pts_c = pts_w @ R_cw.T + t_cw
+        z = pts_c[:, 2]
+        valid = z > 1e-3
+        inv_z = np.where(valid, 1.0 / np.maximum(z, 1e-9), 0.0)
+        u = fx * pts_c[:, 0] * inv_z + cx
+        v = fy * pts_c[:, 1] * inv_z + cy
+        uR = u - fb * inv_z - doff
+        res = np.empty((n, 3), dtype=np.float64)
+        res[:, 0] = np.where(valid, np.clip(u - obs[:, 0], -1e4, 1e4), 1e4)
+        res[:, 1] = np.where(valid, np.clip(v - obs[:, 1], -1e4, 1e4), 1e4)
+        res[:, 2] = np.where(valid, np.clip(uR - obs[:, 2], -1e4, 1e4), 1e4)
+        left_err_norm = np.linalg.norm(res[:, :2] * weights[:, :2], axis=1)
+        right_active = mask[:, 2]
+        right_ok = ~right_active | (np.abs(res[:, 2] * weights[:, 2]) <= max(2.0, delta_huber * 1.5))
+        inlier_mask = valid & (left_err_norm <= max(2.5, delta_huber * 2.0)) & right_ok
+        return PoseRefineResult(
+            T_wc=T_wc_out,
+            converged=bool(converged or cur_cost < initial_cost),
+            initial_cost=float(initial_cost),
+            final_cost=float(cur_cost),
+            inlier_mask=inlier_mask,
+            hessian_6x6=H_final,
+        )
+
     def _eval(R: np.ndarray, t: np.ndarray):
         pts_c = pts_w @ R.T + t
         z = pts_c[:, 2]
@@ -593,6 +628,55 @@ def solve_schur_local_bundle(
         w_rec = np.asarray(obs_weights, dtype=np.float64).reshape(len(record_cameras), 3)
     else:
         w_rec = np.ones((len(record_cameras), 3), dtype=np.float64)
+
+    try:
+        from native_accel import solve_schur_local_bundle_cpp
+        base_cams = camera_poses_for(x)
+        native_res = solve_schur_local_bundle_cpp(
+            base_cams,
+            free_camera_indices,
+            x[free_offsets].reshape(-1),
+            x[point_offset:point_limit],
+            record_cameras,
+            record_points,
+            measured_pixels,
+            measured_right,
+            rec_mask,
+            w_rec,
+            held_cameras,
+            held_points,
+            held_pixels,
+            held_right,
+            held_mask,
+            K_arr,
+            float(baseline),
+            doff,
+            bool(metric),
+            delta_h,
+            int(max_iter),
+        )
+        if native_res is not None:
+            fp_out, xp_out, st_out, nfev_out, cost_out, opt_out = native_res
+            x[free_offsets] = fp_out.reshape(n_free, 6)
+            x[point_offset:point_limit] = xp_out
+            msg_map = {
+                -1: "nonfinite_gradient",
+                0: "max_iter",
+                1: "gtol_converged",
+                2: "ftol_xtol_converged",
+                3: "no_further_decrease",
+            }
+            return SchurBAResult(
+                x=x,
+                success=bool(st_out >= 0),
+                status=int(st_out),
+                message=msg_map.get(st_out, "converged"),
+                nfev=int(nfev_out),
+                cost=float(cost_out),
+                optimality=float(opt_out),
+            )
+    except Exception:
+        pass
 
     def _eval_block(pts_w, cams, cam_idx, pixels, right_u, mask, weights):
         m = len(cam_idx)

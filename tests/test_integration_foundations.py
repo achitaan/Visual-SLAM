@@ -121,3 +121,34 @@ def test_gemm_l2_matcher_exact_parity_with_bfmatcher():
         np.testing.assert_array_equal(actual_gemm, expected)
         np.testing.assert_array_equal(actual_dispatch, expected)
 
+
+def test_keyframe_index_blas_matches_scipy_reference_and_caches_readonly_queries():
+    from scipy.cluster.vq import kmeans2, vq
+
+    rng = np.random.default_rng(31)
+    index = KeyframeIndex()
+    descs = {}
+    for ident in range(12):
+        arr = np.abs(rng.normal(size=(60, 128))).astype(np.float32)
+        arr.setflags(write=False)
+        descs[ident] = arr
+        index.upsert(ident, ident * 10, arr)
+
+    training = np.vstack([descs[i] for i in range(5)]).astype(np.float32)
+    ref_vocab, _ = kmeans2(training, 128, iter=20, minit="++", rng=np.random.default_rng(0))
+    np.testing.assert_allclose(index.vocabulary, ref_vocab, atol=1e-5, rtol=1e-5)
+
+    # Verify encoding matches SciPy vq + unprojected difference
+    words_ref, _ = vq(descs[11], index.vocabulary)
+    counts_ref = np.bincount(words_ref, minlength=128).astype(np.float64)
+    hist_ref = counts_ref / counts_ref.sum()
+    np.testing.assert_allclose(index.histograms[11], hist_ref, atol=1e-12)
+
+    # Verify query result matches postings-loop reference and read-only cache hits cleanly
+    eligible = set(range(10))
+    res_cached = index.query(descs[11], eligible=eligible, limit=8)
+    writable_copy = descs[11].copy()
+    res_uncached = index.query(writable_copy, eligible=eligible, limit=8)
+    assert res_cached == res_uncached
+    assert len(res_cached) == 8
+    assert set(res_cached) <= eligible

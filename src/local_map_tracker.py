@@ -104,6 +104,29 @@ def match_landmarks_by_projection(
         f_oct = None
 
     rad = max(1.0, float(radius_px))
+    try:
+        from native_accel import match_projected_landmarks_avx512
+        native_pairs = match_projected_landmarks_avx512(
+            proj_uv,
+            lm_descs,
+            lm_oct,
+            f_pixels,
+            f_descs,
+            f_oct,
+            radius_px=rad,
+            ratio=float(ratio),
+            max_octave_diff=int(max_octave_diff) if use_octaves else -1,
+            max_l2_distance=float(max_l2_distance),
+            max_single_l2_distance=float(max_single_l2_distance),
+        )
+        if native_pairs is not None:
+            return {
+                int(lm_ids[lm_i]): int(feat_i)
+                for lm_i, feat_i in native_pairs.tolist()
+            }
+    except Exception:
+        pass
+
     rad_sq = rad * rad
     max_dist_sq = float(max_l2_distance) * float(max_l2_distance)
     max_single_sq = float(max_single_l2_distance) * float(max_single_l2_distance)
@@ -248,9 +271,69 @@ def fuse_neighbor_landmarks(
         rad = max(1.0, float(radius_px))
         rad_sq = rad * rad
         max_d2 = float(max_l2_distance) * float(max_l2_distance)
-        grid, inv_cell = _build_spatial_grid(f_pixels, max(rad, 4.0))
 
         fused = 0
+        native_fused_pairs = None
+        try:
+            from native_accel import match_projected_landmarks_avx512
+            vis_lms = [unseen_lms[int(p)] for p in idx_v.tolist()]
+            lm_descs_arr = np.asarray([lm.descriptor for lm in vis_lms], dtype=np.float32)
+            lm_octs_arr = (
+                np.asarray([int(getattr(lm, "octave", 0)) for lm in vis_lms], dtype=np.int16)
+                if f_octs is not None else None
+            )
+            native_fused_pairs = match_projected_landmarks_avx512(
+                uv.astype(np.float32, copy=False),
+                lm_descs_arr,
+                lm_octs_arr,
+                f_pixels,
+                f_descs,
+                f_octs,
+                radius_px=rad,
+                ratio=1.01,
+                max_octave_diff=1 if f_octs is not None else -1,
+                max_l2_distance=float(max_l2_distance),
+                max_single_l2_distance=float(max_l2_distance),
+            )
+        except Exception:
+            native_fused_pairs = None
+
+        if native_fused_pairs is not None:
+            for row_i, feat_idx in native_fused_pairs.tolist():
+                lm = unseen_lms[int(idx_v[row_i])]
+                existing_lid = int(keyframe.landmark_ids[feat_idx])
+                if existing_lid < 0:
+                    ru = None
+                    if right_u_values is not None and feat_idx < len(right_u_values):
+                        rv = float(right_u_values[feat_idx])
+                        if np.isfinite(rv):
+                            ru = rv
+                    obs = Observation(
+                        f_pixels[feat_idx].copy(),
+                        ru,
+                        octave=int(f_octs[feat_idx]) if f_octs is not None else 0,
+                    )
+                    keyframe.landmark_ids[feat_idx] = int(lm.id)
+                    map_state.add_observation(int(lm.id), kf_id, obs)
+                    fused += 1
+                elif existing_lid != int(lm.id) and existing_lid in map_state.landmarks:
+                    other = map_state.landmarks[existing_lid]
+                    if (len(other.observations) == 1
+                            and len(lm.observations) >= 2
+                            and float(np.linalg.norm(other.position - lm.position)) < max(0.5, 0.05 * float(pc[row_i, 2]))):
+                        obs_other = other.observations.get(kf_id)
+                        if obs_other is not None:
+                            keyframe.landmark_ids[feat_idx] = int(lm.id)
+                            map_state.remove_landmark(existing_lid)
+                            map_state.add_observation(int(lm.id), kf_id, obs_other)
+                            fused += 1
+            if fused > 0:
+                keyframe.landmark_ids_version = int(getattr(keyframe, "landmark_ids_version", 0)) + 1
+                map_state.landmark_ids_version = int(getattr(map_state, "landmark_ids_version", 0)) + 1
+            return fused
+
+        grid, inv_cell = _build_spatial_grid(f_pixels, max(rad, 4.0))
+
         for row_i, lm_pos in enumerate(idx_v):
             lm = unseen_lms[int(lm_pos)]
             u_p, v_p = float(uv[row_i, 0]), float(uv[row_i, 1])
@@ -310,6 +393,9 @@ def fuse_neighbor_landmarks(
                         map_state.remove_landmark(existing_lid)
                         map_state.add_observation(int(lm.id), kf_id, obs_other)
                         fused += 1
+        if fused > 0:
+            keyframe.landmark_ids_version = int(getattr(keyframe, "landmark_ids_version", 0)) + 1
+            map_state.landmark_ids_version = int(getattr(map_state, "landmark_ids_version", 0)) + 1
         _ = baseline
         return fused
 
@@ -374,50 +460,86 @@ def triangulate_far_stereo_landmarks(
     # Far points shift very little from H_inf prediction (e.g., < 45 px even at 20 m & 3 m motion)
     search_rad = max(25.0, min(80.0, 20.0 + 10.0 * cam_dist))
     rad_sq = search_rad * search_rad
-    grid2, inv_cell = _build_spatial_grid(px2.astype(np.float32), search_rad)
 
     pairs: list[tuple[int, int]] = []
     used_curr: set[int] = set()
     cos_min = 0.72
+    r2_thresh = float(ratio * ratio)
+    max_unit_l2 = float(np.sqrt(max(0.0, 2.0 - 2.0 * cos_min)))
 
-    for i1 in range(len(prev_unassigned)):
-        if not valid_h[i1]:
-            continue
-        ux, uy = float(pred2[i1, 0]), float(pred2[i1, 1])
-        cx, cy = int(np.floor(ux * inv_cell)), int(np.floor(uy * inv_cell))
-        cands: list[int] = []
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                b = grid2.get((cx + dx, cy + dy))
-                if b:
-                    cands.extend(b)
-        if not cands:
-            continue
-        c_arr = np.asarray(cands, dtype=np.intp)
-        diff = px2[c_arr] - pred2[i1]
-        in_r = (diff[:, 0] * diff[:, 0] + diff[:, 1] * diff[:, 1]) <= rad_sq
-        if not np.any(in_r):
-            continue
-        c_arr = c_arr[in_r]
-        sims = d2[c_arr] @ d1[i1]
-        # Convert cosine similarity to squared L2 on unit sphere: d2 = 2 - 2*sim
-        d2_vals = np.maximum(0.0, 2.0 - 2.0 * sims)
-        if len(d2_vals) == 1:
-            b_idx = 0
-            if float(sims[0]) < cos_min:
-                continue
-        else:
-            part = np.argpartition(d2_vals, 1)
-            b_idx = int(part[0])
-            s_idx = int(part[1])
-            if float(sims[b_idx]) < cos_min:
-                continue
-            if d2_vals[s_idx] > 1e-12 and d2_vals[b_idx] >= (ratio * ratio) * d2_vals[s_idx]:
-                continue
-        i2 = int(c_arr[b_idx])
-        if i2 not in used_curr:
-            used_curr.add(i2)
-            pairs.append((i1, i2))
+    # Fast path: AVX-512 spatial-grid matcher applies the geometric search window
+    # BEFORE descriptor ranking (exact parity with the local window fallback).
+    native_used = False
+    valid_i1 = np.flatnonzero(valid_h)
+    if len(valid_i1):
+        try:
+            from native_accel import match_projected_landmarks_f32
+            native_pairs = match_projected_landmarks_f32(
+                pred2[valid_i1],
+                d1[valid_i1],
+                px2,
+                d2,
+                radius_px=float(search_rad),
+                ratio=float(ratio),
+                max_l2_distance=max_unit_l2,
+                max_single_l2_distance=max_unit_l2,
+            )
+            if native_pairs is not None:
+                native_used = True
+                for row_a, i2_k in native_pairs.tolist():
+                    i1_k = int(valid_i1[row_a])
+                    if i2_k not in used_curr:
+                        used_curr.add(i2_k)
+                        pairs.append((i1_k, i2_k))
+        except Exception:
+            native_used = False
+
+    if not native_used:
+        # Fallback: single BLAS SGEMM for all normalized descriptor similarities + float32 distance mask
+        valid_i1 = np.flatnonzero(valid_h)
+        if len(valid_i1):
+            p_sub = pred2[valid_i1].astype(np.float32, copy=False)  # [M, 2]
+            px2_f32 = px2.astype(np.float32, copy=False)
+            dx = p_sub[:, 0:1] - px2_f32[None, :, 0]
+            dy = p_sub[:, 1:2] - px2_f32[None, :, 1]
+            dx *= dx
+            dy *= dy
+            dx += dy
+            in_rad = dx <= np.float32(rad_sq)
+            del dy, dx
+            row_has = in_rad.any(axis=1)
+            act = np.flatnonzero(row_has)
+            if len(act):
+                act_i1 = valid_i1[act]
+                d1_sub = np.ascontiguousarray(d1[act_i1], np.float32)
+                d2_c = d2 if (d2.dtype == np.float32 and d2.flags.c_contiguous) else np.ascontiguousarray(d2, np.float32)
+                sims_all = d1_sub @ d2_c.T
+                in_rad_act = in_rad[act]
+                sims_all[~in_rad_act] = np.float32(-2.0)
+                best_j = np.argmax(sims_all, axis=1)
+                rows_a = np.arange(len(act))
+                best_s = sims_all[rows_a, best_j].copy()
+                sims_all[rows_a, best_j] = np.float32(-2.0)
+                second_s = np.max(sims_all, axis=1)
+                counts = in_rad_act.sum(axis=1)
+                best_s_list = best_s.tolist()
+                second_s_list = second_s.tolist()
+                best_j_list = best_j.tolist()
+                counts_list = counts.tolist()
+                act_i1_list = act_i1.tolist()
+                for idx_a in range(len(act)):
+                    bs = best_s_list[idx_a]
+                    if bs < cos_min:
+                        continue
+                    if counts_list[idx_a] > 1:
+                        d1_sq = max(0.0, 2.0 - 2.0 * bs)
+                        d2_sq = max(0.0, 2.0 - 2.0 * second_s_list[idx_a])
+                        if d2_sq > 1e-12 and d1_sq >= r2_thresh * d2_sq:
+                            continue
+                    i2 = best_j_list[idx_a]
+                    if i2 not in used_curr:
+                        used_curr.add(i2)
+                        pairs.append((act_i1_list[idx_a], i2))
 
     if not pairs:
         return []

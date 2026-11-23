@@ -164,40 +164,97 @@ def optimize_sparse_se3(
 
     if not poses:
         return []
-    for pose in poses:
-        validate_pose(pose)
     n_poses = len(poses)
+    try:
+        current = np.asarray(poses, dtype=np.float64)
+        if current.shape != (n_poses, 4, 4) or not np.isfinite(current).all():
+            raise ValueError("Invalid pose array")
+        R_all = current[:, :3, :3]
+        orth_err = np.max(np.abs(R_all.transpose(0, 2, 1) @ R_all - np.eye(3)))
+        det_err = np.max(np.abs(np.linalg.det(R_all) - 1.0))
+        bot_err = np.max(np.abs(current[:, 3, :] - np.array([0.0, 0.0, 0.0, 1.0])))
+        if orth_err > 1e-4 or det_err > 1e-4 or bot_err > 1e-6:
+            raise ValueError("Non-SE(3) pose")
+        current = current.copy()
+    except Exception:
+        for pose in poses:
+            validate_pose(pose)
+        current = np.asarray([p.copy() for p in poses], dtype=np.float64)
     if n_poses == 1 or not edges:
-        return [pose.copy() for pose in poses]
+        return [current[k].copy() for k in range(n_poses)]
 
     started = time.perf_counter()
-    weights_list = []
-    first_idx = []
-    second_idx = []
-    meas_list = []
-    for edge in edges:
+    n_edges = len(edges)
+    fi = np.empty(n_edges, dtype=np.intp)
+    si = np.empty(n_edges, dtype=np.intp)
+    meas = np.empty((n_edges, 4, 4), dtype=np.float64)
+    infos = np.empty((n_edges, 6, 6), dtype=np.float64)
+    for idx, edge in enumerate(edges):
         first, second, measurement, information = edge[0], edge[1], edge[2], edge[3]
         if not (0 <= first < n_poses and 0 <= second < n_poses) or first == second:
             raise ValueError("Pose graph edge references an invalid vertex")
-        validate_pose(measurement)
-        info = np.asarray(information, dtype=np.float64)
-        if info.shape != (6, 6) or not np.isfinite(info).all() or not np.allclose(info, info.T):
+        fi[idx] = int(first)
+        si[idx] = int(second)
+        m_arr = np.asarray(measurement, dtype=np.float64)
+        if m_arr.shape != (4, 4):
+            validate_pose(measurement)
+        meas[idx] = m_arr
+        info_arr = np.asarray(information, dtype=np.float64)
+        if info_arr.shape != (6, 6):
             raise ValueError("Information matrix must be finite symmetric 6x6")
-        weights_list.append(np.linalg.cholesky(info).T)
-        first_idx.append(int(first))
-        second_idx.append(int(second))
-        meas_list.append(np.asarray(measurement, dtype=np.float64))
+        infos[idx] = info_arr
 
-    n_edges = len(edges)
-    fi = np.asarray(first_idx, dtype=np.intp)
-    si = np.asarray(second_idx, dtype=np.intp)
-    W = np.asarray(weights_list, dtype=np.float64)  # [E, 6, 6]
-    meas = np.asarray(meas_list, dtype=np.float64)  # [E, 4, 4]
+    # Vectorized SE(3) check on measurements and SPD check on information matrices.
+    Rm_all = meas[:, :3, :3]
+    if (
+        not np.isfinite(meas).all()
+        or np.max(np.abs(Rm_all.transpose(0, 2, 1) @ Rm_all - np.eye(3))) > 1e-4
+        or np.max(np.abs(np.linalg.det(Rm_all) - 1.0)) > 1e-4
+        or np.max(np.abs(meas[:, 3, :] - np.array([0.0, 0.0, 0.0, 1.0]))) > 1e-6
+    ):
+        for edge in edges:
+            validate_pose(edge[2])
+    if not np.isfinite(infos).all() or not np.allclose(infos, infos.transpose(0, 2, 1)):
+        raise ValueError("Information matrix must be finite symmetric 6x6")
+    # Fast path for diagonal information matrices (standard in SLAM); general Cholesky fallback.
+    diag_vals = np.diagonal(infos, axis1=1, axis2=2)
+    off_mask = ~np.eye(6, dtype=bool)
+    if np.all(infos[:, off_mask] == 0.0) and np.all(diag_vals > 0.0):
+        W = np.zeros_like(infos)
+        idx6 = np.arange(6)
+        W[:, idx6, idx6] = np.sqrt(diag_vals)
+    else:
+        W = np.linalg.cholesky(infos).transpose(0, 2, 1)
+
     Rm_T = meas[:, :3, :3].transpose(0, 2, 1)       # [E, 3, 3]
     tm = meas[:, :3, 3]                              # [E, 3]
     delta_h = float(max(huber_scale, 1e-6))
+    try:
+        from native_accel import solve_sparse_se3_pgo_native
+        native_res = solve_sparse_se3_pgo_native(
+            current, fi, si, meas, W,
+            huber_scale=delta_h,
+            max_iter=max(1, min(int(max_evaluations), 60)),
+        )
+    except Exception:
+        native_res = None
+    if native_res is not None:
+        solved_poses, st = native_res
+        if np.isfinite(solved_poses).all() and st["final_cost"] <= st["initial_cost"] + 1e-9:
+            if diagnostics is not None:
+                diagnostics.update(
+                    solver="native sparse block-6x6 SE(3) LM",
+                    success=bool(st["converged"] or st["final_cost"] <= st["initial_cost"]),
+                    function_evaluations=int(st["nfev"]),
+                    jacobian_evaluations=int(st["njev"]),
+                    initial_cost=float(st["initial_cost"]),
+                    final_cost=float(st["final_cost"]),
+                    optimality=float(st["optimality"]),
+                    message="converged" if st["converged"] else "max_iterations",
+                    elapsed_s=float(time.perf_counter() - started),
+                )
+            return [solved_poses[k].copy() for k in range(n_poses)]
 
-    current = np.asarray([p.copy() for p in poses], dtype=np.float64)
     n_free = n_poses - 1
     n_vars = 6 * n_free
     n_rows = 6 * n_edges

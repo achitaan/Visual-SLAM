@@ -28,3 +28,5 @@ dashboard/CLAUDE.md
 trajectory.html
 dashboard/public/saved-visuals/
 dashboard/public/benchmark-graphs.html
+src/native_kernels/*.so
+

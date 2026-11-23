@@ -76,18 +76,22 @@ def select_grid_bucketed_indices(
     cell_ids = gy * cols + gx
 
     selected_mask = np.zeros(n, dtype=bool)
-    cell_counts = np.zeros(n_cells, dtype=np.int32)
-    selected_count = 0
+    cell_counts = [0] * n_cells
+    cell_id_list = cell_ids.tolist()
+    selected_positions: list[int] = []
 
     # Pass 1: fill each spatial cell up to cell_quota in descending response order
-    for pos in range(n):
-        cid = int(cell_ids[pos])
-        if cell_counts[cid] < cell_quota:
-            cell_counts[cid] += 1
-            selected_mask[pos] = True
-            selected_count += 1
-            if selected_count >= target:
+    for pos, cid in enumerate(cell_id_list):
+        cnt = cell_counts[cid]
+        if cnt < cell_quota:
+            cell_counts[cid] = cnt + 1
+            selected_positions.append(pos)
+            if len(selected_positions) >= target:
                 break
+
+    if selected_positions:
+        selected_mask[selected_positions] = True
+    selected_count = len(selected_positions)
 
     # Pass 2: backfill any remaining budget globally by descending response
     if selected_count < target:
@@ -107,12 +111,49 @@ def extract_grid_bucketed_sift(
     grid_rows: int = 6,
     contrast_threshold: float = 0.02,
     detector: cv.SIFT | None = None,
+    *,
+    build_cv_keypoints: bool = True,
 ) -> BucketedKeypoints:
     """Detect SIFT keypoints with spatial grid bucketing and compute descriptors only for kept keypoints."""
     if image_gray is None or np.ndim(image_gray) != 2:
         raise ValueError("image_gray must be a 2D grayscale image")
     height, width = image_gray.shape
     target = max(1, int(target_features))
+    if (detector is None or isinstance(detector, cv.SIFT)) and image_gray.dtype == np.uint8:
+        from native_accel import extract_sift_grid_avx512
+
+        native_res = extract_sift_grid_avx512(
+            image_gray,
+            target_features=target,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            contrast_threshold=contrast_threshold,
+        )
+        if native_res is not None:
+            pixels, kept_desc, octaves, angles, responses = native_res
+            kept_kps = (
+                [
+                    cv.KeyPoint(
+                        float(pixels[i, 0]),
+                        float(pixels[i, 1]),
+                        float(3.2 * (2.0 ** int(octaves[i]))),
+                        float(angles[i]),
+                        float(responses[i]),
+                        int(octaves[i]) & 255,
+                    )
+                    for i in range(len(pixels))
+                ]
+                if build_cv_keypoints
+                else []
+            )
+            return BucketedKeypoints(
+                keypoints=kept_kps,
+                pixels=pixels,
+                descriptors=kept_desc,
+                octaves=octaves,
+                angles=angles,
+                responses=responses,
+            )
     if detector is None:
         # Single-pass detectAndCompute avoids rebuilding the SIFT DoG pyramid twice
         raw_cap = max(int(target * 1.4), 2100)
@@ -131,8 +172,8 @@ def extract_grid_bucketed_sift(
             responses=np.empty(0, dtype=np.float32),
         )
 
-    all_pixels = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 2)
-    all_responses = np.array([kp.response for kp in keypoints], dtype=np.float32)
+    all_pixels = cv.KeyPoint_convert(keypoints).reshape(-1, 2)
+    all_responses = np.fromiter((kp.response for kp in keypoints), dtype=np.float32, count=len(keypoints))
 
     kept_idx = select_grid_bucketed_indices(
         all_pixels,
@@ -145,8 +186,10 @@ def extract_grid_bucketed_sift(
     kept_kps = [keypoints[int(i)] for i in kept_idx]
     pixels = all_pixels[kept_idx]
     kept_desc = np.asarray(desc[kept_idx], dtype=np.float32)
-    octaves = np.array([unpack_sift_octave(kp.octave) for kp in kept_kps], dtype=np.int16)
-    angles = np.array([kp.angle for kp in kept_kps], dtype=np.float32)
+    raw_oct = np.fromiter((kp.octave for kp in kept_kps), dtype=np.int32, count=len(kept_kps))
+    oct_u8 = raw_oct & 255
+    octaves = np.where(oct_u8 >= 128, oct_u8 - 256, oct_u8).astype(np.int16)
+    angles = np.fromiter((kp.angle for kp in kept_kps), dtype=np.float32, count=len(kept_kps))
     responses = all_responses[kept_idx]
     return BucketedKeypoints(
         keypoints=kept_kps,

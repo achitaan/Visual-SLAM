@@ -171,5 +171,132 @@ def test_pipeline_error_propagation_and_clean_shutdown():
         finally:
             pipe.close()
             assert not pipe._thread.is_alive()
+            assert pipe._sgbm_executor is None
     finally:
         slam.close(finish=False)
+
+
+def test_concurrent_stereo_matches_sequential_and_shuts_down_cleanly():
+    K, stereo = _make_stereo_camera()
+    cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")
+    frames = [_synthetic_stereo_pair(seed=99, shift=12 + i) for i in range(3)]
+    slam = SharedSlam(K, stereo=stereo, config=cfg)
+    try:
+        seq_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=1, concurrent_stereo=False) as p_seq:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_seq.submit(i, im_l, im_r)
+                seq_out.append(p_seq.get(i))
+
+        conc_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, concurrent_stereo=True) as p_conc:
+            assert p_conc._sgbm_executor is not None
+            for i, (im_l, im_r) in enumerate(frames):
+                p_conc.submit(i, im_l, im_r)
+            for i in range(len(frames)):
+                conc_out.append(p_conc.get(i))
+        assert p_conc._sgbm_executor is None
+
+        for a, b in zip(seq_out, conc_out):
+            np.testing.assert_array_equal(a.pixels, b.pixels)
+            np.testing.assert_array_equal(a.descriptors, b.descriptors)
+            np.testing.assert_array_equal(a.octaves, b.octaves)
+            np.testing.assert_array_equal(a.disparity, b.disparity)
+            np.testing.assert_array_equal(a.points, b.points)
+            np.testing.assert_array_equal(a.right_u, b.right_u)
+            assert a.stereo_depth_verification == b.stereo_depth_verification
+    finally:
+        slam.close(finish=False)
+
+
+def test_lazy_extraction_materializes_bit_exact_and_respects_eager_hint():
+    K, stereo = _make_stereo_camera()
+    cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")
+    frames = [_synthetic_stereo_pair(seed=101, shift=10 + i) for i in range(4)]
+    slam = SharedSlam(K, stereo=stereo, config=cfg)
+    try:
+        eager_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, lazy_extraction=False) as p_ref:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_ref.submit(i, im_l, im_r)
+                eager_out.append(p_ref.get(i))
+
+        lazy_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, lazy_extraction=True) as p_lazy:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_lazy.submit(i, im_l, im_r, eager=(i == 3))
+                lazy_out.append(p_lazy.get(i))
+        assert p_lazy._lazy_sgbm_executor is None
+
+        # Frames 0, 1 are always eager; frame 2 is lazy; frame 3 requested eager=True.
+        assert lazy_out[0].lazy_extractor is None
+        assert lazy_out[1].lazy_extractor is None
+        assert lazy_out[2].lazy_extractor is not None
+        assert lazy_out[3].lazy_extractor is None
+
+        mat2 = lazy_out[2].lazy_extractor()
+        for a, b in zip(eager_out, [lazy_out[0], lazy_out[1], mat2, lazy_out[3]]):
+            np.testing.assert_array_equal(a.pixels, b.pixels)
+            np.testing.assert_array_equal(a.descriptors, b.descriptors)
+            np.testing.assert_array_equal(a.octaves, b.octaves)
+            np.testing.assert_array_equal(a.disparity, b.disparity)
+            np.testing.assert_array_equal(a.points, b.points)
+            np.testing.assert_array_equal(a.right_u, b.right_u)
+            assert a.stereo_depth_verification == b.stereo_depth_verification
+    finally:
+        slam.close(finish=False)
+
+
+def test_lazy_materialization_uses_thread_private_instances_and_is_race_free():
+    K, stereo = _make_stereo_camera()
+    cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")
+    frames = [_synthetic_stereo_pair(seed=202 + i, shift=10 + (i % 5)) for i in range(8)]
+    slam = SharedSlam(K, stereo=stereo, config=cfg)
+    try:
+        ref_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=1, concurrent_stereo=False, lazy_extraction=False) as p_ref:
+            for i, (im_l, im_r) in enumerate(frames):
+                p_ref.submit(i, im_l, im_r)
+                ref_out.append(p_ref.get(i))
+
+        got_out = []
+        with FrontendExtractionPipeline(slam, buffer_size=2, concurrent_stereo=True, lazy_extraction=True) as p_lazy:
+            assert p_lazy._lazy_detector is not None
+            assert p_lazy._lazy_detector is not p_lazy._detector
+            assert p_lazy._lazy_sgbm is not None
+            assert p_lazy._lazy_sgbm is not p_lazy._sgbm
+            if p_lazy._half_sgbm is not None:
+                assert p_lazy._lazy_half_sgbm is not None
+                assert p_lazy._lazy_half_sgbm is not p_lazy._half_sgbm
+
+            # Interleave lazy and eager submissions so main-thread materialization
+            # runs concurrently with eager extraction on the background worker thread.
+            p_lazy.submit(0, frames[0][0], frames[0][1], eager=True)
+            p_lazy.submit(1, frames[1][0], frames[1][1], eager=True)
+            next_sub = 2
+            for i in range(len(frames)):
+                ext = p_lazy.get(i)
+                if next_sub < len(frames):
+                    p_lazy.submit(
+                        next_sub,
+                        frames[next_sub][0],
+                        frames[next_sub][1],
+                        eager=(next_sub % 2 == 1),
+                    )
+                    next_sub += 1
+                if ext.lazy_extractor is not None:
+                    ext = ext.lazy_extractor()
+                got_out.append(ext)
+
+        for a, b in zip(ref_out, got_out):
+            np.testing.assert_array_equal(a.pixels, b.pixels)
+            np.testing.assert_array_equal(a.descriptors, b.descriptors)
+            np.testing.assert_array_equal(a.octaves, b.octaves)
+            np.testing.assert_array_equal(a.disparity, b.disparity)
+            np.testing.assert_array_equal(a.points, b.points)
+            np.testing.assert_array_equal(a.right_u, b.right_u)
+            assert a.stereo_depth_verification == b.stereo_depth_verification
+    finally:
+        slam.close(finish=False)
+
+

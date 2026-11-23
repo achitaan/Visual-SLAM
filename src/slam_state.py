@@ -1,6 +1,7 @@
 """Authoritative persistent map. Estimator inputs deliberately exclude reference poses."""
 
 from dataclasses import dataclass, field
+from math import isfinite as _isfinite
 from threading import RLock
 import numpy as np
 from kitti import validate_pose
@@ -22,9 +23,32 @@ class Landmark:
     descriptor: np.ndarray
     anchor: int
     observations: dict[int, Observation] = field(default_factory=dict)
+    _misses: int = field(default=0, init=False, repr=False, compare=False)
     misses: int = 0
     octave: int = 0
     is_far: bool = False
+    _high_miss_set: set[int] | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        # Preserve dataclass field init semantics while syncing _high_miss_set if attached later.
+        self._misses = int(self._misses)
+
+
+def _lm_get_misses(self) -> int:
+    return self._misses
+
+
+def _lm_set_misses(self, value: int) -> None:
+    self._misses = value
+    hms = getattr(self, "_high_miss_set", None)
+    if hms is not None:
+        if value >= 5:
+            hms.add(self.id)
+        else:
+            hms.discard(self.id)
+
+
+Landmark.misses = property(_lm_get_misses, _lm_set_misses)  # type: ignore[assignment]
 
 
 @dataclass
@@ -39,6 +63,7 @@ class MappingKeyframe:
     depth_points: np.ndarray | None = None
     image_size: tuple[int, int] | None = None
     octaves: np.ndarray | None = None
+    landmark_ids_version: int = 0
 
 
 class MapState:
@@ -46,6 +71,7 @@ class MapState:
         self.metric = metric
         self.keyframes = {}
         self.landmarks = {}
+        self.landmark_ids_version = 0
         self.poses = []
         self.pose_anchors = []
         self.relative_poses = []
@@ -57,9 +83,13 @@ class MapState:
         self.retained_source_observations = {}
         self.revision = 0
         self.geometry_revision = 0
+        self.pose_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
         self.index = IncrementalMapIndex()
+        self._high_miss_landmarks: set[int] = set()
+        self._high_miss_tracked_count: int = 0
+        self._stereo_motion_by_anchor: dict[int, list[tuple[int, int]]] = {}
 
     def add_stereo_motion(self, previous, current, measurement):
         """Retain independently verified metric motion between accepted frames."""
@@ -74,6 +104,13 @@ class MapState:
                 raise ValueError('Stereo motion already recorded')
             # Append-only evidence accompanies recorded frames, without changing geometry.
             self.stereo_motion[key] = measurement.copy()
+            a0 = self.pose_anchors[previous]
+            a1 = self.pose_anchors[current]
+            if a0 != a1:
+                if a0 is not None:
+                    self._stereo_motion_by_anchor.setdefault(a0, []).append(key)
+                if a1 is not None:
+                    self._stereo_motion_by_anchor.setdefault(a1, []).append(key)
 
     def add_landmark(self, position, descriptor, anchor, observations, *, octave=0, is_far=False):
         position = np.asarray(position, float).reshape(3)
@@ -85,9 +122,97 @@ class MapState:
             ident, position.copy(), descriptor.copy(), anchor, observations,
             octave=int(octave), is_far=bool(is_far),
         )
+        landmark._high_miss_set = self._high_miss_landmarks
+        if landmark.misses >= 5:
+            self._high_miss_landmarks.add(ident)
         self.landmarks[ident] = landmark
+        self._high_miss_tracked_count += 1
         self.index.on_landmark_added(landmark)
         return ident
+
+    def add_landmarks_batch(
+        self,
+        positions: np.ndarray,
+        descriptors: np.ndarray,
+        anchor: int,
+        pixels: np.ndarray,
+        right_us: np.ndarray,
+        octaves: list[int] | np.ndarray,
+        *,
+        is_far: bool = False,
+    ) -> list[int]:
+        """Bulk-insert verified single-observation landmarks with bit-exact ID order."""
+        n = len(positions)
+        if n == 0:
+            return []
+        pos_arr = np.ascontiguousarray(positions, dtype=np.float64).reshape(n, 3)
+        if not np.isfinite(pos_arr).all():
+            raise ValueError("Nonfinite landmark")
+        desc_arr = np.ascontiguousarray(descriptors)
+        px_arr = np.ascontiguousarray(pixels, dtype=np.float32).reshape(n, 2)
+        px_finite = np.isfinite(px_arr).all(axis=1).tolist()
+        px_bytes = px_arr.tobytes()
+        px_list = px_arr.tolist()
+        ru_list = np.asarray(right_us, dtype=np.float64).tolist()
+        oct_list = octaves.tolist() if isinstance(octaves, np.ndarray) else list(octaves)
+
+        from owned_observation import OwnedObservation, _UNPACK_2I
+        anchor_id = int(anchor)
+        start_id = self.next_landmark
+        self.next_landmark = start_id + n
+        ids_list = list(range(start_id, start_id + n))
+        pid_i32_list: list[tuple[int, int] | None] = [None] * n
+        landmarks = self.landmarks
+        hms = self._high_miss_landmarks
+        is_far_b = bool(is_far)
+        _from_f32 = OwnedObservation.from_f32_bytes
+
+        for k in range(n):
+            ident = start_id + k
+            if px_finite[k]:
+                buf = px_bytes[k * 8 : (k + 1) * 8]
+                pid = _UNPACK_2I(buf)
+                pid_i32_list[k] = pid
+                x, y = px_list[k]
+                obs = _from_f32(x, y, buf, pid, ru_list[k])
+            else:
+                obs = OwnedObservation(px_arr[k], ru_list[k])
+            lm = Landmark(
+                ident,
+                pos_arr[k],
+                desc_arr[k],
+                anchor_id,
+                {anchor_id: obs},
+                octave=int(oct_list[k]),
+                is_far=is_far_b,
+            )
+            lm._high_miss_set = hms
+            landmarks[ident] = lm
+
+        self._high_miss_tracked_count += n
+        self.index.on_landmarks_added_batch(
+            ids_list, pos_arr, anchor_id, pid_i32_list, is_far=is_far_b
+        )
+        return ids_list
+
+    def high_miss_landmarks(self, min_misses: int = 5) -> dict[int, Landmark]:
+        """Return landmarks with misses >= min_misses in O(|dropped|) when tracked."""
+        if (
+            min_misses == 5
+            and self._high_miss_tracked_count == len(self.landmarks)
+            and len(self.index) == len(self.landmarks)
+        ):
+            if not self._high_miss_landmarks:
+                return {}
+            out: dict[int, Landmark] = {}
+            for ident in sorted(self._high_miss_landmarks):
+                lm = self.landmarks.get(ident)
+                if lm is not None and lm.misses >= 5:
+                    out[ident] = lm
+                else:
+                    self._high_miss_landmarks.discard(ident)
+            return out
+        return {i: l for i, l in self.landmarks.items() if l.misses >= min_misses}
 
     def add_observation(self, landmark_id, keyframe_id, observation):
         with self.lock:
@@ -114,15 +239,26 @@ class MapState:
         with self.lock:
             removed = self.landmarks.pop(landmark_id, None)
             if removed is not None:
+                if removed._high_miss_set is self._high_miss_landmarks:
+                    self._high_miss_tracked_count = max(0, self._high_miss_tracked_count - 1)
+                removed._high_miss_set = None
+                self._high_miss_landmarks.discard(landmark_id)
                 self.index.on_landmark_removed(landmark_id)
             return removed
 
     def record(self, pose, status, anchor=None):
         validate_pose(pose)
         with self.lock:
+            frame_idx = len(self.poses)
             self.poses.append(pose.copy())
             self.statuses.append(status)
             self.pose_anchors.append(anchor)
+            if anchor is not None:
+                fba = getattr(self, "_frames_by_anchor", None)
+                if fba is None:
+                    fba = {}
+                    self._frames_by_anchor = fba
+                fba.setdefault(anchor, []).append(frame_idx)
             self.relative_poses.append(
                 np.linalg.inv(self.keyframes[anchor].pose) @ pose
                 if anchor is not None
@@ -139,7 +275,7 @@ class MapState:
             scales = scales or {i: 1.0 for i in corrected}
             for ident, pose in corrected.items():
                 old_pose = self.keyframes[ident].pose
-                if not (
+                if pose is not old_pose and not (
                     isinstance(pose, np.ndarray)
                     and pose.dtype == np.float64
                     and isinstance(old_pose, np.ndarray)
@@ -154,16 +290,16 @@ class MapState:
                 ):
                     raise ValueError("Invalid correction scale")
             if (
-                not np.allclose(corrected[0], self.keyframes[0].pose, atol=1e-8)
-                or abs(scales[0] - 1) > 1e-8
-            ):
+                corrected[0] is not self.keyframes[0].pose
+                and not np.allclose(corrected[0], self.keyframes[0].pose, atol=1e-8)
+            ) or abs(scales[0] - 1) > 1e-8:
                 raise ValueError("Origin must remain fixed")
             # Joint local solves may optimize an accepted intermediate camera.
             # Validate all overrides before changing any landmark or pose. A
             # keyframe has one authoritative pose in `corrected`, never two.
             intermediate = {}
-            keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
             if frame_updates is not None:
+                keyframe_frames = {keyframe.frame for keyframe in self.keyframes.values()}
                 if not (len(self.poses) == len(self.statuses) == len(self.pose_anchors)
                         == len(self.relative_poses)):
                     raise ValueError('Inconsistent intermediate frame state')
@@ -186,67 +322,175 @@ class MapState:
                 old = keyframe.pose
                 new_pose = corrected[ident]
                 scale = scales[ident]
-                if scale == 1.0 and np.array_equal(new_pose, old):
+                if scale == 1.0 and (new_pose is old or np.array_equal(new_pose, old)):
                     continue
                 moved_kfs.add(ident)
                 rotation = new_pose[:3, :3] @ old[:3, :3].T
                 translation = new_pose[:3, 3] - scale * rotation @ old[:3, 3]
                 corrections[ident] = (rotation, scale, translation)
             positions = {}
-            if landmark_updates is not None and not set(landmark_updates).issubset(self.landmarks):
+            bulk_anchor_updates = None
+            if landmark_updates is not None and not all(i in self.landmarks for i in landmark_updates):
                 raise ValueError("Unknown corrected landmark")
             if not propagate_landmarks:
                 if landmark_updates is not None:
-                    for ident, raw_pos in landmark_updates.items():
-                        pos = np.asarray(raw_pos, float).reshape(3).copy()
-                        if not np.isfinite(pos).all():
+                    if len(landmark_updates) >= 32 and len(self.index) == len(self.landmarks):
+                        id_list = list(landmark_updates.keys())
+                        id_to_slot = self.index._id_to_slot
+                        slots = [id_to_slot[i] for i in id_list]
+                        new_arr = np.asarray(list(landmark_updates.values()), dtype=np.float64)
+                        if new_arr.shape != (len(id_list), 3):
+                            new_arr = np.vstack([np.asarray(v, dtype=np.float64).reshape(3) for v in landmark_updates.values()])
+                        else:
+                            new_arr = np.ascontiguousarray(new_arr, dtype=np.float64).copy()
+                        if not np.isfinite(new_arr).all():
                             raise ValueError("Nonfinite corrected landmark")
-                        positions[ident] = pos
+                        bulk_anchor_updates = [(id_list, slots, new_arr)]
+                    else:
+                        for ident, raw_pos in landmark_updates.items():
+                            if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                    and raw_pos.shape == (3,)):
+                                pos = raw_pos.copy()
+                            else:
+                                pos = np.asarray(raw_pos, float).reshape(3).copy()
+                            x, y, z = pos.tolist()
+                            if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
+                                raise ValueError("Nonfinite corrected landmark")
+                            positions[ident] = pos
+            elif (
+                len(self.index) == len(self.landmarks)
+                and (moved_kfs or landmark_updates)
+            ):
+                bulk_anchor_updates = []
+                anc_map = self.index._anchor_landmarks
+                id_to_slot = self.index._id_to_slot
+                idx_pos = self.index._positions
+                if landmark_updates:
+                    upd_ids = []
+                    upd_slots = []
+                    upd_rows = []
+                    for ident, raw_pos in landmark_updates.items():
+                        if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                and raw_pos.shape == (3,)):
+                            pos = raw_pos.copy()
+                        else:
+                            pos = np.asarray(raw_pos, float).reshape(3).copy()
+                        x, y, z = pos.tolist()
+                        if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
+                            raise ValueError("Nonfinite corrected landmark")
+                        upd_ids.append(ident)
+                        upd_slots.append(id_to_slot[ident])
+                        upd_rows.append(pos)
+                    if upd_ids:
+                        bulk_anchor_updates.append(
+                            (upd_ids, upd_slots, np.asarray(upd_rows, dtype=np.float64))
+                        )
+                for anchor_id in moved_kfs:
+                    lm_set = anc_map.get(anchor_id)
+                    if not lm_set:
+                        continue
+                    if landmark_updates:
+                        id_list = [i for i in lm_set if i not in landmark_updates]
+                    else:
+                        id_list = list(lm_set)
+                    if not id_list:
+                        continue
+                    slots = [id_to_slot[i] for i in id_list]
+                    rotation, scale, translation = corrections[anchor_id]
+                    new_arr = (scale * (idx_pos[slots] @ rotation.T)) + translation
+                    if not np.isfinite(new_arr).all():
+                        raise ValueError("Nonfinite corrected landmark")
+                    bulk_anchor_updates.append((id_list, slots, new_arr))
             else:
                 if len(self.index) == len(self.landmarks) and len(moved_kfs) < len(self.keyframes):
                     affected_ids = self.index.landmarks_for_anchors(moved_kfs)
                     if landmark_updates is not None:
                         affected_ids = affected_ids | set(landmark_updates)
+                    by_anchor: dict[int, list[int]] = {}
                     for ident in affected_ids:
                         landmark = self.landmarks.get(ident)
                         if landmark is None:
                             continue
                         if landmark_updates is not None and ident in landmark_updates:
-                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                            raw_pos = landmark_updates[ident]
+                            if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64
+                                    and raw_pos.shape == (3,)):
+                                pos = raw_pos.copy()
+                            else:
+                                pos = np.asarray(raw_pos, float).reshape(3).copy()
+                            x, y, z = pos.tolist()
+                            if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
+                                raise ValueError("Nonfinite corrected landmark")
+                            positions[ident] = pos
                         else:
-                            rotation, scale, translation = corrections[landmark.anchor]
-                            pos = scale * rotation @ landmark.position + translation
-                        if not np.isfinite(pos).all():
-                            raise ValueError("Nonfinite corrected landmark")
-                        positions[ident] = pos
+                            by_anchor.setdefault(landmark.anchor, []).append(ident)
+                    for anchor_id, id_list in by_anchor.items():
+                        rotation, scale, translation = corrections[anchor_id]
+                        if len(id_list) >= 8:
+                            pts_arr = np.array([self.landmarks[i].position for i in id_list], dtype=np.float64)
+                            new_arr = (scale * (pts_arr @ rotation.T)) + translation
+                            if not np.isfinite(new_arr).all():
+                                raise ValueError("Nonfinite corrected landmark")
+                            for i, row in zip(id_list, new_arr):
+                                positions[i] = row
+                        else:
+                            for i in id_list:
+                                pos = scale * rotation @ self.landmarks[i].position + translation
+                                x, y, z = pos.tolist()
+                                if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
+                                    raise ValueError("Nonfinite corrected landmark")
+                                positions[i] = pos
                 else:
                     for ident, landmark in self.landmarks.items():
                         if landmark_updates is not None and ident in landmark_updates:
-                            pos = np.asarray(landmark_updates[ident], float).reshape(3).copy()
+                            raw_pos = landmark_updates[ident]
+                            pos = (raw_pos.copy() if (type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64 and raw_pos.shape == (3,))
+                                   else np.asarray(raw_pos, float).reshape(3).copy())
                         elif landmark.anchor in moved_kfs:
                             rotation, scale, translation = corrections[landmark.anchor]
                             pos = scale * rotation @ landmark.position + translation
                         else:
                             continue
-                        if not np.isfinite(pos).all():
+                        x, y, z = pos.tolist()
+                        if not (_isfinite(x) and _isfinite(y) and _isfinite(z)):
                             raise ValueError("Nonfinite corrected landmark")
                         positions[ident] = pos
             poses = list(self.poses)
             moved_frames = []
-            for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
-                if frame in intermediate:
-                    updated = intermediate[frame].copy()
-                    validate_pose(updated)
-                    poses[frame] = updated
-                    moved_frames.append(frame)
-                elif anchor in moved_kfs:
+            fba = getattr(self, "_frames_by_anchor", None)
+            if (fba is not None and not intermediate
+                    and len(moved_kfs) < len(self.keyframes)
+                    and len(self.poses) == len(self.pose_anchors)):
+                for anchor in moved_kfs:
+                    f_list = fba.get(anchor)
+                    if not f_list:
+                        continue
                     rotation, scale, translation = corrections[anchor]
-                    updated = pose.copy()
-                    updated[:3, :3] = rotation @ pose[:3, :3]
-                    updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
-                    validate_pose(updated)
-                    poses[frame] = updated
-                    moved_frames.append(frame)
+                    for frame in f_list:
+                        if frame >= len(poses) or self.pose_anchors[frame] != anchor:
+                            continue
+                        pose = poses[frame]
+                        updated = pose.copy()
+                        updated[:3, :3] = rotation @ pose[:3, :3]
+                        updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
+            else:
+                for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
+                    if frame in intermediate:
+                        updated = intermediate[frame].copy()
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
+                    elif anchor in moved_kfs:
+                        rotation, scale, translation = corrections[anchor]
+                        updated = pose.copy()
+                        updated[:3, :3] = rotation @ pose[:3, :3]
+                        updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                        validate_pose(updated)
+                        poses[frame] = updated
+                        moved_frames.append(frame)
             retained_registry = None
             if retained_source_updates is not None:
                 if not isinstance(retained_source_updates, dict):
@@ -356,7 +600,14 @@ class MapState:
                         "relative_pose": relative,
                         "rows": copied_rows,
                     }
-            if positions:
+            if bulk_anchor_updates:
+                landmarks_map = self.landmarks
+                idx_pos = self.index._positions
+                for id_list, slots, new_arr in bulk_anchor_updates:
+                    idx_pos[slots] = new_arr
+                    for i, row in zip(id_list, new_arr):
+                        landmarks_map[i].position = row
+            elif positions:
                 for ident, position in positions.items():
                     self.landmarks[ident].position = position
                 self.index.on_landmarks_bulk_moved(positions)
@@ -386,20 +637,28 @@ class MapState:
                 self.retained_source_observations = retained_registry
             self.revision += 1
             self.geometry_revision += 1
+            self.pose_revision += 1
             return True
 
-    def apply_snapshot_corrections(self, revision, geometry_revision, original, corrected, scales=None):
+    def apply_snapshot_corrections(self, revision, geometry_revision, original, corrected, scales=None, *, pose_revision=None):
         """Allow append-only progress, but never rebase across changed snapshot geometry."""
         with self.lock:
             ids = sorted(original)
             current = sorted(self.keyframes)
-            if (self.geometry_revision != geometry_revision or not ids
-                    or current[:len(ids)] != ids or set(corrected) != set(original)):
-                return False
-            if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
-                return False
-            if self.revision != revision and len(current) == len(ids):
-                return False
+            if pose_revision is not None:
+                if (self.pose_revision != pose_revision or not ids
+                        or current[:len(ids)] != ids or set(corrected) != set(original)):
+                    return False
+                if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
+                    return False
+            else:
+                if (self.geometry_revision != geometry_revision or not ids
+                        or current[:len(ids)] != ids or set(corrected) != set(original)):
+                    return False
+                if any(not np.array_equal(self.keyframes[i].pose, original[i]) for i in ids):
+                    return False
+                if self.revision != revision and len(current) == len(ids):
+                    return False
             if isinstance(scales,dict) and set(scales)!=set(ids):
                 return False
             values = (np.ones(len(ids)) if scales is None else

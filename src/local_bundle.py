@@ -409,28 +409,35 @@ def local_bundle_adjustment(
             ]
         else:
             window_landmark_pool = list(state.landmarks.values())
-        landmarks = [
-            l
-            for l in window_landmark_pool
-            if sum(k in selected_set for k in l.observations) >= 2
-        ]
-        landmarks.sort(
-            key=lambda l: (
-                sum(k in selected_set for k in l.observations),
-                max(l.observations),
-            ),
-            reverse=True,
-        )
+        scored_landmarks = []
+        multi_obs_pool = []
+        for l in window_landmark_pool:
+            obs = l.observations
+            if len(obs) < 2:
+                continue
+            multi_obs_pool.append(l)
+            cnt = 0
+            for k in obs:
+                if k in selected_set:
+                    cnt += 1
+            if cnt >= 2:
+                scored_landmarks.append((cnt, max(obs), l))
+        scored_landmarks.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        landmarks = [item[2] for item in scored_landmarks]
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
         if state.metric and use_heteroscedastic_weights and len(landmarks) > max_landmarks:
-            stereo_lms = [
-                l for l in landmarks
-                if any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
-            ]
-            bearing_lms = [
-                l for l in landmarks
-                if not any(k in selected_set and o.right_u is not None for k, o in l.observations.items())
-            ]
+            stereo_lms = []
+            bearing_lms = []
+            for l in landmarks:
+                has_stereo = False
+                for k, o in l.observations.items():
+                    if k in selected_set and o.right_u is not None:
+                        has_stereo = True
+                        break
+                if has_stereo:
+                    stereo_lms.append(l)
+                else:
+                    bearing_lms.append(l)
             max_bearing = max(10, int(0.25 * max_landmarks))
             stereo_quota = max_landmarks - min(len(bearing_lms), max_bearing)
             chosen = stereo_lms[:stereo_quota]
@@ -465,7 +472,10 @@ def local_bundle_adjustment(
                     **({"landmark_role": "selected"}
                        if landmark_policy == "joint_tracks" else {}),
                 })
-        base = {k: state.keyframes[k].pose.copy() for k in state.keyframes}
+        base = {
+            k: (state.keyframes[k].pose.copy() if snapshot_enabled else state.keyframes[k].pose)
+            for k in state.keyframes
+        }
         records = [
             (i, k, o)
             for i, l in enumerate(landmarks)
@@ -526,9 +536,9 @@ def local_bundle_adjustment(
                     **solver_metadata("not_run")}
         optimized_ids = {landmark.id for landmark in landmarks}
         held_out = [
-            (landmark.position.copy(), k, o)
-            for landmark in window_landmark_pool
-            if landmark.id not in optimized_ids and len(landmark.observations) >= 2
+            (landmark.position.copy() if snapshot_enabled else landmark.position, k, o)
+            for landmark in multi_obs_pool
+            if landmark.id not in optimized_ids
             for k, o in landmark.observations.items()
             if k in free_set
         ]
@@ -536,8 +546,8 @@ def local_bundle_adjustment(
         if snapshot_enabled:
             held_out_ids = [
                 int(landmark.id)
-                for landmark in window_landmark_pool
-                if landmark.id not in optimized_ids and len(landmark.observations) >= 2
+                for landmark in multi_obs_pool
+                if landmark.id not in optimized_ids
                 for k, _ in landmark.observations.items()
                 if k in free_set
             ]
@@ -682,12 +692,16 @@ def local_bundle_adjustment(
                     for ident, keyframe_id in restored_boundary_row_ids
                 ] if snapshot_enabled else None),
             }
-        single_view = [
-            (landmark.id, landmark.anchor, landmark.position.copy())
-            for landmark in window_landmark_pool
-            if landmark.id not in optimized_ids and len(landmark.observations) == 1
-            and landmark.anchor in free_set and landmark.anchor in landmark.observations
-        ]
+        single_view = (
+            [
+                (landmark.id, landmark.anchor, landmark.position.copy() if snapshot_enabled else landmark.position)
+                for landmark in window_landmark_pool
+                if landmark.id not in optimized_ids and len(landmark.observations) == 1
+                and landmark.anchor in free_set and landmark.anchor in landmark.observations
+            ]
+            if (provider_enabled or snapshot_enabled)
+            else None
+        )
         single_view_observation_rows = [] if provider_enabled else None
         if provider_enabled:
             for ident, anchor, _position in single_view:
@@ -735,11 +749,26 @@ def local_bundle_adjustment(
         ]
         motion_checks = []
         diagnostic_motion_checks = [] if snapshot_enabled else None
-        for (first, second), measurement in state.stereo_motion.items():
-            anchors = (state.pose_anchors[first], state.pose_anchors[second])
+        sm_by_anchor = getattr(state, "_stereo_motion_by_anchor", None)
+        if sm_by_anchor is not None and not snapshot_enabled and len(state.stereo_motion) > 32:
+            seen_edges = set()
+            cand_edges = []
+            for a in free_set:
+                bucket = sm_by_anchor.get(a)
+                if bucket:
+                    for edge_key in bucket:
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            cand_edges.append((edge_key, state.stereo_motion[edge_key]))
+        else:
+            cand_edges = state.stereo_motion.items()
+        for (first, second), measurement in cand_edges:
+            a0 = state.pose_anchors[first]
+            a1 = state.pose_anchors[second]
             # A shared rigid correction preserves relative motion within one anchor.
-            if anchors[0] == anchors[1] or not any(a in free for a in anchors):
+            if a0 == a1 or (a0 not in free_set and a1 not in free_set):
                 continue
+            anchors = (a0, a1)
             motion_checks.append((measurement.copy(), anchors,
                                   (state.poses[first].copy(), state.poses[second].copy())))
             if snapshot_enabled:
@@ -767,10 +796,12 @@ def local_bundle_adjustment(
     )
 
     def unpack(x):
-        poses = {k: p.copy() for k, p in base.items()}
+        poses = dict(base)
         for k, offset in pose_offset.items():
-            poses[k][:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
-            poses[k][:3, 3] = x[offset + 3 : offset + 6]
+            p = base[k].copy()
+            p[:3, :3] = Rotation.from_rotvec(x[offset : offset + 3]).as_matrix()
+            p[:3, 3] = x[offset + 3 : offset + 6]
+            poses[k] = p
         vector_points = x[point_offset:point_limit].reshape(-1, 3)
         if not target_relative_point_offsets:
             return poses, vector_points
@@ -845,7 +876,10 @@ def local_bundle_adjustment(
     record_cameras = np.asarray(
         [camera_index[k] for _, k, _ in records], dtype=np.intp
     )
-    measured_pixels = np.asarray([o.pixel for _, _, o in records], dtype=float)
+    measured_pixels = np.asarray(
+        [o._identity_key if getattr(o, "_identity_key", None) is not None else o.pixel for _, _, o in records],
+        dtype=float,
+    )
     measured_right = np.asarray(
         [o.right_u if o.right_u is not None else 0.0 for _, _, o in records],
         dtype=float,
@@ -857,7 +891,10 @@ def local_bundle_adjustment(
     held_cameras = np.asarray(
         [camera_index[k] for _, k, _ in held_out], dtype=np.intp
     )
-    held_pixels = np.asarray([o.pixel for _, _, o in held_out], dtype=float).reshape(-1, 2)
+    held_pixels = np.asarray(
+        [o._identity_key if getattr(o, "_identity_key", None) is not None else o.pixel for _, _, o in held_out],
+        dtype=float,
+    ).reshape(-1, 2)
     held_right = np.asarray(
         [o.right_u if o.right_u is not None else 0.0 for _, _, o in held_out],
         dtype=float,
@@ -2713,7 +2750,8 @@ def local_bundle_adjustment(
         affected_final_cost=after+held_after,
         optimized_landmarks=len(landmarks) + (len(extra_ids) if owned_training_rows is not None else 0),
         anchor_propagated_single_view_landmarks=(
-            len(single_view) - (len(extra_ids) if owned_training_rows is not None else 0)
+            (len(single_view) if single_view is not None else 0)
+            - (len(extra_ids) if owned_training_rows is not None else 0)
         ),
         max_camera_translation_change=float(max(
             np.linalg.norm(poses[k][:3, 3]-base[k][:3, 3]) for k in free)),
@@ -2740,11 +2778,15 @@ def local_bundle_adjustment(
             })
     if not np.isfinite(held_after) or not after+held_after < before+held_before:
         return attach_diagnostic_errors({**report, "reason": "affected_observations_worsened"})
-    if any(
-        np.any(project(points[i : i + 1], poses[k], matrix)[1] <= 0)
-        for i, k, _ in records
-    ):
-        return attach_diagnostic_errors(report)
+    if records:
+        rec_by_cam: dict[int, list[int]] = {}
+        for i, k, _ in records:
+            rec_by_cam.setdefault(k, []).append(i)
+        for k, p_idxs in rec_by_cam.items():
+            pose_k = poses[k]
+            depths_k = (points[p_idxs] - pose_k[:3, 3]) @ pose_k[:3, 2]
+            if np.any(depths_k <= 0):
+                return attach_diagnostic_errors(report)
     if owned_training_rows is not None:
         endpoint_poses = training_endpoint_poses(result.x, poses)
         training_world = points[owned_training_rows["point_indices"]]
@@ -3139,11 +3181,42 @@ def local_bundle_adjustment(
             }
             for ident, point_index in extra_index.items():
                 updates[ident] = points[point_index].copy()
-        for ident, anchor, position in single_view:
-            if ident in optimized_single_ids:
-                continue
-            camera = base[anchor][:3, :3].T @ (position-base[anchor][:3, 3])
-            updates[ident] = poses[anchor][:3, :3] @ camera + poses[anchor][:3, 3]
+        if single_view is None:
+            single_view = [
+                (landmark.id, landmark.anchor, landmark.position)
+                for landmark in window_landmark_pool
+                if landmark.id not in optimized_ids and len(landmark.observations) == 1
+                and landmark.anchor in free_set and landmark.anchor in landmark.observations
+            ]
+            report["anchor_propagated_single_view_landmarks"] = len(single_view)
+        if single_view:
+            by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
+            for ident, anchor, position in single_view:
+                if ident in optimized_single_ids:
+                    continue
+                bucket = by_anchor.get(anchor)
+                if bucket is None:
+                    by_anchor[anchor] = ([ident], [position])
+                else:
+                    bucket[0].append(ident)
+                    bucket[1].append(position)
+            for anchor, (id_list, pos_list) in by_anchor.items():
+                base_a = base[anchor]
+                pose_a = poses[anchor]
+                if len(id_list) >= 4:
+                    pts_arr = np.asarray(pos_list, dtype=np.float64)
+                    # Equivalent to pose_R @ (base_R.T @ (pos - base_t)) + pose_t
+                    rel_R = pose_a[:3, :3] @ base_a[:3, :3].T
+                    new_pts = (pts_arr - base_a[:3, 3]) @ rel_R.T + pose_a[:3, 3]
+                    for ident, row in zip(id_list, new_pts):
+                        updates[ident] = row
+                else:
+                    base_RT = base_a[:3, :3].T
+                    base_t = base_a[:3, 3]
+                    pose_R = pose_a[:3, :3]
+                    pose_t = pose_a[:3, 3]
+                    for ident, position in zip(id_list, pos_list):
+                        updates[ident] = pose_R @ (base_RT @ (position - base_t)) + pose_t
         correction_arguments = {'propagate_landmarks': False, 'landmark_updates': updates}
         if intermediate_updates is not None:
             correction_arguments['frame_updates'] = intermediate_updates

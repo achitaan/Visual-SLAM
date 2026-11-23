@@ -294,9 +294,14 @@ def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_b
         return result, counters
     if np.ndim(left) != 2 or np.shape(left) != np.shape(right):
         raise ValueError('Stereo verification needs matching grayscale images')
-    left, right = np.asarray(left, np.float32), np.asarray(right, np.float32)
-    if not np.isfinite(left).all() or not np.isfinite(right).all():
-        raise ValueError('Stereo verification images must be finite')
+    is_u8_pair = (
+        isinstance(left, np.ndarray) and left.dtype == np.uint8
+        and isinstance(right, np.ndarray) and right.dtype == np.uint8
+    )
+    if not is_u8_pair:
+        left, right = np.asarray(left, np.float32), np.asarray(right, np.float32)
+        if not np.isfinite(left).all() or not np.isfinite(right).all():
+            raise ValueError('Stereo verification images must be finite')
     if not len(pixels):
         return result, counters
 
@@ -307,6 +312,19 @@ def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_b
         finite_idx = np.flatnonzero(finite_mask)
         if not len(finite_idx):
             return result, counters
+        from native_accel import verify_stereo_zncc_avx512
+
+        native_out = verify_stereo_zncc_avx512(
+            left, right, pixels[finite_idx], config, disparity_bounds
+        )
+        if native_out is not None:
+            out_u, reason_counts = native_out
+            result[finite_idx] = out_u
+            for key, val in reason_counts.items():
+                counters[key] = counters.get(key, 0) + int(val)
+            return result, counters
+        if is_u8_pair:
+            left, right = np.asarray(left, np.float32), np.asarray(right, np.float32)
         xr, fwd_reasons = _batch_search(
             left, right, pixels[finite_idx], -1, config, disparity_bounds
         )
@@ -333,6 +351,8 @@ def verify_stereo_depth_candidates(left, right, pixels, config=None, disparity_b
                     counters['verified'] += 1
         return result, counters
 
+    if is_u8_pair:
+        left, right = np.asarray(left, np.float32), np.asarray(right, np.float32)
     for index, pixel in enumerate(pixels):
         if not np.isfinite(pixel).all():
             reason = 'nonfinite_pixel'

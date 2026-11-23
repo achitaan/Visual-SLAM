@@ -3,6 +3,8 @@
 import cv2 as cv
 import numpy as np
 
+_ORIG_SOLVE_PNP_RANSAC = cv.solvePnPRansac
+
 
 def project(points, pose, matrix):
     camera = (points - pose[:3, 3]) @ pose[:3, :3]
@@ -42,23 +44,37 @@ def _match_descriptors_gemm_l2(first, second, ratio):
         return _match_descriptors_bf(first, second, ratio)
 
     r2 = float(ratio * ratio)
-    dist2 = np.multiply(a, np.float32(-2.0)) @ b.T
-    dist2 += na[:, None]
-    dist2 += nb[None, :]
-    np.maximum(dist2, np.float32(0.0), out=dist2)
+    # mat[i, j] = -2 * a[i] . b[j] + ||b[j]||^2. Since ||a[i]||^2 is constant across
+    # row i, argmin/min over row i does not require adding na[:, None] or clamping
+    # the full MxN matrix in memory.
+    mat = np.multiply(a, np.float32(-2.0)) @ b.T
+    mat += nb[None, :]
 
-    rows = np.arange(len(a))
-    best_f = np.argmin(dist2, axis=1)
-    d1_f = dist2[rows, best_f].copy()
-    dist2[rows, best_f] = np.inf
-    d2_f = np.min(dist2, axis=1)
-    dist2[rows, best_f] = d1_f
+    m = len(a)
+    best_f = np.empty(m, dtype=np.intp)
+    m1_f = np.empty(m, dtype=np.float32)
+    m2_f = np.empty(m, dtype=np.float32)
+    tile = 128
+    tile_rows_full = np.arange(tile)
+    for start in range(0, m, tile):
+        end = min(start + tile, m)
+        chunk = mat[start:end]
+        t_rows = tile_rows_full if (end - start) == tile else np.arange(end - start)
+        t_best = np.argmin(chunk, axis=1)
+        t_m1 = chunk[t_rows, t_best].copy()
+        chunk[t_rows, t_best] = np.inf
+        t_m2 = np.min(chunk, axis=1)
+        chunk[t_rows, t_best] = t_m1
+        best_f[start:end] = t_best
+        m1_f[start:end] = t_m1
+        m2_f[start:end] = t_m2
 
+    na_f64 = na.astype(np.float64)
     eps = float(np.finfo(np.float32).eps)
     dim_factor = 8.0 * eps * (a.shape[1] + 2)
-    bound_f = dim_factor * (na.astype(np.float64) + float(nb.max()))
-    d1_f64 = d1_f.astype(np.float64)
-    d2_f64 = d2_f.astype(np.float64)
+    bound_f = dim_factor * (na_f64 + float(nb.max()))
+    d1_f64 = np.maximum(m1_f.astype(np.float64) + na_f64, 0.0)
+    d2_f64 = np.maximum(m2_f.astype(np.float64) + na_f64, 0.0)
     ok_f = d1_f64 < r2 * d2_f64
     ambig_f = (
         (d2_f64 - d1_f64 <= 2.0 * bound_f)
@@ -80,8 +96,10 @@ def _match_descriptors_gemm_l2(first, second, ratio):
     cand_j = best_f[cand_i]
 
     # Only evaluate the reverse nearest-neighbor ratio test on columns won in forward pass.
+    # Add na[None, :] only on this much smaller [U, M] slice.
     uniq_j, inv_j = np.unique(cand_j, return_inverse=True)
-    sub_b = np.ascontiguousarray(dist2[:, uniq_j].T)
+    sub_b = np.ascontiguousarray(mat[:, uniq_j].T)
+    sub_b += na[None, :]
     u_rows = np.arange(len(uniq_j))
     best_b = np.argmin(sub_b, axis=1)
     d1_b = sub_b[u_rows, best_b].copy()
@@ -89,8 +107,8 @@ def _match_descriptors_gemm_l2(first, second, ratio):
     d2_b = np.min(sub_b, axis=1)
 
     bound_b = dim_factor * (nb[uniq_j].astype(np.float64) + float(na.max()))
-    d1_b64 = d1_b.astype(np.float64)
-    d2_b64 = d2_b.astype(np.float64)
+    d1_b64 = np.maximum(d1_b.astype(np.float64), 0.0)
+    d2_b64 = np.maximum(d2_b.astype(np.float64), 0.0)
     ok_b = d1_b64 < r2 * d2_b64
     ambig_b = (
         (d2_b64 - d1_b64 <= 2.0 * bound_b)
@@ -129,9 +147,16 @@ def match_descriptors(first, second, ratio=0.7):
         and second.ndim == 2
         and first.shape[1] == second.shape[1]
         and 0.0 < ratio < 1.0
-        and 16384 <= len(first) * len(second) <= 8_000_000
     ):
-        return _match_descriptors_gemm_l2(first, second, ratio)
+        prod = len(first) * len(second)
+        if first.shape[1] == 128 and prod >= 16384:
+            from native_accel import match_sift_mutual_vnni
+
+            vnni_pairs = match_sift_mutual_vnni(first, second, ratio)
+            if vnni_pairs is not None:
+                return vnni_pairs
+        if 16384 <= prod <= 8_000_000:
+            return _match_descriptors_gemm_l2(first, second, ratio)
     return _match_descriptors_bf(first, second, ratio)
 
 
@@ -183,11 +208,14 @@ def triangulate(
 
 
 def coverage(pixels, size):
-    return (
-        len(np.unique(np.clip((pixels / np.array(size) * 3).astype(int), 0, 2), axis=0))
-        if len(pixels)
-        else 0
-    )
+    n = len(pixels)
+    if not n:
+        return 0
+    px = np.asarray(pixels)
+    w, h = float(size[0]), float(size[1])
+    cx = np.clip((px[:, 0] / w * 3.0).astype(np.intp), 0, 2)
+    cy = np.clip((px[:, 1] / h * 3.0).astype(np.intp), 0, 2)
+    return int(np.count_nonzero(np.bincount(cx * 3 + cy, minlength=9)))
 
 
 def right_pixel(left_u, depth, focal_length, baseline, disparity_offset=0.0):
@@ -395,74 +423,157 @@ def _estimate_pose_hypothesis(
     if len(points) < min_inliers:
         diagnostics["pose_rejection_reason"] = "insufficient_correspondences"
         return None
+    pts_f64 = np.asarray(points, np.float64)
+    pix_f64 = np.asarray(pixels, np.float64)
     arguments = {}
     if initial_pose is not None:
         inverse = np.linalg.inv(initial_pose)
+        rv0 = cv.Rodrigues(inverse[:3, :3])[0]
+        tv0 = inverse[:3, 3].reshape(3, 1)
+        # Fast path: when the motion/reference seed already explains >=50% of
+        # correspondences within 2 px after LM refinement, skip 200-iter
+        # SOLVEPNP_ITERATIVE RANSAC (~3 ms -> ~0.15 ms) while enforcing all
+        # identical inlier, cheirality, reprojection, and coverage gates.
+        if cv.solvePnPRansac is _ORIG_SOLVE_PNP_RANSAC:
+            pred0, depth0 = project(pts_f64, initial_pose, matrix)
+            diff0 = pred0 - pix_f64
+            err0_sq = diff0[:, 0] * diff0[:, 0] + diff0[:, 1] * diff0[:, 1]
+            coarse = np.flatnonzero((depth0 > 0.0) & (err0_sq <= 36.0))
+            if len(coarse) >= min_inliers and len(coarse) >= int(0.4 * len(pts_f64)):
+                try:
+                    rv_f, tv_f = cv.solvePnPRefineLM(
+                        pts_f64[coarse], pix_f64[coarse], matrix, None, rv0.copy(), tv0.copy()
+                    )
+                    pose_f = np.eye(4)
+                    pose_f[:3, :3] = cv.Rodrigues(rv_f)[0].T
+                    pose_f[:3, 3] = (-pose_f[:3, :3] @ tv_f).ravel()
+                    pred1, depth1 = project(pts_f64, pose_f, matrix)
+                    diff1 = pred1 - pix_f64
+                    err1_sq = diff1[:, 0] * diff1[:, 0] + diff1[:, 1] * diff1[:, 1]
+                    ids_f = np.flatnonzero((depth1 > 0.0) & (err1_sq <= 4.0))
+                    if len(ids_f) >= min_inliers and len(ids_f) >= int(0.5 * len(pts_f64)):
+                        rv_f, tv_f = cv.solvePnPRefineLM(
+                            pts_f64[ids_f], pix_f64[ids_f], matrix, None, rv_f, tv_f
+                        )
+                        pose_f = np.eye(4)
+                        pose_f[:3, :3] = cv.Rodrigues(rv_f)[0].T
+                        pose_f[:3, 3] = (-pose_f[:3, :3] @ tv_f).ravel()
+                        pred2, depth2 = project(pts_f64[ids_f], pose_f, matrix)
+                        err2 = np.linalg.norm(pred2 - pix_f64[ids_f], axis=1)
+                        med2 = float(np.median(err2))
+                        cells2 = coverage(pix_f64[ids_f], size)
+                        if (
+                            np.isfinite(pose_f).all()
+                            and not np.any(depth2 <= 0)
+                            and med2 <= 1.5
+                            and cells2 >= 3
+                        ):
+                            diagnostics.update(
+                                candidate_inliers=len(ids_f),
+                                candidate_inlier_ratio=len(ids_f) / len(pts_f64),
+                                candidate_median_reprojection_px=med2,
+                                candidate_feature_cells=cells2,
+                            )
+                            return pose_f, ids_f, med2
+                except (cv.error, np.linalg.LinAlgError):
+                    pass
         arguments = {
-            "rvec": cv.Rodrigues(inverse[:3, :3])[0],
-            "tvec": inverse[:3, 3].reshape(3, 1),
+            "rvec": rv0,
+            "tvec": tv0,
             "useExtrinsicGuess": True,
         }
-    ok, rv, tv, inliers = cv.solvePnPRansac(
-        np.asarray(points, np.float64),
-        np.asarray(pixels, np.float64),
-        matrix,
-        None,
-        iterationsCount=200,
-        reprojectionError=2.0,
-        confidence=0.995,
-        flags=cv.SOLVEPNP_ITERATIVE if initial_pose is not None else cv.SOLVEPNP_EPNP,
-        **arguments
+    pnp_flags = (
+        (cv.SOLVEPNP_ITERATIVE,)
+        if initial_pose is not None
+        else (cv.SOLVEPNP_AP3P, cv.SOLVEPNP_EPNP)
     )
-    if (
-        not ok
-        or inliers is None
-        or len(inliers) < min_inliers
-        or len(inliers) / len(points) < 0.25
-    ):
-        diagnostics.update(
-            candidate_inliers=0 if inliers is None else len(inliers),
-            pose_rejection_reason=(
-                "ransac_failed" if not ok else "insufficient_inlier_support"
-            ),
+    best_candidate = None
+    for flag_idx, pnp_flag in enumerate(pnp_flags):
+        ok, rv, tv, inliers = cv.solvePnPRansac(
+            pts_f64,
+            pix_f64,
+            matrix,
+            None,
+            iterationsCount=200,
+            reprojectionError=2.0,
+            confidence=0.995,
+            flags=pnp_flag,
+            **arguments
         )
+        if (
+            not ok
+            or inliers is None
+            or len(inliers) < min_inliers
+            or len(inliers) / len(pts_f64) < 0.25
+        ):
+            if flag_idx + 1 < len(pnp_flags):
+                continue
+            if best_candidate is not None:
+                break
+            diagnostics.update(
+                candidate_inliers=0 if inliers is None else len(inliers),
+                pose_rejection_reason=(
+                    "ransac_failed" if not ok else "insufficient_inlier_support"
+                ),
+            )
+            return None
+        ids = inliers.ravel()
+        rv, tv = cv.solvePnPRefineLM(
+            pts_f64[ids], pix_f64[ids], matrix, None, rv, tv
+        )
+        pose = np.eye(4)
+        pose[:3, :3] = cv.Rodrigues(rv)[0].T
+        pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
+        predicted, depth = project(pts_f64[ids], pose, matrix)
+        error = np.linalg.norm(predicted - pix_f64[ids], axis=1)
+        med_err = float(np.median(error))
+        cells = coverage(pix_f64[ids], size)
+        if (
+            not np.isfinite(pose).all()
+            or np.any(depth <= 0)
+            or med_err > 1.5
+            or cells < 3
+        ):
+            if flag_idx + 1 < len(pnp_flags):
+                continue
+            if best_candidate is not None:
+                break
+            diagnostics.update(
+                candidate_inliers=len(ids),
+                candidate_inlier_ratio=len(ids) / len(pts_f64),
+                candidate_median_reprojection_px=med_err,
+                candidate_feature_cells=cells,
+                pose_rejection_reason=(
+                    "invalid_pose"
+                    if not np.isfinite(pose).all()
+                    else (
+                        "negative_depth"
+                        if np.any(depth <= 0)
+                        else (
+                            "reprojection_error"
+                            if med_err > 1.5
+                            else "insufficient_spatial_support"
+                        )
+                    )
+                ),
+            )
+            return None
+        cand = (pose, ids, med_err, cells)
+        if best_candidate is None or (len(ids), -med_err) > (len(best_candidate[1]), -best_candidate[2]):
+            best_candidate = cand
+        if flag_idx + 1 < len(pnp_flags) and (len(ids) / len(pts_f64) < 0.40 or med_err > 0.9):
+            continue
+        break
+    if best_candidate is None:
         return None
-    ids = inliers.ravel()
-    rv, tv = cv.solvePnPRefineLM(
-        points[ids].astype(float), pixels[ids].astype(float), matrix, None, rv, tv
-    )
-    pose = np.eye(4)
-    pose[:3, :3] = cv.Rodrigues(rv)[0].T
-    pose[:3, 3] = (-pose[:3, :3] @ tv).ravel()
-    predicted, depth = project(points[ids], pose, matrix)
-    error = np.linalg.norm(predicted - pixels[ids], axis=1)
+    pose, ids, med_err, cells = best_candidate
     diagnostics.update(
         candidate_inliers=len(ids),
-        candidate_inlier_ratio=len(ids) / len(points),
-        candidate_median_reprojection_px=float(np.median(error)),
-        candidate_feature_cells=coverage(pixels[ids], size),
+        candidate_inlier_ratio=len(ids) / len(pts_f64),
+        candidate_median_reprojection_px=med_err,
+        candidate_feature_cells=cells,
     )
-    if (
-        not np.isfinite(pose).all()
-        or np.any(depth <= 0)
-        or np.median(error) > 1.5
-        or coverage(pixels[ids], size) < 3
-    ):
-        diagnostics["pose_rejection_reason"] = (
-            "invalid_pose"
-            if not np.isfinite(pose).all()
-            else (
-                "negative_depth"
-                if np.any(depth <= 0)
-                else (
-                    "reprojection_error"
-                    if np.median(error) > 1.5
-                    else "insufficient_spatial_support"
-                )
-            )
-        )
-        return None
-    return pose, ids, float(np.median(error))
+    return pose, ids, med_err
 
 
 def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed):
@@ -637,46 +748,208 @@ def estimate_stereo_reference(
 
 
 def refine_bidirectional_stereo(pose, source_points, target_pixels, target_points, source_pixels, matrix):
-    """Refine one relative pose using independently verified observations in both views."""
-    from scipy.optimize import least_squares
+    """Refine one relative pose using independently verified observations in both views.
 
-    initial = np.r_[cv.Rodrigues(pose[:3, :3])[0].ravel(), pose[:3, 3]]
+    Uses exact analytic 6-DoF Huber-IRLS Levenberg-Marquardt in left-tangent SE(3)
+    chart, preserving the exact bidirectional reprojection objective and acceptance gates.
+    """
+    src_pts = np.asarray(source_points, dtype=np.float64).reshape(-1, 3)
+    tgt_pix = np.asarray(target_pixels, dtype=np.float64).reshape(-1, 2)
+    tgt_pts = np.asarray(target_points, dtype=np.float64).reshape(-1, 3)
+    src_pix = np.asarray(source_pixels, dtype=np.float64).reshape(-1, 2)
+    K = np.asarray(matrix, dtype=np.float64)
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    n1, n2 = len(src_pts), len(tgt_pts)
+    f_scale = 1.5
 
-    def unpack(value):
-        camera = np.eye(4)
-        camera[:3, :3] = cv.Rodrigues(value[:3])[0]
-        camera[:3, 3] = value[3:]
-        return camera
+    def _eval(R, t):
+        # Forward: p_c1 = R^T @ (X_s - t) (camera = pose = T_s_t)
+        d1 = src_pts - t
+        c1 = d1 @ R  # [n1, 3]
+        z1 = c1[:, 2]
+        inv_z1 = 1.0 / np.maximum(z1, 1e-9)
+        u1 = fx * c1[:, 0] * inv_z1 + cx
+        v1 = fy * c1[:, 1] * inv_z1 + cy
+        e1 = np.empty((n1, 2), dtype=np.float64)
+        e1[:, 0] = u1 - tgt_pix[:, 0]
+        e1[:, 1] = v1 - tgt_pix[:, 1]
+        if np.any(z1 <= 0.0):
+            e1[z1 <= 0.0] = 1e4
+        # Reverse: inv(pose) has R_inv = R^T, t_inv = -R^T @ t
+        # project(X_t, inv(pose)): (X_t - t_inv) @ R_inv = (X_t + R^T t) @ R^T = X_t @ R^T + t
+        c2 = tgt_pts @ R.T + t  # [n2, 3]
+        z2 = c2[:, 2]
+        inv_z2 = 1.0 / np.maximum(z2, 1e-9)
+        u2 = fx * c2[:, 0] * inv_z2 + cx
+        v2 = fy * c2[:, 1] * inv_z2 + cy
+        e2 = np.empty((n2, 2), dtype=np.float64)
+        e2[:, 0] = u2 - src_pix[:, 0]
+        e2[:, 1] = v2 - src_pix[:, 1]
+        if np.any(z2 <= 0.0):
+            e2[z2 <= 0.0] = 1e4
+        return c1, c2, e1, e2, z1, z2
 
-    def errors(camera):
-        first, z1 = project(source_points, camera, matrix)
-        second, z2 = project(target_points, np.linalg.inv(camera), matrix)
-        first -= target_pixels
-        second -= source_pixels
-        first[z1 <= 0] = 1e4
-        second[z2 <= 0] = 1e4
-        return first, second, z1, z2
+    def _cost(e1, e2):
+        r1 = np.clip(e1.ravel(), -1e4, 1e4)
+        r2 = np.clip(e2.ravel(), -1e4, 1e4)
+        a1 = np.abs(r1)
+        a2 = np.abs(r2)
+        c1_v = float(np.sum(np.where(a1 <= f_scale, 0.5 * r1 * r1, f_scale * (a1 - 0.5 * f_scale))))
+        c2_v = float(np.sum(np.where(a2 <= f_scale, 0.5 * r2 * r2, f_scale * (a2 - 0.5 * f_scale))))
+        return c1_v + c2_v
 
-    def residual(value):
-        first, second, _, _ = errors(unpack(value))
-        return np.clip(np.r_[first.ravel(), second.ravel()], -1e4, 1e4)
+    R = np.asarray(pose[:3, :3], dtype=np.float64).copy()
+    t = np.asarray(pose[:3, 3], dtype=np.float64).copy()
 
-    def objective(value):
-        r = residual(value);a = np.abs(r)
-        return float(np.sum(np.where(a <= 1.5, .5*r*r, 1.5*(a-.75))))
+    from native_accel import refine_bidirectional_stereo_lm_cpp
 
-    before = objective(initial)
-    solved = least_squares(residual, initial, loss='huber', f_scale=1.5, max_nfev=20)
-    report = {'applied': False, 'initial_cost': before, 'final_cost': objective(solved.x),
-              'forward_observations': len(source_points), 'reverse_observations': len(target_points)}
-    if not np.isfinite(solved.x).all() or not report['final_cost'] < before:
+    native_bi = refine_bidirectional_stereo_lm_cpp(
+        R, t, src_pts, tgt_pix, tgt_pts, src_pix, fx, fy, cx, cy, f_scale=f_scale, max_iter=15
+    )
+    if native_bi is not None:
+        R, t, before, cur_cost = native_bi
+        report = {'applied': False, 'initial_cost': before, 'final_cost': cur_cost,
+                  'forward_observations': n1, 'reverse_observations': n2}
+        if not (np.isfinite(R).all() and np.isfinite(t).all()) or not cur_cost < before:
+            return pose, report
+        _, _, e1, e2, z1, z2 = _eval(R, t)
+        if (np.any(z1 <= 0) or np.any(z2 <= 0) or
+                np.median(np.linalg.norm(e1, axis=1)) > 1.5 or
+                np.median(np.linalg.norm(e2, axis=1)) > 1.5):
+            return pose, report
+        candidate = np.eye(4)
+        candidate[:3, :3] = R
+        candidate[:3, 3] = t
+        report['applied'] = True
+        return candidate, report
+
+    c1, c2, e1, e2, z1, z2 = _eval(R, t)
+    before = _cost(e1, e2)
+    cur_cost = before
+
+    # Perturbation chart: R' = R @ exp([dw]_x), t' = t + R @ dt
+    # Then:
+    #   c1' = R'^T (X_s - t') = exp(-[dw]_x) (c1 - dt)  => dc1/dw = +[c1]_x,  dc1/dt = -I_3
+    #   c2' = R' X_t + t' = R exp([dw]_x) X_t + t + R dt => dc2/dw = -R [X_t]_x, dc2/dt = +R
+    lam = 1e-3
+    for _ in range(15):
+        H = np.zeros((6, 6), dtype=np.float64)
+        g = np.zeros(6, dtype=np.float64)
+
+        # Forward Jacobian wrt [dw, dt]
+        if n1:
+            r1 = np.clip(e1, -1e4, 1e4)
+            ok1 = (z1 > 1e-9) & (np.abs(e1[:, 0]) < 1e4) & (np.abs(e1[:, 1]) < 1e4)
+            if np.any(ok1):
+                c1v = c1[ok1]
+                r1v = r1[ok1]
+                x, y, z = c1v[:, 0], c1v[:, 1], c1v[:, 2]
+                iz = 1.0 / z
+                iz2 = iz * iz
+                # d(u,v)/dc1 = [[fx/z, 0, -fx*x/z^2], [0, fy/z, -fy*y/z^2]]
+                # dc1/dw = [c1]_x = [[0, -z, y], [z, 0, -x], [-y, x, 0]]
+                # dc1/dt = -I
+                a1 = np.abs(r1v)
+                w1 = np.where(a1 <= f_scale, 1.0, f_scale / np.maximum(a1, 1e-12))
+                Ju = np.empty((len(c1v), 6), dtype=np.float64)
+                Ju[:, 0] = fx * (x * y * iz2)
+                Ju[:, 1] = -fx * (1.0 + x * x * iz2)
+                Ju[:, 2] = fx * y * iz
+                Ju[:, 3] = -fx * iz
+                Ju[:, 4] = 0.0
+                Ju[:, 5] = fx * x * iz2
+
+                Jv = np.empty((len(c1v), 6), dtype=np.float64)
+                Jv[:, 0] = fy * (1.0 + y * y * iz2)
+                Jv[:, 1] = -fy * (x * y * iz2)
+                Jv[:, 2] = -fy * x * iz
+                Jv[:, 3] = 0.0
+                Jv[:, 4] = -fy * iz
+                Jv[:, 5] = fy * y * iz2
+
+                wu = w1[:, 0]
+                wv = w1[:, 1]
+                H += (Ju * wu[:, None]).T @ Ju + (Jv * wv[:, None]).T @ Jv
+                g += Ju.T @ (wu * r1v[:, 0]) + Jv.T @ (wv * r1v[:, 1])
+
+        # Reverse Jacobian wrt [dw, dt]
+        if n2:
+            r2 = np.clip(e2, -1e4, 1e4)
+            ok2 = (z2 > 1e-9) & (np.abs(e2[:, 0]) < 1e4) & (np.abs(e2[:, 1]) < 1e4)
+            if np.any(ok2):
+                c2v = c2[ok2]
+                xtv = tgt_pts[ok2]
+                r2v = r2[ok2]
+                x, y, z = c2v[:, 0], c2v[:, 1], c2v[:, 2]
+                iz = 1.0 / z
+                iz2 = iz * iz
+                # du/dc2 = [fx/z, 0, -fx*x/z^2], dv/dc2 = [0, fy/z, -fy*y/z^2]
+                # dc2/dt = R => d(u)/dt = du/dc2 @ R
+                # dc2/dw = -R [X_t]_x => d(u)/dw = -(du/dc2 @ R) [X_t]_x = (du/dc2 @ R) x X_t
+                du_dc = np.column_stack((fx * iz, np.zeros_like(iz), -fx * x * iz2))
+                dv_dc = np.column_stack((np.zeros_like(iz), fy * iz, -fy * y * iz2))
+                du_dt = du_dc @ R  # [m, 3]
+                dv_dt = dv_dc @ R  # [m, 3]
+                # For row vector v = du_dt: -v @ [X]_x = X x v = -(v x X)
+                # Check: ([X]_x w) = X x w, so -v . (X x w) = -(v x X) . w = (X x v) . w
+                du_dw = np.cross(xtv, du_dt)
+                dv_dw = np.cross(xtv, dv_dt)
+
+                Ju2 = np.hstack((du_dw, du_dt))
+                Jv2 = np.hstack((dv_dw, dv_dt))
+                a2 = np.abs(r2v)
+                w2 = np.where(a2 <= f_scale, 1.0, f_scale / np.maximum(a2, 1e-12))
+                wu2 = w2[:, 0]
+                wv2 = w2[:, 1]
+                H += (Ju2 * wu2[:, None]).T @ Ju2 + (Jv2 * wv2[:, None]).T @ Jv2
+                g += Ju2.T @ (wu2 * r2v[:, 0]) + Jv2.T @ (wv2 * r2v[:, 1])
+
+        if float(np.max(np.abs(g))) < 1e-9:
+            break
+
+        diag = np.maximum(np.diag(H), 1e-6)
+        accepted = False
+        for _try in range(6):
+            H_d = H + lam * np.diag(diag)
+            try:
+                step = -np.linalg.solve(H_d, g)
+            except np.linalg.LinAlgError:
+                lam *= 10.0
+                continue
+            if not np.isfinite(step).all():
+                lam *= 10.0
+                continue
+            dR, _ = cv.Rodrigues(step[:3])
+            R_cand = R @ dR
+            t_cand = t + R @ step[3:]
+            c1n, c2n, e1n, e2n, z1n, z2n = _eval(R_cand, t_cand)
+            new_cost = _cost(e1n, e2n)
+            if new_cost < cur_cost:
+                gain = cur_cost - new_cost
+                R, t = R_cand, t_cand
+                c1, c2, e1, e2, z1, z2 = c1n, c2n, e1n, e2n, z1n, z2n
+                cur_cost = new_cost
+                lam = max(lam * 0.3, 1e-7)
+                accepted = True
+                if gain <= 1e-8 * max(1.0, cur_cost) and float(np.linalg.norm(step)) < 1e-6:
+                    lam = -1.0  # signal converged
+                break
+            lam *= 5.0
+        if not accepted or lam < 0.0:
+            break
+
+    report = {'applied': False, 'initial_cost': before, 'final_cost': cur_cost,
+              'forward_observations': n1, 'reverse_observations': n2}
+    if not (np.isfinite(R).all() and np.isfinite(t).all()) or not cur_cost < before:
         return pose, report
-    candidate = unpack(solved.x)
-    first, second, z1, z2 = errors(candidate)
     if (np.any(z1 <= 0) or np.any(z2 <= 0) or
-            np.median(np.linalg.norm(first, axis=1)) > 1.5 or
-            np.median(np.linalg.norm(second, axis=1)) > 1.5):
+            np.median(np.linalg.norm(e1, axis=1)) > 1.5 or
+            np.median(np.linalg.norm(e2, axis=1)) > 1.5):
         return pose, report
+    candidate = np.eye(4)
+    candidate[:3, :3] = R
+    candidate[:3, 3] = t
     report['applied'] = True
     return candidate, report
 

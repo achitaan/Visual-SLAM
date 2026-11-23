@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import time
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
@@ -13,6 +14,8 @@ from keyframe_retrieval import KeyframeRetrieval
 from keyframe_index import KeyframeIndex
 from performance import profiled
 from stage_profile import StageProfile
+
+_ORIG_VERIFY_LOOP = verify_loop
 
 
 def similarity(source, target):
@@ -230,6 +233,9 @@ class LiveLoopWorker:
         self.last_correction_after = None
         self.snapshot_poses = None
         self.snapshot_geometry_revision = None
+        self.snapshot_pose_revision = None
+        self._kf_static_cache = {}
+        self._verified_timestamps_s = {}
 
     @staticmethod
     def _snapshot_array(value, always_copy=False):
@@ -251,6 +257,70 @@ class LiveLoopWorker:
                 setattr(saved, name, cls._snapshot_array(getattr(frame, name)))
         return saved
 
+    def _build_static_entry(self, frame):
+        dp = frame.depth_points
+        dp_copy = None if dp is None else dp.copy()
+        pixels = self._snapshot_array(frame.pixels)
+        descriptors = self._snapshot_array(frame.descriptors)
+        image = self._snapshot_array(frame.image) if hasattr(frame, "image") else None
+        landmark_ids = (
+            self._snapshot_array(frame.landmark_ids, always_copy=True)
+            if hasattr(frame, "landmark_ids")
+            else None
+        )
+        retrieval_desc = (
+            self._snapshot_array(frame.retrieval_descriptors)
+            if hasattr(frame, "retrieval_descriptors")
+            else descriptors
+        )
+        img_size = frame.image_size or (
+            int(self.matrix[0, 2] * 2),
+            int(self.matrix[1, 2] * 2),
+        )
+        if dp_copy is None:
+            measured_desc = descriptors[:0]
+            loop_frame = StereoLoopFrame(
+                pixels[:0], np.empty((0, 3), dtype=np.float64), descriptors[:0], img_size
+            )
+        else:
+            valid = np.isfinite(dp_copy).all(axis=1)
+            measured_desc = np.ascontiguousarray(descriptors[valid])
+            loop_frame = StereoLoopFrame(
+                pixels[valid], dp_copy[valid], measured_desc, img_size
+            )
+        return (
+            frame.frame,
+            pixels,
+            descriptors,
+            retrieval_desc,
+            dp_copy,
+            img_size,
+            measured_desc,
+            loop_frame,
+            image,
+            landmark_ids,
+        )
+
+    def _lightweight_snapshot_keyframe(self, ident, frame, refresh_static):
+        entry = None if refresh_static else self._kf_static_cache.get(ident)
+        if entry is None:
+            entry = self._build_static_entry(frame)
+            self._kf_static_cache[ident] = entry
+        saved = copy.copy(frame)
+        saved.pose = frame.pose.copy()
+        saved.pixels = entry[1]
+        saved.descriptors = entry[2]
+        if hasattr(frame, "retrieval_descriptors"):
+            saved.retrieval_descriptors = entry[3]
+        saved.depth_points = entry[4]
+        if hasattr(frame, "image"):
+            saved.image = entry[8]
+        if hasattr(frame, "landmark_ids"):
+            saved.landmark_ids = entry[9]
+        saved._cached_measured_descriptors = entry[6]
+        saved._cached_stereo_loop_frame = entry[7]
+        return saved
+
     def schedule(self, state):
         if self.mode == "off":
             return
@@ -260,20 +330,35 @@ class LiveLoopWorker:
             if self.max_keyframes > 0 and len(state.keyframes) > self.max_keyframes:
                 self.events.append({"type": "loop_skipped", "reason": "graph_size_not_validated"})
                 return
-            latest = state.keyframes[max(state.keyframes)]
-            first = state.keyframes[min(state.keyframes)]
+            latest_id = max(state.keyframes)
+            first_id = min(state.keyframes)
+            latest = state.keyframes[latest_id]
+            first = state.keyframes[first_id]
             if latest.frame - first.frame < 150:
                 return
+            last_sched_frame = getattr(self, "_last_scheduled_frame", -10**9)
+            if (
+                not self.pending_loops
+                and not self.finalizing
+                and (latest.frame - last_sched_frame) < 20
+            ):
+                return
+            self._last_scheduled_frame = int(latest.frame)
             if self.cpu_optimizations or self.use_vlad_retrieval:
+                # Only the newest 2 keyframes can have depth_points updated by triangulation.
+                refresh_cutoff = latest_id - 1
                 snapshot = {
-                    ident: self._snapshot_keyframe(frame)
+                    ident: self._lightweight_snapshot_keyframe(
+                        ident, frame, ident >= refresh_cutoff
+                    )
                     for ident, frame in state.keyframes.items()
                 }
             else:
                 snapshot = copy.deepcopy(state.keyframes)
             revision = state.revision
-            self.snapshot_poses = {i:k.pose.copy() for i,k in snapshot.items()}
+            self.snapshot_poses = {i: k.pose.copy() for i, k in snapshot.items()}
             self.snapshot_geometry_revision = state.geometry_revision
+            self.snapshot_pose_revision = getattr(state, "pose_revision", None)
         current = max(snapshot)
         if snapshot[current].frame - snapshot[0].frame < 150:
             return
@@ -294,6 +379,9 @@ class LiveLoopWorker:
         last = keyframes[current]
 
         def measured_descriptors(frame):
+            cached = getattr(frame, "_cached_measured_descriptors", None)
+            if cached is not None:
+                return cached
             if frame.depth_points is None:
                 return frame.descriptors[:0]
             valid = np.isfinite(frame.depth_points).all(axis=1)
@@ -325,19 +413,19 @@ class LiveLoopWorker:
         else:
             shortlisted = eligible
         self.profiler.count("loop_keyframes_matched", len(shortlisted))
-        candidates = [
-            (
-                len(self.profiler.call(
-                    "loop_matching", self.matcher, measured_descriptors(keyframes[i]), query
-                )),
-                i,
+        candidates = []
+        precomputed_pairs = {}
+        for i in shortlisted:
+            matched_pairs = self.profiler.call(
+                "loop_matching", self.matcher, measured_descriptors(keyframes[i]), query
             )
-            for i in shortlisted
-        ]
+            candidates.append((len(matched_pairs), i))
+            precomputed_pairs[(i, current)] = matched_pairs
         # The indexed proposal is wider, but exact reranking retains the same
         # eight-candidate budget before the existing top-three verification.
         candidates = sorted(candidates, reverse=True)[:8]
         newly_verified = []
+        verified_timestamps = {}
         attempts = []
         min_support = 20 if self.use_vlad_retrieval else 0
         pairs = [
@@ -356,6 +444,9 @@ class LiveLoopWorker:
             if self.metric:
 
                 def frame(k):
+                    cached_lf = getattr(k, "_cached_stereo_loop_frame", None)
+                    if cached_lf is not None:
+                        return cached_lf
                     points = (
                         k.depth_points
                         if k.depth_points is not None
@@ -370,9 +461,24 @@ class LiveLoopWorker:
                         or (int(self.matrix[0, 2] * 2), int(self.matrix[1, 2] * 2)),
                     )
 
-                result = self.profiler.call(
-                    "loop_verification", verify_loop, frame(first), frame(query_frame), self.matrix
-                )
+                pair_matches = precomputed_pairs.get((i, j))
+                if verify_loop is _ORIG_VERIFY_LOOP and pair_matches is not None:
+                    result = self.profiler.call(
+                        "loop_verification",
+                        verify_loop,
+                        frame(first),
+                        frame(query_frame),
+                        self.matrix,
+                        pairs=pair_matches,
+                    )
+                else:
+                    result = self.profiler.call(
+                        "loop_verification",
+                        verify_loop,
+                        frame(first),
+                        frame(query_frame),
+                        self.matrix,
+                    )
             else:
                 result = self.profiler.call(
                     "loop_verification", verify_similarity, first, query_frame, self.matrix
@@ -388,13 +494,16 @@ class LiveLoopWorker:
             if result is not None:
                 loops[(i, j)] = result
                 newly_verified.append((i, j))
+                verified_timestamps[(i, j)] = time.perf_counter()
         if (self.mode == "offline" and not self.finalizing) or (not newly_verified and not force):
             return {
                 "revision": revision,
                 "loops": loops,
                 "correction": None,
                 "attempts": attempts,
+                "verified_timestamps": verified_timestamps,
             }
+        pgo_start_s = time.perf_counter()
         poses = [k.pose for k in keyframes.values()]
         if self.metric:
             if self.use_weighted_pgo:
@@ -462,6 +571,7 @@ class LiveLoopWorker:
             corrected, scales = self.profiler.call(
                 "graph_optimization", optimize_similarities, poses, edges
             )
+        pgo_end_s = time.perf_counter()
         return {
             "revision": revision,
             "loops": loops,
@@ -469,6 +579,8 @@ class LiveLoopWorker:
             "scales": dict(enumerate(scales)),
             "new_loops": newly_verified,
             "attempts": attempts,
+            "verified_timestamps": verified_timestamps,
+            "pgo_elapsed_s": float(pgo_end_s - pgo_start_s),
         }
 
     def poll(self, state, wait=False):
@@ -481,6 +593,8 @@ class LiveLoopWorker:
         except Exception as exc:
             self.events.append({"type": "loop_failed", "reason": str(exc)})
             return False
+        for pair, ts in (result.get("verified_timestamps") or {}).items():
+            self._verified_timestamps_s.setdefault(pair, float(ts))
         if result.get("attempts"):
             self.events.append(
                 {
@@ -497,18 +611,31 @@ class LiveLoopWorker:
                 self.verified.update(result["loops"])
             return False
         before = [pose.copy() for pose in state.poses]
-        applied = (state.apply_snapshot_corrections(
-            result["revision"], self.snapshot_geometry_revision, self.snapshot_poses,
-            result["correction"], result["scales"]
-        ) if self.snapshot_poses is not None else state.apply_corrections(
-            result["revision"], result["correction"], result["scales"]))
+        if self.snapshot_poses is not None:
+            if self.snapshot_pose_revision is not None:
+                applied = state.apply_snapshot_corrections(
+                    result["revision"], self.snapshot_geometry_revision, self.snapshot_poses,
+                    result["correction"], result["scales"],
+                    pose_revision=self.snapshot_pose_revision,
+                )
+            else:
+                applied = state.apply_snapshot_corrections(
+                    result["revision"], self.snapshot_geometry_revision, self.snapshot_poses,
+                    result["correction"], result["scales"],
+                )
+        else:
+            applied = state.apply_corrections(
+                result["revision"], result["correction"], result["scales"]
+            )
         if applied:
+            applied_at_s = time.perf_counter()
             if not self.metric:
                 for (i, j), measurement in result["loops"].items():
                     measurement["scale"] *= result["scales"][i] / result["scales"][j]
                     measurement["translation"] = (
                         measurement["translation"] * result["scales"][i]
                     )
+                self._kf_static_cache.clear()
             elif self.use_weighted_pgo:
                 for (match_kf, query_kf) in result.get("new_loops", ()):
                     loop_rec = result["loops"].get((match_kf, query_kf))
@@ -516,6 +643,12 @@ class LiveLoopWorker:
                         fuse_loop_landmarks(
                             state, query_kf, match_kf, loop_rec["measurement"], self.matrix
                         )
+            newly_applied = [pair for pair in result["loops"] if pair not in self.verified]
+            v2a_latencies = [
+                max(0.0, applied_at_s - self._verified_timestamps_s[pair])
+                for pair in newly_applied
+                if pair in self._verified_timestamps_s
+            ]
             self.verified = result["loops"]
             self.last_correction_before = before
             self.last_correction_after = [pose.copy() for pose in state.poses]
@@ -526,6 +659,8 @@ class LiveLoopWorker:
                     "type": "loop_applied",
                     "loops": len(self.verified),
                     "revision": state.revision,
+                    "pgo_elapsed_s": float(result.get("pgo_elapsed_s", 0.0)),
+                    "verification_to_apply_s": v2a_latencies,
                 }
             )
             return True

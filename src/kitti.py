@@ -28,12 +28,42 @@ def load_poses_txt(path: str | Path) -> list[np.ndarray]:
 def validate_pose(pose: np.ndarray) -> None:
     if pose.shape != (4, 4) or not np.isfinite(pose).all():
         raise ValueError("Expected a finite 4x4 pose")
-    rotation = pose[:3, :3]
-    if not np.allclose(pose[3], [0, 0, 0, 1], atol=1e-5):
-        raise ValueError("Invalid homogeneous pose row")
-    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-3) or not np.isclose(
-        np.linalg.det(rotation), 1.0, atol=1e-3
+    p30 = float(pose[3, 0])
+    p31 = float(pose[3, 1])
+    p32 = float(pose[3, 2])
+    p33 = float(pose[3, 3])
+    if (
+        abs(p30) > 1e-5
+        or abs(p31) > 1e-5
+        or abs(p32) > 1e-5
+        or abs(p33 - 1.0) > 1e-5 + 1e-5
     ):
+        raise ValueError("Invalid homogeneous pose row")
+    r00 = float(pose[0, 0]); r01 = float(pose[0, 1]); r02 = float(pose[0, 2])
+    r10 = float(pose[1, 0]); r11 = float(pose[1, 1]); r12 = float(pose[1, 2])
+    r20 = float(pose[2, 0]); r21 = float(pose[2, 1]); r22 = float(pose[2, 2])
+    g00 = r00 * r00 + r10 * r10 + r20 * r20
+    g11 = r01 * r01 + r11 * r11 + r21 * r21
+    g22 = r02 * r02 + r12 * r12 + r22 * r22
+    g01 = r00 * r01 + r10 * r11 + r20 * r21
+    g02 = r00 * r02 + r10 * r12 + r20 * r22
+    g12 = r01 * r02 + r11 * r12 + r21 * r22
+    diag_tol = 1e-3 + 1e-5
+    if (
+        abs(g00 - 1.0) > diag_tol
+        or abs(g11 - 1.0) > diag_tol
+        or abs(g22 - 1.0) > diag_tol
+        or abs(g01) > 1e-3
+        or abs(g02) > 1e-3
+        or abs(g12) > 1e-3
+    ):
+        raise ValueError("Pose rotation must belong to SO(3)")
+    det = (
+        r00 * (r11 * r22 - r12 * r21)
+        - r01 * (r10 * r22 - r12 * r20)
+        + r02 * (r10 * r21 - r11 * r20)
+    )
+    if abs(det - 1.0) > diag_tol:
         raise ValueError("Pose rotation must belong to SO(3)")
 
 

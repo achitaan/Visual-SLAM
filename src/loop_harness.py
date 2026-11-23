@@ -79,6 +79,8 @@ _SANITIZED_ENV_ALLOWLIST = (
     "TMP",
     "USERPROFILE",
     "MPLCONFIGDIR",
+    "CUDA_VISIBLE_DEVICES",
+    "VISUAL_SLAM_DISABLE_NATIVE",
 )
 
 
@@ -238,7 +240,11 @@ def build_airgapped_estimator_invocation(
     pipeline_extraction: bool = False,
     pipeline_buffer: int = 1,
     openblas_threads: int = 1,
+    matching_backend: str = "cpu",
+    profile: bool = True,
 ) -> tuple[list[str], dict[str, str], Path]:
+    if matching_backend not in ("cpu", "cuda", "auto"):
+        raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
     data_root_resolved = Path(data_root).expanduser().resolve(strict=False)
@@ -307,6 +313,10 @@ def build_airgapped_estimator_invocation(
     if pipeline_extraction:
         command.append("--pipeline-extraction")
         command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
+    if matching_backend != "cpu":
+        command.extend(["--matching-backend", matching_backend])
+    if not profile:
+        command.append("--no-profile")
 
     forbidden_tokens = {
         str(poses_dir),
@@ -342,6 +352,8 @@ def run_airgapped_estimator_subprocess(
     pipeline_extraction: bool = False,
     pipeline_buffer: int = 1,
     openblas_threads: int = 1,
+    matching_backend: str = "cpu",
+    profile: bool = True,
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -358,6 +370,8 @@ def run_airgapped_estimator_subprocess(
         pipeline_extraction=pipeline_extraction,
         pipeline_buffer=pipeline_buffer,
         openblas_threads=openblas_threads,
+        matching_backend=matching_backend,
+        profile=profile,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -428,12 +442,21 @@ def _summarize_latencies_ms(values_s: list[float]) -> dict[str, Any]:
 
 def _summarize_loop_events(slam: Any) -> dict[str, Any]:
     verified_pairs: set[tuple[int, int]] = set()
-    for edge in getattr(slam.loop_worker, "verified", ()):
-        i = getattr(edge, "first_keyframe", None)
-        j = getattr(edge, "second_keyframe", None)
-        if i is not None and j is not None:
-            verified_pairs.add((int(i), int(j)))
+    raw_verified = getattr(slam.loop_worker, "verified", ())
+    if isinstance(raw_verified, dict):
+        for pair in raw_verified.keys():
+            if isinstance(pair, (tuple, list)) and len(pair) == 2:
+                verified_pairs.add((int(pair[0]), int(pair[1])))
+    else:
+        for edge in raw_verified:
+            i = getattr(edge, "first_keyframe", None)
+            j = getattr(edge, "second_keyframe", None)
+            if i is not None and j is not None:
+                verified_pairs.add((int(i), int(j)))
     applied_loops = 0
+    applied_timeline: list[dict[str, Any]] = []
+    v2a_latencies_s: list[float] = []
+    pgo_durations_s: list[float] = []
     events_by_type: Counter[str] = Counter()
     for event in getattr(slam.loop_worker, "events", ()):
         if not isinstance(event, dict):
@@ -449,6 +472,28 @@ def _summarize_loop_events(slam: Any) -> dict[str, Any]:
                         verified_pairs.add((int(i), int(j)))
         elif etype == "loop_applied":
             applied_loops = int(event.get("loops", applied_loops))
+            ev_v2a = [float(x) for x in (event.get("verification_to_apply_s") or ())]
+            v2a_latencies_s.extend(ev_v2a)
+            if "pgo_elapsed_s" in event:
+                pgo_durations_s.append(float(event["pgo_elapsed_s"]))
+            applied_timeline.append(
+                {
+                    "loops": int(applied_loops),
+                    "revision": int(event.get("revision", -1)),
+                    "pgo_elapsed_s": float(event.get("pgo_elapsed_s", 0.0)),
+                }
+            )
+    if v2a_latencies_s:
+        arr = np.asarray(v2a_latencies_s, dtype=np.float64)
+        v2a_summary = {
+            "count": int(len(arr)),
+            "mean_s": float(np.mean(arr)),
+            "p50_s": float(np.percentile(arr, 50)),
+            "p95_s": float(np.percentile(arr, 95)),
+            "max_s": float(np.max(arr)),
+        }
+    else:
+        v2a_summary = {"count": 0, "mean_s": 0.0, "p50_s": 0.0, "p95_s": 0.0, "max_s": 0.0}
     return {
         "verified_loops": int(len(verified_pairs)),
         "applied_loops": int(applied_loops),
@@ -456,6 +501,9 @@ def _summarize_loop_events(slam: Any) -> dict[str, Any]:
         "failed_loops": int(events_by_type.get("loop_failed", 0)),
         "skipped_loops": int(events_by_type.get("loop_skipped", 0)),
         "events_by_type": dict(sorted(events_by_type.items())),
+        "verified_pairs": [[int(a), int(b)] for a, b in sorted(verified_pairs)],
+        "applied_timeline": applied_timeline,
+        "verification_to_apply_latency_s": v2a_summary,
     }
 
 
@@ -492,12 +540,18 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=2)
+    parser.add_argument(
+        "--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu"
+    )
+    parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
+    import gc
     import cv2 as cv
     from StereoVisualOdometry import StereoVisualOdometry
     from shared_slam import SharedSlam, StereoCamera
 
+    gc.set_threshold(50000, 20, 200)
     np.random.seed(args.seed)
     cv.setRNGSeed(args.seed)
     cv.setNumThreads(args.opencv_threads)
@@ -506,9 +560,9 @@ def _estimator_worker_main(argv: list[str]) -> int:
     cfg = MappingConfig.from_preset(args.preset, stereo=True, **overrides)
     perf = PerformanceConfig(
         retrieval="current",
-        matching_backend="cpu",
+        matching_backend=str(args.matching_backend),
         cpu_optimizations=True,
-        profile=True,
+        profile=not bool(args.no_profile),
         pipeline_extraction=bool(args.pipeline_extraction),
     )
 
@@ -549,13 +603,16 @@ def _estimator_worker_main(argv: list[str]) -> int:
     pipeline = None
     if args.pipeline_extraction:
         from frontend_pipeline import FrontendExtractionPipeline
-        pipeline = FrontendExtractionPipeline(slam, buffer_size=max(1, int(args.pipeline_buffer)))
+        pipeline = FrontendExtractionPipeline(
+            slam,
+            buffer_size=max(1, int(args.pipeline_buffer)),
+            lazy_extraction=True,
+        )
 
     started = time.perf_counter()
     try:
         if pipeline is not None:
-            def _load_pair(idx: int):
-                return vo.Images_1[idx], vo.Images_2[idx]
+            _load_pair = (vo.Images_1.__getitem__, vo.Images_2.__getitem__)
 
             submit_times: dict[int, float] = {}
             prefetch_depth = min(max(1, int(args.pipeline_buffer)), total_frames)
@@ -571,7 +628,11 @@ def _estimator_worker_main(argv: list[str]) -> int:
                 t_extract_ready = time.perf_counter()
                 if next_submit < total_frames:
                     submit_times[next_submit] = time.perf_counter()
-                    pipeline.submit_loader(next_submit, _load_pair)
+                    pipeline.submit_loader(
+                        next_submit,
+                        _load_pair,
+                        eager=slam.should_prefetch_full_extraction(next_submit),
+                    )
                     next_submit += 1
                 prev_kfs = len(slam.map.keyframes)
                 t_proc_start = time.perf_counter()
@@ -650,6 +711,11 @@ def _estimator_worker_main(argv: list[str]) -> int:
     peak_rss_mb = _self_peak_rss_mb()
     bundle_reports = getattr(slam, "bundle_reports", ())
 
+    matcher_meta = (
+        slam.matcher.metadata()
+        if hasattr(getattr(slam, "matcher", None), "metadata")
+        else {"requested": str(args.matching_backend)}
+    )
     run_payload = {
         "sequence": args.sequence,
         "frames": total_frames,
@@ -658,6 +724,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "opencv_threads": args.opencv_threads,
         "openblas_threads": int(os.environ.get("OPENBLAS_NUM_THREADS", "1")),
         "pipeline_extraction": bool(args.pipeline_extraction),
+        "matching_backend": matcher_meta,
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -776,6 +843,8 @@ def evaluate_sequence_posthoc(
         "online_fps": float(run_payload.get("online_fps", run_payload["processing_fps"])),
         "peak_rss_mb": float(run_payload["peak_rss_mb"]),
     }
+    if "matching_backend" in run_payload:
+        result["matching_backend"] = run_payload["matching_backend"]
     if "frame_latency_ms" in run_payload:
         result["frame_latency_ms"] = run_payload["frame_latency_ms"]
     if "loop_events" in run_payload:
@@ -1330,6 +1399,17 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openblas-threads", type=int, default=1)
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=1)
+    parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Disable per-stage StageProfile instrumentation for unprofiled benchmark runs",
+    )
+    parser.add_argument(
+        "--matching-backend",
+        choices=["cpu", "cuda", "auto"],
+        default="cpu",
+        help="Optional descriptor matching backend (performance setting only; does not alter MappingConfig)",
+    )
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1449,6 +1529,8 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             pipeline_extraction=bool(args.pipeline_extraction),
             pipeline_buffer=int(args.pipeline_buffer),
             openblas_threads=int(args.openblas_threads),
+            matching_backend=str(args.matching_backend),
+            profile=not bool(args.no_profile),
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1481,6 +1563,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             "online_fps": seq_eval["online_fps"],
         }
         for opt_key in (
+            "matching_backend",
             "frame_latency_ms",
             "loop_events",
             "online_first_metrics",
@@ -1519,6 +1602,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "git_commit": git_commit,
         "tier": args.tier,
         "preset": args.preset,
+        "matching_backend_requested": str(args.matching_backend),
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,
         "evaluation_isolation": {

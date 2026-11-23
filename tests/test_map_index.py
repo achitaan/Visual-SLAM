@@ -315,3 +315,95 @@ def test_sparse_apply_corrections_matches_dense_and_preserves_atomicity():
     np.testing.assert_array_equal(state.keyframes[5].pose, pose5_before)
 
 
+def test_high_miss_landmarks_incremental_and_fallback():
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+    ids = [
+        state.add_landmark([float(i), 0.0, 10.0], desc, anchor=0, observations={})
+        for i in range(6)
+    ]
+    assert state.high_miss_landmarks(5) == {}
+
+    # Set misses >= 5 out of order; result must preserve ascending ID order
+    state.landmarks[ids[4]].misses = 5
+    state.landmarks[ids[1]].misses = 7
+    state.landmarks[ids[3]].misses = 5
+    state.landmarks[ids[2]].misses = 4
+    dropped = state.high_miss_landmarks(5)
+    assert list(dropped.keys()) == [ids[1], ids[3], ids[4]]
+
+    # Lowering misses removes landmark from high-miss set
+    state.landmarks[ids[3]].misses = 0
+    assert list(state.high_miss_landmarks(5).keys()) == [ids[1], ids[4]]
+
+    # Removing landmark cleans tracking cleanly
+    state.remove_landmark(ids[1])
+    assert list(state.high_miss_landmarks(5).keys()) == [ids[4]]
+
+    # Direct dict injection bypasses add_landmark -> automatic fallback to full scan
+    injected = Landmark(999, np.array([1.0, 0.0, 10.0]), desc, 0, {}, misses=6)
+    state.landmarks[999] = injected
+    dropped_fb = state.high_miss_landmarks(5)
+    assert set(dropped_fb.keys()) == {ids[4], 999}
+
+
+def test_query_frustum_recent_keyframe_fast_path_and_fallback_exact_parity():
+    K = np.array([[700.0, 0.0, 620.0], [0.0, 700.0, 188.0], [0.0, 0.0, 1.0]])
+    state = MapState(metric=True)
+    desc = np.zeros(128, dtype=np.float32)
+    rng = np.random.default_rng(19)
+
+    for kf_id in range(30):
+        n_pts = 300
+        for j in range(n_pts):
+            if kf_id < 18 and j < 150:
+                pos = np.array([rng.uniform(-4.0, 4.0), rng.uniform(-1.5, 1.5), -rng.uniform(10.0, 40.0)])
+            else:
+                pos = np.array([rng.uniform(-4.0, 4.0), rng.uniform(-1.5, 1.5), rng.uniform(10.0, 40.0)])
+            obs = {kf_id: Observation(np.array([10.0 + (j % 100) * 5.0, 20.0 + (j // 100) * 5.0], np.float32), 5.0)}
+            if kf_id > 0 and j % 7 == 0:
+                obs[kf_id - 1] = Observation(np.array([11.0 + (j % 100) * 5.0, 21.0 + (j // 100) * 5.0], np.float32), 6.0)
+            state.add_landmark(pos, desc, anchor=kf_id, observations=obs)
+
+    assert len(state.index) == 9000
+
+    def full_scan_reference(T_cw, k):
+        full = state.index.query_frustum(
+            T_cw, K, (1241, 376), max_depth=80.0, margin_px=32.0,
+            include_far_bearings=True, exclude_conflicted=True, max_landmarks=None,
+        )
+        slots = np.array([state.index._id_to_slot[int(lid)] for lid in full.landmark_ids], dtype=np.int64)
+        keys = (
+            ((state.index._max_obs_kf[slots].astype(np.int64) + 1) << 32)
+            | state.index._num_obs[slots].astype(np.int64)
+        )
+        order = np.lexsort((np.arange(len(slots)), -keys))[:k]
+        return full.landmark_ids[order], full.projected_uv[order], full.depths[order]
+
+    # Case 1: Forward camera (+Z) -> hits recent-keyframe fast path
+    T_fwd = np.eye(4)
+    fast_fwd = state.index.query_frustum(
+        T_fwd, K, (1241, 376), max_depth=80.0, margin_px=32.0,
+        include_far_bearings=True, exclude_conflicted=True, max_landmarks=200,
+    )
+    ref_ids, ref_uv, ref_d = full_scan_reference(T_fwd, 200)
+    np.testing.assert_array_equal(fast_fwd.landmark_ids, ref_ids)
+    np.testing.assert_array_equal(fast_fwd.projected_uv, ref_uv)
+    np.testing.assert_array_equal(fast_fwd.depths, ref_d)
+
+    # Case 2: Backward camera (-Z) -> recent keyframes have 0 visible, must fall back to full scan
+    T_back = np.eye(4)
+    T_back[0, 0] = -1.0
+    T_back[2, 2] = -1.0
+    fast_back = state.index.query_frustum(
+        T_back, K, (1241, 376), max_depth=80.0, margin_px=32.0,
+        include_far_bearings=True, exclude_conflicted=True, max_landmarks=200,
+    )
+    ref_ids_b, ref_uv_b, ref_d_b = full_scan_reference(T_back, 200)
+    assert len(fast_back.landmark_ids) == 200
+    np.testing.assert_array_equal(fast_back.landmark_ids, ref_ids_b)
+    np.testing.assert_array_equal(fast_back.projected_uv, ref_uv_b)
+    np.testing.assert_array_equal(fast_back.depths, ref_d_b)
+
+
+

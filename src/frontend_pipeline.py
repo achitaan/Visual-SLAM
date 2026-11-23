@@ -477,15 +477,18 @@ class FrontendExtractionPipeline:
             if slam.stereo is not None
             else None
         )
+        use_half_res = bool(getattr(slam.config, "use_half_res_stereo", False))
         self._sgbm = _clone_sgbm(src_sgbm)
-        self._half_sgbm = _clone_half_sgbm(src_sgbm)
+        self._half_sgbm = _clone_half_sgbm(src_sgbm) if use_half_res else None
         self._lazy_detector = (
             _clone_sift(slam.config, has_stereo=slam.stereo is not None)
             if self._lazy_extraction
             else None
         )
         self._lazy_sgbm = _clone_sgbm(src_sgbm) if self._lazy_extraction else None
-        self._lazy_half_sgbm = _clone_half_sgbm(src_sgbm) if self._lazy_extraction else None
+        self._lazy_half_sgbm = (
+            _clone_half_sgbm(src_sgbm) if (self._lazy_extraction and use_half_res) else None
+        )
         self._sgbm_executor: ThreadPoolExecutor | None = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="frontend-sgbm")
             if (concurrent_stereo and self._sgbm is not None)

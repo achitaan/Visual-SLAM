@@ -316,6 +316,7 @@ class MappingConfig:
                     "max_live_loop_keyframes": 0,
                     "use_weighted_pgo": True,
                     "use_vlad_loop_retrieval": True,
+                    "use_half_res_stereo": bool(stereo),
                 }
             )
         params.update(overrides)
@@ -333,6 +334,7 @@ _MAPPING_ENHANCEMENT_DEFAULTS: dict[str, object] = {
     "use_vlad_loop_retrieval": False,
     "use_weighted_pgo": False,
     "use_adaptive_keyframe_parallax": False,
+    "use_half_res_stereo": False,
     "max_live_loop_keyframes": 300,
 }
 
@@ -918,10 +920,14 @@ class SharedSlam:
                 from frontend_pipeline import _clone_half_sgbm, _compute_disparity_f32
 
                 sgbm = getattr(self, "_fast_stereo_sgbm", None) or self.stereo.stereo
-                if not hasattr(self, "_half_stereo_sgbm"):
-                    self._half_stereo_sgbm = _clone_half_sgbm(sgbm)
+                if getattr(self.config, "use_half_res_stereo", False):
+                    if not hasattr(self, "_half_stereo_sgbm"):
+                        self._half_stereo_sgbm = _clone_half_sgbm(sgbm)
+                    half_sgbm = self._half_stereo_sgbm
+                else:
+                    half_sgbm = None
                 disparity = _compute_disparity_f32(
-                    sgbm, gray, right_gray, half_sgbm=self._half_stereo_sgbm
+                    sgbm, gray, right_gray, half_sgbm=half_sgbm
                 )
                 self.current_disparity = disparity
             points, right_u = self._measure_stereo_pixels(
@@ -3361,8 +3367,14 @@ class SharedSlam:
         def _kf_row_map(frame_id):
             keyframe = keyframes[frame_id]
             lm_ids = keyframe.landmark_ids
+            lm_ver = int(getattr(keyframe, "landmark_ids_version", 0))
             entry = cache.get(frame_id)
-            if entry is not None and entry[0] == id(keyframe) and entry[1] == id(lm_ids):
+            if (
+                entry is not None
+                and entry[0] == id(keyframe)
+                and entry[1] == id(lm_ids)
+                and entry[3] == lm_ver
+            ):
                 return entry[2]
             pos = np.flatnonzero(lm_ids >= 0)
             row_map = {}
@@ -3373,7 +3385,7 @@ class SharedSlam:
                         row_map[lid] = [row]
                     else:
                         bucket.append(row)
-            cache[frame_id] = (id(keyframe), id(lm_ids), row_map)
+            cache[frame_id] = (id(keyframe), id(lm_ids), row_map, lm_ver)
             return row_map
 
         pool_slots = []
@@ -3381,9 +3393,16 @@ class SharedSlam:
         fallback_descs = None
         lm_cache_get = lm_cache.get
         gen_get = gen.get
-        # Between map revisions (all non-keyframes) and unchanged keyframe count,
-        # no landmark's anchor/observations/keyframe rows can change.
-        cur_rev = (cur_map_id, self.map.revision, len(keyframes), self.map.next_landmark, sum(gen.values()) if gen else 0)
+        # Between map revisions (all non-keyframes) and unchanged keyframe count /
+        # landmark_ids ownership version, no landmark's anchor/observations/rows can change.
+        cur_rev = (
+            cur_map_id,
+            self.map.revision,
+            len(keyframes),
+            self.map.next_landmark,
+            int(getattr(self.map, "landmark_ids_version", 0)),
+            sum(gen.values()) if gen else 0,
+        )
         fast_rev = getattr(self, "_lm_desc_fast_rev", None)
         if fast_rev == cur_rev:
             fast_slots = self._lm_desc_fast_slots
@@ -3415,8 +3434,10 @@ class SharedSlam:
                 latest = next(iter(obs))
             else:
                 latest = max(obs)
-            g_a = gen_get(anchor, 0)
-            g_l = gen_get(latest, 0)
+            kf_a = keyframes.get(anchor)
+            kf_l = keyframes.get(latest)
+            g_a = gen_get(anchor, 0) + (int(getattr(kf_a, "landmark_ids_version", 0)) if kf_a is not None else 0)
+            g_l = gen_get(latest, 0) + (int(getattr(kf_l, "landmark_ids_version", 0)) if kf_l is not None else 0)
             entry = lm_cache_get(lid)
             if (
                 entry is not None

@@ -63,6 +63,7 @@ class MappingKeyframe:
     depth_points: np.ndarray | None = None
     image_size: tuple[int, int] | None = None
     octaves: np.ndarray | None = None
+    landmark_ids_version: int = 0
 
 
 class MapState:
@@ -70,6 +71,7 @@ class MapState:
         self.metric = metric
         self.keyframes = {}
         self.landmarks = {}
+        self.landmark_ids_version = 0
         self.poses = []
         self.pose_anchors = []
         self.relative_poses = []

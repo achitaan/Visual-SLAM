@@ -327,6 +327,9 @@ def fuse_neighbor_landmarks(
                             map_state.remove_landmark(existing_lid)
                             map_state.add_observation(int(lm.id), kf_id, obs_other)
                             fused += 1
+            if fused > 0:
+                keyframe.landmark_ids_version = int(getattr(keyframe, "landmark_ids_version", 0)) + 1
+                map_state.landmark_ids_version = int(getattr(map_state, "landmark_ids_version", 0)) + 1
             return fused
 
         grid, inv_cell = _build_spatial_grid(f_pixels, max(rad, 4.0))
@@ -390,6 +393,9 @@ def fuse_neighbor_landmarks(
                         map_state.remove_landmark(existing_lid)
                         map_state.add_observation(int(lm.id), kf_id, obs_other)
                         fused += 1
+        if fused > 0:
+            keyframe.landmark_ids_version = int(getattr(keyframe, "landmark_ids_version", 0)) + 1
+            map_state.landmark_ids_version = int(getattr(map_state, "landmark_ids_version", 0)) + 1
         _ = baseline
         return fused
 
@@ -459,38 +465,36 @@ def triangulate_far_stereo_landmarks(
     used_curr: set[int] = set()
     cos_min = 0.72
     r2_thresh = float(ratio * ratio)
+    max_unit_l2 = float(np.sqrt(max(0.0, 2.0 - 2.0 * cos_min)))
 
-    # Fast path: AVX-512 VNNI mutual ratio matcher (~1.5 ms vs ~11 ms float32 SGEMM)
-    # followed by infinite-depth homography radius + cosine similarity filtering.
-    vnni_used = False
-    try:
-        from native_accel import match_sift_mutual_vnni
-        vnni_pairs = match_sift_mutual_vnni(
-            prev_kf.descriptors[prev_unassigned],
-            curr_kf.descriptors[curr_unassigned],
-            ratio=min(0.80, float(ratio) + 0.08),
-        )
-        if vnni_pairs is not None:
-            vnni_used = True
-            if len(vnni_pairs):
-                i1_arr = vnni_pairs[:, 0]
-                i2_arr = vnni_pairs[:, 1]
-                vh = valid_h[i1_arr]
-                if np.any(vh):
-                    i1_v = i1_arr[vh]
-                    i2_v = i2_arr[vh]
-                    diff = pred2[i1_v] - px2[i2_v]
-                    dist_sq = diff[:, 0] * diff[:, 0] + diff[:, 1] * diff[:, 1]
-                    cos_v = np.einsum("ij,ij->i", d1[i1_v], d2[i2_v])
-                    keep = (dist_sq <= rad_sq) & (cos_v >= cos_min)
-                    for i1_k, i2_k in zip(i1_v[keep].tolist(), i2_v[keep].tolist()):
-                        if i2_k not in used_curr:
-                            used_curr.add(i2_k)
-                            pairs.append((i1_k, i2_k))
-    except Exception:
-        vnni_used = False
+    # Fast path: AVX-512 spatial-grid matcher applies the geometric search window
+    # BEFORE descriptor ranking (exact parity with the local window fallback).
+    native_used = False
+    valid_i1 = np.flatnonzero(valid_h)
+    if len(valid_i1):
+        try:
+            from native_accel import match_projected_landmarks_f32
+            native_pairs = match_projected_landmarks_f32(
+                pred2[valid_i1],
+                d1[valid_i1],
+                px2,
+                d2,
+                radius_px=float(search_rad),
+                ratio=float(ratio),
+                max_l2_distance=max_unit_l2,
+                max_single_l2_distance=max_unit_l2,
+            )
+            if native_pairs is not None:
+                native_used = True
+                for row_a, i2_k in native_pairs.tolist():
+                    i1_k = int(valid_i1[row_a])
+                    if i2_k not in used_curr:
+                        used_curr.add(i2_k)
+                        pairs.append((i1_k, i2_k))
+        except Exception:
+            native_used = False
 
-    if not vnni_used:
+    if not native_used:
         # Fallback: single BLAS SGEMM for all normalized descriptor similarities + float32 distance mask
         valid_i1 = np.flatnonzero(valid_h)
         if len(valid_i1):

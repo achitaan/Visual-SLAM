@@ -7113,12 +7113,8 @@ class SharedSlam:
             p_prev = self.map.poses[-2]
             step_m = float(np.linalg.norm(p_curr[:3, 3] - p_prev[:3, 3]))
             if step_m > 1.7:
-                if (
-                    self.previous_stereo_geometry is None
-                    or idx - int(self.previous_stereo_geometry[1]) >= 3
-                ):
-                    self._last_eager_prefetch_index = idx
-                    return True
+                self._last_eager_prefetch_index = idx
+                return True
             if getattr(self.config, "use_adaptive_keyframe_parallax", False):
                 horizon = max(1, idx - (len(self.map.poses) - 1))
                 kf_dist = float(np.linalg.norm(p_curr[:3, 3] - last_kf.pose[:3, 3]))
@@ -7180,9 +7176,8 @@ class SharedSlam:
         seed = self._motion_prediction()
         prev_pose = self.map.poses[-1]
         step_trans_m = float(np.linalg.norm((np.linalg.inv(prev_pose) @ seed)[:3, 3]))
-        if step_trans_m > 1.7 and self.previous_stereo_geometry is not None:
-            if int(index) - int(self.previous_stereo_geometry[1]) >= 3:
-                return None
+        if step_trans_m > 1.7:
+            return None
         projected, depth = project(world_all, seed, self.K)
         flow_visible = (
             (depth > 0.0)

@@ -113,6 +113,7 @@ def extract_grid_bucketed_sift(
     detector: cv.SIFT | None = None,
     *,
     build_cv_keypoints: bool = True,
+    native_sift=None,
 ) -> BucketedKeypoints:
     """Detect SIFT keypoints with spatial grid bucketing and compute descriptors only for kept keypoints."""
     if image_gray is None or np.ndim(image_gray) != 2:
@@ -122,13 +123,15 @@ def extract_grid_bucketed_sift(
     if (detector is None or isinstance(detector, cv.SIFT)) and image_gray.dtype == np.uint8:
         from native_accel import extract_sift_grid_avx512
 
-        native_res = extract_sift_grid_avx512(
-            image_gray,
+        native_args = dict(
             target_features=target,
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             contrast_threshold=contrast_threshold,
         )
+        native_res = native_sift(image_gray, **native_args) if native_sift is not None else None
+        if native_res is None:
+            native_res = extract_sift_grid_avx512(image_gray, **native_args)
         if native_res is not None:
             pixels, kept_desc, octaves, angles, responses = native_res
             kept_kps = (

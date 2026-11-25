@@ -499,6 +499,15 @@ class SharedSlam:
             self.cuda_frontend, self.cuda_frontend_device, self.cuda_frontend_reason = create_cuda_frontend(
                 features=self.config.features, grid_bucketing=self.config.use_grid_bucketing,
             )
+        self.cuda_sift_pyramid = None
+        self.cuda_sift_pyramid_reason = None
+        if self.performance.sift_pyramid_backend == "cuda":
+            if self._grid_detector is not None and self.cuda_frontend is None:
+                from cuda_sift_pyramid import create_cuda_sift_pyramid
+
+                self.cuda_sift_pyramid, self.cuda_sift_pyramid_reason = create_cuda_sift_pyramid()
+            else:
+                self.cuda_sift_pyramid_reason = "CUDA SIFT pyramid requires native grid-bucketed extraction"
         self.cuda_stereo_verifier = None
         self.cuda_stereo_verifier_reason = None
         if self.stereo is not None and self.performance.stereo_verification_backend == "cuda":
@@ -946,6 +955,7 @@ class SharedSlam:
         elif getattr(self.config, "use_grid_bucketing", False):
             from frontend_features import extract_grid_bucketed_sift
 
+            sift_pyramid = getattr(self, "cuda_sift_pyramid", None)
             bucketed = extract_grid_bucketed_sift(
                 gray,
                 target_features=self.config.features,
@@ -954,6 +964,7 @@ class SharedSlam:
                 contrast_threshold=self.config.stereo_feature_contrast_threshold,
                 detector=self._grid_detector,
                 build_cv_keypoints=False,
+                native_sift=None if sift_pyramid is None else sift_pyramid.extract,
             )
             pixels = bucketed.pixels
             desc = bucketed.descriptors

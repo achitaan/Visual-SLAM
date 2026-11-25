@@ -364,8 +364,43 @@ def _get_sift_lib() -> ctypes.CDLL | None:
             ctypes.POINTER(ctypes.c_int32),
         ]
         lib.extract_sift_grid_avx512.restype = ctypes.c_int32
+        if hasattr(lib, "extract_sift_pyramid_grid_avx512") and hasattr(lib, "sift_pyramid_parameters"):
+            lib.extract_sift_pyramid_grid_avx512.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t, *lib.extract_sift_grid_avx512.argtypes[1:],
+            ]
+            lib.extract_sift_pyramid_grid_avx512.restype = ctypes.c_int32
+            lib.sift_pyramid_parameters.argtypes = [ctypes.c_int32] * 3 + [ctypes.c_void_p] * 4
+            lib.sift_pyramid_parameters.restype = ctypes.c_int32
         lib._configured = True
     return lib
+
+
+def native_sift_first_octave() -> int:
+    return 0 if os.environ.get("VISUAL_SLAM_SIFT_FIRST_OCTAVE", "").strip() == "0" else -1
+
+
+def sift_pyramid_available() -> bool:
+    lib = _get_sift_lib()
+    return (lib is not None and hasattr(lib, "extract_sift_pyramid_grid_avx512")
+            and hasattr(lib, "sift_pyramid_parameters"))
+
+
+def sift_pyramid_parameters(shape: tuple[int, int], first_octave: int):
+    """Return the octave shapes and exact integer coefficients from the native SIFT kernel."""
+    lib = _get_sift_lib()
+    if lib is None or not hasattr(lib, "sift_pyramid_parameters"):
+        return None
+    heights = np.empty(6, dtype=np.int32)
+    widths = np.empty(6, dtype=np.int32)
+    weights = np.zeros((6, 25), dtype=np.int16)
+    radii = np.empty(6, dtype=np.int32)
+    count = lib.sift_pyramid_parameters(
+        *shape, first_octave, heights.ctypes.data, widths.ctypes.data,
+        weights.ctypes.data, radii.ctypes.data,
+    )
+    if not 1 <= count <= len(heights):
+        return None
+    return tuple(zip(heights[:count].tolist(), widths[:count].tolist())), weights, tuple(radii.tolist())
 
 
 def extract_sift_grid_avx512(
@@ -376,15 +411,24 @@ def extract_sift_grid_avx512(
     grid_rows: int = 6,
     contrast_threshold: float = 0.02,
     first_octave: int | None = None,
+    pyramid: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
     """Run AVX-512 C++ SIFT with early spatial grid bucketing before descriptor computation."""
     lib = _get_sift_lib()
     if lib is None or image_gray.dtype != np.uint8 or image_gray.ndim != 2:
         return None
     if first_octave is None:
-        raw_fo = os.environ.get("VISUAL_SLAM_SIFT_FIRST_OCTAVE", "-1").strip()
-        first_octave = int(raw_fo) if raw_fo in ("-1", "0") else -1
-    img = np.ascontiguousarray(image_gray, dtype=np.uint8)
+        first_octave = native_sift_first_octave()
+    if pyramid is None:
+        img = np.ascontiguousarray(image_gray, dtype=np.uint8)
+        extract = lib.extract_sift_grid_avx512
+        source = (img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),)
+    elif (pyramid.dtype == np.int16 and pyramid.ndim == 1 and pyramid.flags.c_contiguous
+            and hasattr(lib, "extract_sift_pyramid_grid_avx512")):
+        extract = lib.extract_sift_pyramid_grid_avx512
+        source = (pyramid.ctypes.data, pyramid.size)
+    else:
+        return None
     target = max(1, int(target_features))
     px = np.empty((target, 2), dtype=np.float32)
     desc = np.empty((target, 128), dtype=np.float32)
@@ -392,10 +436,10 @@ def extract_sift_grid_avx512(
     angles = np.empty(target, dtype=np.float32)
     responses = np.empty(target, dtype=np.float32)
     cnt = ctypes.c_int32(0)
-    ok = lib.extract_sift_grid_avx512(
-        img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
-        img.shape[0],
-        img.shape[1],
+    ok = extract(
+        *source,
+        image_gray.shape[0],
+        image_gray.shape[1],
         target,
         int(grid_cols),
         int(grid_rows),

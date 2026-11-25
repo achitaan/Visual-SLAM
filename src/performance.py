@@ -1,4 +1,4 @@
-"""Opt-in controls for retrieval, matching, stereo verification, and profiling."""
+"""Opt-in acceleration and profiling controls for the estimator."""
 
 from dataclasses import dataclass
 from functools import wraps
@@ -21,6 +21,7 @@ class PerformanceConfig:
     coalesce_prefetch: bool = False
     stereo_verification_backend: str = "cpu"
     optical_flow_backend: str = "cpu"
+    sift_pyramid_backend: str = "cpu"
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):
@@ -33,6 +34,8 @@ class PerformanceConfig:
             raise ValueError("Stereo verification backend must be cpu or cuda")
         if self.optical_flow_backend not in ("cpu", "cuda"):
             raise ValueError("Optical flow backend must be cpu or cuda")
+        if self.sift_pyramid_backend not in ("cpu", "cuda"):
+            raise ValueError("SIFT pyramid backend must be cpu or cuda")
 
 
 # Keep the old import available without maintaining a second profiler.

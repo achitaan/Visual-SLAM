@@ -14,6 +14,34 @@ constexpr int32_t Q_SHIFT = 7;            // Q7 fixed point for int16 gpyr (0..2
 constexpr int32_t DOG_SHIFT = 9;          // Q9 fixed point for int16 dogpyr (1/512 gray level, range [-64,+64])
 constexpr float INV_Q = 1.0f / 128.0f;
 constexpr float INV_DOG_Q = 1.0f / 512.0f;
+constexpr int32_t SIFT_LAYERS = 3;
+constexpr int32_t SIFT_OCTAVES = 6;
+constexpr float SIFT_SIGMA = 1.6f;
+
+int32_t sift_octave_shapes(int32_t h, int32_t w, int32_t first_octave,
+                           int32_t* heights, int32_t* widths) {
+    heights[0] = first_octave < 0 ? h * 2 : h;
+    widths[0] = first_octave < 0 ? w * 2 : w;
+    const auto short_side = static_cast<double>(std::min(heights[0], widths[0]));
+    const int32_t count = static_cast<int32_t>(std::round(std::log2(short_side))) - 2;
+    const int32_t octaves = std::max(1, std::min(count, SIFT_OCTAVES));
+    for (int32_t o = 1; o < octaves; ++o) {
+        heights[o] = heights[o - 1] / 2;
+        widths[o] = widths[o - 1] / 2;
+    }
+    return octaves;
+}
+
+void sift_blur_sigmas(int32_t first_octave, float* sig) {
+    const float input_variance = first_octave < 0 ? 1.0f : 0.25f;
+    sig[0] = std::sqrt(std::max(SIFT_SIGMA * SIFT_SIGMA - input_variance, 0.01f));
+    const double step = std::pow(2.0, 1.0 / SIFT_LAYERS);
+    for (int32_t i = 1; i < SIFT_LAYERS + 3; ++i) {
+        const double previous = std::pow(step, i - 1) * SIFT_SIGMA;
+        const double total = previous * step;
+        sig[i] = static_cast<float>(std::sqrt(total * total - previous * previous));
+    }
+}
 
 // Fast accurate AVX-512 atan2 in degrees [0, 360), max error < 0.05 deg.
 inline __m512 fast_atan2_deg_avx512(__m512 y, __m512 x) {
@@ -671,17 +699,13 @@ struct SiftWorkspace {
     void ensure(int32_t ih, int32_t iw, int32_t fo) {
         if (h == ih && w == iw && first_octave == fo) return;
         h = ih; w = iw; first_octave = fo;
-        const int32_t base_h = (fo < 0) ? (h * 2) : h;
-        const int32_t base_w = (fo < 0) ? (w * 2) : w;
-        n_octaves = static_cast<int32_t>(std::round(std::log2(static_cast<double>(std::min(base_h, base_w))))) - 2;
-        n_octaves = std::max(1, std::min(n_octaves, 6));
-        oct_h.resize(n_octaves);
-        oct_w.resize(n_octaves);
+        oct_h.resize(SIFT_OCTAVES);
+        oct_w.resize(SIFT_OCTAVES);
+        n_octaves = sift_octave_shapes(h, w, fo, oct_h.data(), oct_w.data());
+        const int32_t base_h = oct_h[0], base_w = oct_w[0];
         gpyr_i16.resize(n_octaves);
         dogpyr_i16.resize(n_octaves);
         for (int32_t o = 0; o < n_octaves; ++o) {
-            oct_h[o] = (o == 0) ? base_h : (oct_h[o - 1] / 2);
-            oct_w[o] = (o == 0) ? base_w : (oct_w[o - 1] / 2);
             const size_t npix = static_cast<size_t>(oct_h[o]) * oct_w[o];
             gpyr_i16[o].resize(5);
             dogpyr_i16[o].resize(5);
@@ -698,11 +722,7 @@ struct SiftWorkspace {
 
 thread_local SiftWorkspace g_ws;
 
-}  // namespace
-
-extern "C" {
-
-int32_t extract_sift_grid_avx512(
+int32_t extract_sift_grid(
     const uint8_t* gray,
     int32_t h,
     int32_t w,
@@ -716,29 +736,49 @@ int32_t extract_sift_grid_avx512(
     int16_t* out_octaves,
     float* out_angles,
     float* out_responses,
-    int32_t* out_count
+    int32_t* out_count,
+    const int16_t* packed_pyramid,
+    size_t packed_count
 ) {
     if (h < 16 || w < 16 || target_features <= 0) {
         *out_count = 0;
         return 1;
     }
 
-    constexpr int32_t nOctaveLayers = 3;
+    constexpr int32_t nOctaveLayers = SIFT_LAYERS;
     constexpr int32_t nG = nOctaveLayers + 3;
-    constexpr float sigma = 1.6f;
+    constexpr float sigma = SIFT_SIGMA;
     constexpr float edgeThreshold = 10.0f;
     constexpr int32_t img_border = 5;
 
-    g_ws.ensure(h, w, first_octave);
-    const int32_t n_octaves = g_ws.n_octaves;
-
+    int32_t oct_h[SIFT_OCTAVES], oct_w[SIFT_OCTAVES];
+    const int32_t n_octaves = sift_octave_shapes(h, w, first_octave, oct_h, oct_w);
+    const int16_t* gaussian[SIFT_OCTAVES][SIFT_LAYERS];
+    const int16_t* dog[SIFT_OCTAVES][SIFT_LAYERS + 2];
     float sig[nG];
-    sig[0] = sigma;
-    const double k_step = std::pow(2.0, 1.0 / nOctaveLayers);
-    for (int32_t i = 1; i < nG; ++i) {
-        const double sig_prev = std::pow(k_step, i - 1) * sigma;
-        const double sig_total = sig_prev * k_step;
-        sig[i] = static_cast<float>(std::sqrt(sig_total * sig_total - sig_prev * sig_prev));
+    if (packed_pyramid != nullptr) {
+        // Each octave stores Gaussian layers 1..3 and all five DoG planes.
+        constexpr size_t planes = 2 * SIFT_LAYERS + 2;
+        size_t required = 0;
+        for (int32_t o = 0; o < n_octaves; ++o) required += planes * oct_h[o] * oct_w[o];
+        if (packed_count != required) return 0;
+        const int16_t* next = packed_pyramid;
+        for (int32_t o = 0; o < n_octaves; ++o) {
+            const size_t size = static_cast<size_t>(oct_h[o]) * oct_w[o];
+            for (auto& layer : gaussian[o]) { layer = next; next += size; }
+            for (auto& layer : dog[o]) { layer = next; next += size; }
+        }
+    } else {
+        g_ws.ensure(h, w, first_octave);
+        sift_blur_sigmas(first_octave, sig);
+        for (int32_t o = 0; o < n_octaves; ++o) {
+            for (int32_t level = 0; level < SIFT_LAYERS; ++level) {
+                gaussian[o][level] = g_ws.gpyr_i16[o][level + 1].data();
+            }
+            for (int32_t level = 0; level < SIFT_LAYERS + 2; ++level) {
+                dog[o][level] = g_ws.dogpyr_i16[o][level].data();
+            }
+        }
     }
 
     // Preserve exact Lowe/OpenCV 0.5x pre-threshold in Q5 fixed point (e.g. 0.85 * 32 = 27)
@@ -754,51 +794,51 @@ int32_t extract_sift_grid_avx512(
 
     // 1+2. Unified Q7 gpyr + Q9 dogpyr 32-wide AVX-512BW pyramid and extrema scan
     for (int32_t o = 0; o < n_octaves; ++o) {
-        const int32_t oh = g_ws.oct_h[o];
-        const int32_t ow = g_ws.oct_w[o];
+        const int32_t oh = oct_h[o];
+        const int32_t ow = oct_w[o];
         const int32_t actual_oct = o + first_octave;
         const float oct_scale = (actual_oct >= 0)
             ? static_cast<float>(1 << actual_oct)
             : (1.0f / static_cast<float>(1 << (-actual_oct)));
 
-        if (o == 0) {
-            if (first_octave < 0) {
-                upsample_2x_i16_avx512(gray, h, w, g_ws.base_raw_i16.data(), g_ws.row_tmp_i16.data());
-                const float sig_diff = std::sqrt(std::max(sigma * sigma - 4.0f * 0.25f, 0.01f));
-                gaussian_blur_ring_i16_avx512(g_ws.base_raw_i16.data(), g_ws.gpyr_i16[0][0].data(), nullptr,
-                                              g_ws.ring_buf_i16.data(), oh, ow, sig_diff);
-            } else {
-                const size_t npix = static_cast<size_t>(oh) * ow;
-                size_t idx = 0;
-                for (; idx + 31 < npix; idx += 32) {
-                    __m512i v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(gray + idx)));
-                    _mm512_storeu_si512(g_ws.base_raw_i16.data() + idx, _mm512_slli_epi16(v, Q_SHIFT));
+        if (packed_pyramid == nullptr) {
+            if (o == 0) {
+                if (first_octave < 0) {
+                    upsample_2x_i16_avx512(gray, h, w, g_ws.base_raw_i16.data(), g_ws.row_tmp_i16.data());
+                    gaussian_blur_ring_i16_avx512(g_ws.base_raw_i16.data(), g_ws.gpyr_i16[0][0].data(), nullptr,
+                                                  g_ws.ring_buf_i16.data(), oh, ow, sig[0]);
+                } else {
+                    const size_t npix = static_cast<size_t>(oh) * ow;
+                    size_t idx = 0;
+                    for (; idx + 31 < npix; idx += 32) {
+                        __m512i v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(gray + idx)));
+                        _mm512_storeu_si512(g_ws.base_raw_i16.data() + idx, _mm512_slli_epi16(v, Q_SHIFT));
+                    }
+                    for (; idx < npix; ++idx) g_ws.base_raw_i16[idx] = static_cast<int16_t>(gray[idx] << Q_SHIFT);
+                    gaussian_blur_ring_i16_avx512(g_ws.base_raw_i16.data(), g_ws.gpyr_i16[0][0].data(), nullptr,
+                                                  g_ws.ring_buf_i16.data(), oh, ow, sig[0]);
                 }
-                for (; idx < npix; ++idx) g_ws.base_raw_i16[idx] = static_cast<int16_t>(gray[idx] << Q_SHIFT);
-                const float sig_diff = std::sqrt(std::max(sigma * sigma - 0.25f, 0.01f));
-                gaussian_blur_ring_i16_avx512(g_ws.base_raw_i16.data(), g_ws.gpyr_i16[0][0].data(), nullptr,
-                                              g_ws.ring_buf_i16.data(), oh, ow, sig_diff);
+            } else {
+                downsample_2x_i16(g_ws.gpyr_i16[o - 1][nOctaveLayers].data(), g_ws.oct_h[o - 1], g_ws.oct_w[o - 1],
+                                  g_ws.gpyr_i16[o][0].data(), oh, ow);
             }
-        } else {
-            downsample_2x_i16(g_ws.gpyr_i16[o - 1][nOctaveLayers].data(), g_ws.oct_h[o - 1], g_ws.oct_w[o - 1],
-                              g_ws.gpyr_i16[o][0].data(), oh, ow);
-        }
 
-        for (int32_t i = 1; i < nG - 1; ++i) {
-            gaussian_blur_ring_i16_avx512(g_ws.gpyr_i16[o][i - 1].data(), g_ws.gpyr_i16[o][i].data(),
-                                          g_ws.dogpyr_i16[o][i - 1].data(), g_ws.ring_buf_i16.data(),
-                                          oh, ow, sig[i]);
+            for (int32_t i = 1; i < nG - 1; ++i) {
+                gaussian_blur_ring_i16_avx512(g_ws.gpyr_i16[o][i - 1].data(), g_ws.gpyr_i16[o][i].data(),
+                                              g_ws.dogpyr_i16[o][i - 1].data(), g_ws.ring_buf_i16.data(),
+                                              oh, ow, sig[i]);
+            }
+            gaussian_blur_ring_i16_avx512(g_ws.gpyr_i16[o][nG - 2].data(), nullptr,
+                                          g_ws.dogpyr_i16[o][nG - 2].data(), g_ws.ring_buf_i16.data(),
+                                          oh, ow, sig[nG - 1]);
         }
-        gaussian_blur_ring_i16_avx512(g_ws.gpyr_i16[o][nG - 2].data(), nullptr,
-                                      g_ws.dogpyr_i16[o][nG - 2].data(), g_ws.ring_buf_i16.data(),
-                                      oh, ow, sig[nG - 1]);
 
         if (oh <= 2 * img_border || ow <= 2 * img_border) continue;
 
         for (int32_t i = 1; i <= nOctaveLayers; ++i) {
-            const int16_t* prev_img = g_ws.dogpyr_i16[o][i - 1].data();
-            const int16_t* curr_img = g_ws.dogpyr_i16[o][i].data();
-            const int16_t* next_img = g_ws.dogpyr_i16[o][i + 1].data();
+            const int16_t* prev_img = dog[o][i - 1];
+            const int16_t* curr_img = dog[o][i];
+            const int16_t* next_img = dog[o][i + 1];
 
             for (int32_t r = img_border; r < oh - img_border; ++r) {
                 const size_t row_off = static_cast<size_t>(r) * ow;
@@ -867,9 +907,9 @@ int32_t extract_sift_grid_avx512(
                         float xc = 0.0f, xr = 0.0f, xi = 0.0f;
                         bool converged = false;
                         for (int32_t step = 0; step < 5; ++step) {
-                            const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
-                            const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
-                            const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
+                            const int16_t* dp = dog[o][li - 1];
+                            const int16_t* dc = dog[o][li];
+                            const int16_t* dn = dog[o][li + 1];
                             const size_t idx = static_cast<size_t>(ri) * ow + ci;
                             const float v0 = static_cast<float>(dc[idx]);
                             const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
@@ -901,9 +941,9 @@ int32_t extract_sift_grid_avx512(
                         }
                         if (!converged) continue;
 
-                        const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
-                        const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
-                        const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
+                        const int16_t* dp = dog[o][li - 1];
+                        const int16_t* dc = dog[o][li];
+                        const int16_t* dn = dog[o][li + 1];
                         const size_t idx = static_cast<size_t>(ri) * ow + ci;
                         const float v0 = static_cast<float>(dc[idx]);
                         const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
@@ -1005,8 +1045,8 @@ int32_t extract_sift_grid_avx512(
             ? (1.0f / static_cast<float>(1 << ex.octave_idx))
             : static_cast<float>(1 << (-ex.octave_idx));
         const float omax = calc_orientation_hist_grid_avx512<int16_t>(
-            g_ws.gpyr_i16[ex.pyr_o][ex.layer].data(),
-            g_ws.oct_h[ex.pyr_o], g_ws.oct_w[ex.pyr_o],
+            gaussian[ex.pyr_o][ex.layer - 1],
+            oct_h[ex.pyr_o], oct_w[ex.pyr_o],
             ex.x * inv_oct_scale, ex.y * inv_oct_scale,
             1.5f * ex.scl_octv, ohist
         );
@@ -1073,8 +1113,8 @@ int32_t extract_sift_grid_avx512(
         const float ori = 360.0f - kp.angle;
         const float adj_ori = (ori >= 360.0f ? 0.0f : ori);
         calc_sift_descriptor_grid_avx512<int16_t>(
-            g_ws.gpyr_i16[o][kp.layer].data(),
-            g_ws.oct_h[o], g_ws.oct_w[o],
+            gaussian[o][kp.layer - 1],
+            oct_h[o], oct_w[o],
             kp.x * inv_oct_scale, kp.y * inv_oct_scale,
             adj_ori, kp.scl_octv,
             out_descriptors + static_cast<size_t>(idx) * 128
@@ -1088,6 +1128,42 @@ int32_t extract_sift_grid_avx512(
 
     *out_count = n_kept;
     return 1;
+}
+
+}  // namespace
+
+extern "C" {
+
+int32_t sift_pyramid_parameters(int32_t h, int32_t w, int32_t first_octave,
+    int32_t* heights, int32_t* widths, int16_t* weights, int32_t* radii) {
+    if (h < 16 || w < 16 || h > 8192 || w > 8192 || (first_octave != -1 && first_octave != 0)) return 0;
+    float sig[SIFT_LAYERS + 3];
+    sift_blur_sigmas(first_octave, sig);
+    for (int32_t level = 0; level < SIFT_LAYERS + 3; ++level) {
+        make_gaussian_kernel_q15(sig[level], weights + 25 * level, radii[level]);
+    }
+    return sift_octave_shapes(h, w, first_octave, heights, widths);
+}
+
+int32_t extract_sift_grid_avx512(
+    const uint8_t* gray, int32_t h, int32_t w, int32_t target_features, int32_t grid_cols,
+    int32_t grid_rows, float contrast_threshold, int32_t first_octave, float* out_pixels,
+    float* out_descriptors, int16_t* out_octaves, float* out_angles, float* out_responses,
+    int32_t* out_count) {
+    return extract_sift_grid(gray, h, w, target_features, grid_cols, grid_rows, contrast_threshold,
+        first_octave, out_pixels, out_descriptors, out_octaves, out_angles, out_responses,
+        out_count, nullptr, 0);
+}
+
+int32_t extract_sift_pyramid_grid_avx512(
+    const int16_t* packed, size_t count, int32_t h, int32_t w, int32_t target_features,
+    int32_t grid_cols, int32_t grid_rows, float contrast_threshold, int32_t first_octave,
+    float* out_pixels, float* out_descriptors, int16_t* out_octaves, float* out_angles,
+    float* out_responses, int32_t* out_count) {
+    if (!packed || h < 16 || w < 16 || h > 8192 || w > 8192 || (first_octave != -1 && first_octave != 0)) return 0;
+    return extract_sift_grid(nullptr, h, w, target_features, grid_cols, grid_rows, contrast_threshold,
+        first_octave, out_pixels, out_descriptors, out_octaves, out_angles, out_responses,
+        out_count, packed, count);
 }
 
 }  // extern "C"

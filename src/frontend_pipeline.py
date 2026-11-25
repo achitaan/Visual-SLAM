@@ -326,6 +326,7 @@ def extract_frame_owned(
     cuda_frontend: TensorFrontend | None = None,
     stereo_verifier=None,
     pyramid_builder=None,
+    native_sift=None,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
     if image is None:
@@ -369,6 +370,7 @@ def extract_frame_owned(
             contrast_threshold=config.stereo_feature_contrast_threshold,
             detector=detector,
             build_cv_keypoints=False,
+            native_sift=native_sift,
         )
         pixels = bucketed.pixels
         desc = bucketed.descriptors
@@ -486,6 +488,8 @@ class FrontendExtractionPipeline:
         self._stereo_Q = slam.stereo.Q.copy() if slam.stereo is not None else None
         self._stereo_search_config = slam.stereo_search_config
         self._cuda_frontend = getattr(slam, "cuda_frontend", None)
+        sift_pyramid = getattr(slam, "cuda_sift_pyramid", None)
+        self._native_sift = None if sift_pyramid is None else sift_pyramid.extract
         self._stereo_verifier = getattr(slam, "cuda_stereo_verifier", None)
         self._pyramid_builder = (slam._build_tracking_pyramid
                                  if getattr(slam, "cuda_optical_flow", None) is not None else None)
@@ -579,6 +583,7 @@ class FrontendExtractionPipeline:
                 precomputed_lk_pyramid=lk_pyramid,
                 cuda_frontend=self._cuda_frontend,
                 stereo_verifier=self._stereo_verifier,
+                native_sift=self._native_sift,
             )
 
         return ExtractedFrame(
@@ -646,6 +651,7 @@ class FrontendExtractionPipeline:
                             cuda_frontend=self._cuda_frontend,
                             stereo_verifier=self._stereo_verifier,
                             pyramid_builder=self._pyramid_builder,
+                            native_sift=self._native_sift,
                         )
                     self._put_output((index, extracted, None))
                 except BaseException as exc:

@@ -105,6 +105,14 @@ NVRTC from the same PyTorch installation. Unavailable CUDA falls back to
 the existing CPU path. `optical_flow_backend` in `run.json` records fused
 pair counts and any fallback reason.
 
+Add `--sift-pyramid-backend cuda` to build the native SIFT scale space on the
+GPU. Rebuild `fast_sift` with the command above and use the CUDA-enabled
+PyTorch installation on Windows. The AVX-512 kernel reads the fixed-point
+pyramid and extracts the same keypoints and descriptors as the CPU path at
+the selected octave. If the DLL or CUDA is unavailable, extraction uses the
+usual CPU path. Check `sift_pyramid_backend` in `run.json` for the number of
+GPU extractions and any fallback reason.
+
 Start the dashboard in a second terminal:
 
 ```sh

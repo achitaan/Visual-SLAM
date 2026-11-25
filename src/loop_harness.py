@@ -247,6 +247,7 @@ def build_airgapped_estimator_invocation(
     coalesce_prefetch: bool = False,
     stereo_verification_backend: str = "cpu",
     optical_flow_backend: str = "cpu",
+    sift_pyramid_backend: str = "cpu",
 ) -> tuple[list[str], dict[str, str], Path]:
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
@@ -256,6 +257,8 @@ def build_airgapped_estimator_invocation(
         raise ValueError("Stereo verification backend must be cpu or cuda")
     if optical_flow_backend not in ("cpu", "cuda"):
         raise ValueError("Optical flow backend must be cpu or cuda")
+    if sift_pyramid_backend not in ("cpu", "cuda"):
+        raise ValueError("SIFT pyramid backend must be cpu or cuda")
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
     data_root_resolved = Path(data_root).expanduser().resolve(strict=False)
@@ -334,6 +337,8 @@ def build_airgapped_estimator_invocation(
         command.extend(["--stereo-verification-backend", stereo_verification_backend])
     if optical_flow_backend != "cpu":
         command.extend(["--optical-flow-backend", optical_flow_backend])
+    if sift_pyramid_backend != "cpu":
+        command.extend(["--sift-pyramid-backend", sift_pyramid_backend])
     if not profile:
         command.append("--no-profile")
 
@@ -377,6 +382,7 @@ def run_airgapped_estimator_subprocess(
     coalesce_prefetch: bool = False,
     stereo_verification_backend: str = "cpu",
     optical_flow_backend: str = "cpu",
+    sift_pyramid_backend: str = "cpu",
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -399,6 +405,7 @@ def run_airgapped_estimator_subprocess(
         coalesce_prefetch=coalesce_prefetch,
         stereo_verification_backend=stereo_verification_backend,
         optical_flow_backend=optical_flow_backend,
+        sift_pyramid_backend=sift_pyramid_backend,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -574,6 +581,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--frontend-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--stereo-verification-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--optical-flow-backend", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--sift-pyramid-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
@@ -599,6 +607,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         coalesce_prefetch=args.coalesce_prefetch,
         stereo_verification_backend=args.stereo_verification_backend,
         optical_flow_backend=args.optical_flow_backend,
+        sift_pyramid_backend=args.sift_pyramid_backend,
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -770,6 +779,12 @@ def _estimator_worker_main(argv: list[str]) -> int:
         else {"requested": args.optical_flow_backend, "fallback_reason": slam.cuda_optical_flow_reason,
               "prepared_frames": 0, "fused_pairs": 0, "tracked_points": 0}
     )
+    sift_pyramid_meta = (
+        slam.cuda_sift_pyramid.report()
+        if slam.cuda_sift_pyramid is not None
+        else {"requested": args.sift_pyramid_backend, "fallback_reason": slam.cuda_sift_pyramid_reason,
+              "cuda_frames": 0, "pyramid_s": 0.0, "native_descriptors_s": 0.0}
+    )
     run_payload = {
         "sequence": args.sequence,
         "frames": total_frames,
@@ -782,6 +797,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "matching_backend": matcher_meta,
         "stereo_verification_backend": verifier_meta,
         "optical_flow_backend": flow_meta,
+        "sift_pyramid_backend": sift_pyramid_meta,
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -906,6 +922,8 @@ def evaluate_sequence_posthoc(
         result["stereo_verification_backend"] = run_payload["stereo_verification_backend"]
     if "optical_flow_backend" in run_payload:
         result["optical_flow_backend"] = run_payload["optical_flow_backend"]
+    if "sift_pyramid_backend" in run_payload:
+        result["sift_pyramid_backend"] = run_payload["sift_pyramid_backend"]
     if "frame_latency_ms" in run_payload:
         result["frame_latency_ms"] = run_payload["frame_latency_ms"]
     if "loop_events" in run_payload:
@@ -1487,6 +1505,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "--optical-flow-backend", choices=["cpu", "cuda"], default="cpu",
         help="Use fused CUDA forward-backward optical flow in the pipelined stereo estimator on Windows",
     )
+    parser.add_argument(
+        "--sift-pyramid-backend", choices=["cpu", "cuda"], default="cpu",
+        help="Build the fixed-point pyramid for native grid-bucketed SIFT on CUDA on Windows",
+    )
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1614,6 +1636,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             coalesce_prefetch=args.coalesce_prefetch,
             stereo_verification_backend=args.stereo_verification_backend,
             optical_flow_backend=args.optical_flow_backend,
+            sift_pyramid_backend=args.sift_pyramid_backend,
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1649,6 +1672,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             "matching_backend",
             "stereo_verification_backend",
             "optical_flow_backend",
+            "sift_pyramid_backend",
             "frame_latency_ms",
             "loop_events",
             "online_first_metrics",
@@ -1691,6 +1715,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "matching_backend_requested": str(args.matching_backend),
         "stereo_verification_backend_requested": args.stereo_verification_backend,
         "optical_flow_backend_requested": args.optical_flow_backend,
+        "sift_pyramid_backend_requested": args.sift_pyramid_backend,
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,
         "evaluation_isolation": {

@@ -72,14 +72,16 @@ inline void sample_rect_fast(
     const T* img,
     int32_t h,
     int32_t w,
-    float cx,
-    float cy,
+    double cx,
+    double cy,
     int32_t out_w,
     int32_t out_h,
     float* dst
 ) {
-    const float x0 = cx - 0.5f * static_cast<float>(out_w - 1);
-    const float y0 = cy - 0.5f * static_cast<float>(out_h - 1);
+    // cv.remap(INTER_LINEAR) rounds its float32 maps to the nearest 1/32 pixel.
+    // Integer offsets across the patch all use the same interpolation weights.
+    const float x0 = std::nearbyint(static_cast<float>(cx - 0.5 * (out_w - 1)) * 32.0f) * (1.0f / 32.0f);
+    const float y0 = std::nearbyint(static_cast<float>(cy - 0.5 * (out_h - 1)) * 32.0f) * (1.0f / 32.0f);
     const int32_t ix0_base = static_cast<int32_t>(std::floor(x0));
     const int32_t iy0_base = static_cast<int32_t>(std::floor(y0));
     const float fx = x0 - static_cast<float>(ix0_base);
@@ -165,7 +167,7 @@ int32_t zncc_search_one(
         return REASON_PATCH_BOUNDS;
     }
 
-    sample_rect_fast(src_img, h, w, static_cast<float>(x), static_cast<float>(y),
+    sample_rect_fast(src_img, h, w, x, y,
                      patch_size, patch_size, patch_buf);
 
     const int32_t npix = patch_size * patch_size;
@@ -187,7 +189,7 @@ int32_t zncc_search_one(
     const int32_t strip_w = patch_size + max_disp;
     const int32_t n_scores = max_disp + 1;
     const double strip_center = x + direction * static_cast<double>(max_disp) * 0.5;
-    sample_rect_fast(tgt_img, h, w, static_cast<float>(strip_center), static_cast<float>(y),
+    sample_rect_fast(tgt_img, h, w, strip_center, y,
                      strip_w, patch_size, strip_buf);
 
     // Column sums and squared sums of strip (in float64 for exact variance without cancellation)
@@ -326,7 +328,7 @@ int32_t zncc_search_one(
 
     // Sample refined target patch and verify texture + correlation
     float actual_buf[256];
-    sample_rect_fast(tgt_img, h, w, static_cast<float>(res_x), static_cast<float>(y),
+    sample_rect_fast(tgt_img, h, w, res_x, y,
                      patch_size, patch_size, actual_buf);
     double a_sum = 0.0;
     for (int32_t k = 0; k < npix; ++k) {

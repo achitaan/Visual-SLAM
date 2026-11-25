@@ -242,9 +242,12 @@ def build_airgapped_estimator_invocation(
     openblas_threads: int = 1,
     matching_backend: str = "cpu",
     profile: bool = True,
+    frontend_backend: str = "cpu",
 ) -> tuple[list[str], dict[str, str], Path]:
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
+    if frontend_backend not in ("cpu", "cuda"):
+        raise ValueError(f"Invalid frontend_backend: {frontend_backend!r} (expected cpu or cuda)")
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
     data_root_resolved = Path(data_root).expanduser().resolve(strict=False)
@@ -315,6 +318,8 @@ def build_airgapped_estimator_invocation(
         command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
     if matching_backend != "cpu":
         command.extend(["--matching-backend", matching_backend])
+    if frontend_backend != "cpu":
+        command.extend(["--frontend-backend", frontend_backend])
     if not profile:
         command.append("--no-profile")
 
@@ -354,6 +359,7 @@ def run_airgapped_estimator_subprocess(
     openblas_threads: int = 1,
     matching_backend: str = "cpu",
     profile: bool = True,
+    frontend_backend: str = "cpu",
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -372,6 +378,7 @@ def run_airgapped_estimator_subprocess(
         openblas_threads=openblas_threads,
         matching_backend=matching_backend,
         profile=profile,
+        frontend_backend=frontend_backend,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -543,6 +550,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument(
         "--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu"
     )
+    parser.add_argument("--frontend-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
@@ -564,6 +572,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         cpu_optimizations=True,
         profile=not bool(args.no_profile),
         pipeline_extraction=bool(args.pipeline_extraction),
+        frontend_backend=args.frontend_backend,
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -585,6 +594,9 @@ def _estimator_worker_main(argv: list[str]) -> int:
 
     stereo_cam = StereoCamera(vo.stereo, vo.Q, vo.baseline)
     slam = SharedSlam(vo.K1, stereo=stereo_cam, config=cfg, performance=perf)
+    if args.frontend_backend == "cuda" and slam.cuda_frontend is None:
+        slam.close(finish=False)
+        raise RuntimeError(f"CUDA frontend is unavailable: {slam.cuda_frontend_reason}")
 
     online_first_poses: list[np.ndarray] = []
     online_end_poses: list[np.ndarray] = []
@@ -1410,6 +1422,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
         default="cpu",
         help="Optional descriptor matching backend (performance setting only; does not alter MappingConfig)",
     )
+    parser.add_argument(
+        "--frontend-backend", choices=["cpu", "cuda"], default="cpu",
+        help="Frontend for full extractions, including those requested by lazy tracking",
+    )
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1531,6 +1547,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             openblas_threads=int(args.openblas_threads),
             matching_backend=str(args.matching_backend),
             profile=not bool(args.no_profile),
+            frontend_backend=args.frontend_backend,
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1602,6 +1619,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "git_commit": git_commit,
         "tier": args.tier,
         "preset": args.preset,
+        "frontend_backend_requested": args.frontend_backend,
         "matching_backend_requested": str(args.matching_backend),
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,

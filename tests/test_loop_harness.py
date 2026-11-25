@@ -72,8 +72,10 @@ def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypat
         seed=0,
         opencv_threads=1,
         max_frames=2,
+        frontend_backend="cuda",
     )
     assert resolved_seq == seq_dir.resolve()
+    assert cmd[cmd.index("--frontend-backend") + 1] == "cuda"
     assert "--poses-root" not in cmd
     assert str(poses_dir) not in " ".join(cmd)
     assert "KITTI_POSES_ROOT" not in env

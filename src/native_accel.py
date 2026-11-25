@@ -18,6 +18,26 @@ import numpy as np
 _KERNEL_DIR = Path(__file__).resolve().parent / "native_kernels"
 _LOADED: dict[str, Any] = {}
 
+# Match the explicit ISA targets used by the Windows build script. NumPy's
+# runtime feature table accounts for both CPU support and OS SIMD state.
+_WINDOWS_SIMD_REQUIREMENTS = {
+    "fast_matcher": ("AVX512F", "AVX512VNNI"),
+    "fast_zncc": ("AVX512F",),
+    "fast_sift": ("AVX512F", "AVX512BW", "AVX512VL", "AVX512DQ"),
+    "fast_lk": ("AVX512F",),
+}
+
+
+def windows_missing_simd(name: str) -> tuple[str, ...]:
+    required = _WINDOWS_SIMD_REQUIREMENTS.get(name, ())
+    if not required:
+        return ()
+    if np.lib.NumpyVersion(np.__version__) >= "2.0.0":
+        from numpy._core._multiarray_umath import __cpu_features__ as features
+    else:
+        from numpy.core._multiarray_umath import __cpu_features__ as features
+    return tuple(flag for flag in required if not features.get(flag, False))
+
 
 def native_enabled() -> bool:
     return os.environ.get("VISUAL_SLAM_DISABLE_NATIVE", "0").strip().lower() not in (
@@ -30,7 +50,11 @@ def _load_library(name: str) -> ctypes.CDLL | None:
         return None
     if name in _LOADED:
         return _LOADED[name]
-    lib_path = _KERNEL_DIR / f"lib{name}.so"
+    windows = os.name == "nt"
+    if windows and windows_missing_simd(name):
+        _LOADED[name] = None
+        return None
+    lib_path = _KERNEL_DIR / f"lib{name}{'.dll' if windows else '.so'}"
     if not lib_path.is_file():
         _LOADED[name] = None
         return None

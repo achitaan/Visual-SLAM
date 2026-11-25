@@ -3,7 +3,15 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
 #include <vector>
+
+#if defined(__GNUC__) || defined(__clang__)
+#define MATCHER_ALWAYS_INLINE __attribute__((always_inline))
+#else
+#define MATCHER_ALWAYS_INLINE
+#endif
 
 namespace {
 
@@ -88,7 +96,7 @@ void match_u8_128_vnni_packed16(
     const __m512i v_neg1 = _mm512_set1_epi32(-1);
 
     auto process_row_vec = [&](int32_t row, __m512i acc, __m512i v_nb, int32_t j0,
-                               __mmask16 valid_j, __m512i& bd1, __m512i& bd2, __m512i& bbest) __attribute__((always_inline)) {
+                               __mmask16 valid_j, __m512i& bd1, __m512i& bd2, __m512i& bbest) MATCHER_ALWAYS_INLINE {
         __m512i d = _mm512_sub_epi32(
             _mm512_add_epi32(_mm512_set1_epi32(ca[row]), v_nb),
             _mm512_slli_epi32(acc, 1)
@@ -248,12 +256,17 @@ int32_t match_sift_mutual_f32(
     std::vector<int32_t> ca(m);
     std::vector<int32_t> nb_pad(n_pad, 0);
     // 64-byte aligned packed B buffer
-    int32_t* b_pack = nullptr;
-    if (posix_memalign(reinterpret_cast<void**>(&b_pack), 64,
-                       static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t)) != 0) {
+    constexpr std::align_val_t alignment{64};
+    const auto packed_bytes = static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t);
+    const auto free_aligned = [](int32_t* data) { ::operator delete(data, alignment); };
+    const std::unique_ptr<int32_t, decltype(free_aligned)> packed(
+        static_cast<int32_t*>(::operator new(packed_bytes, alignment, std::nothrow)), free_aligned
+    );
+    int32_t* b_pack = packed.get();
+    if (!b_pack) {
         return 0;
     }
-    std::memset(b_pack, 0, static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t));
+    std::memset(b_pack, 0, packed_bytes);
 
     const __m512 v_zero = _mm512_setzero_ps();
     const __m512 v_255 = _mm512_set1_ps(255.0f);
@@ -274,7 +287,6 @@ int32_t match_sift_mutual_f32(
             __m512 vr = _mm512_cvtepi32_ps(vi);
             __mmask16 bad_frac = _mm512_cmp_ps_mask(vf, vr, _CMP_NEQ_OQ);
             if (bad_lo | bad_hi | bad_nan | bad_frac) {
-                free(b_pack);
                 return 0;
             }
             sum_v = _mm512_add_epi32(sum_v, vi);
@@ -298,7 +310,6 @@ int32_t match_sift_mutual_f32(
             __m512 vr = _mm512_cvtepi32_ps(vi);
             __mmask16 bad_frac = _mm512_cmp_ps_mask(vf, vr, _CMP_NEQ_OQ);
             if (bad_lo | bad_hi | bad_nan | bad_frac) {
-                free(b_pack);
                 return 0;
             }
             sq_v = _mm512_add_epi32(sq_v, _mm512_mullo_epi32(vi, vi));
@@ -332,7 +343,6 @@ int32_t match_sift_mutual_f32(
         d1_b.data(),
         d2_b.data()
     );
-    free(b_pack);
 
     int32_t amb_a = 0;
     int32_t amb_b = 0;

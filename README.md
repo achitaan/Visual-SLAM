@@ -65,6 +65,20 @@ python -m venv .venv
 
 On Linux or macOS, use `.venv/bin/python`. The default input is a bundled monocular sample; it is a smoke test without ground-truth accuracy measurements.
 
+### Native kernels on Windows
+
+Build the optional native DLLs with a recent x64 MinGW-w64 compiler, such as
+GCC from the MSYS2 UCRT64 environment:
+
+```powershell
+.\.venv\Scripts\python scripts/build_native.py --cxx C:/msys64/ucrt64/bin/g++.exe
+```
+
+The build writes DLLs into `src/native_kernels`. Windows checks the required
+AVX-512 features at build and load time. On an AVX2-only host, SIFT, matching,
+LK, and ZNCC use their existing fallbacks. The bundle and pose-graph kernels
+can still run natively on x64.
+
 Start the dashboard in a second terminal:
 
 ```sh
@@ -188,6 +202,9 @@ python scripts/bench_local_gpu.py --backend both --kitti-root /path/to/KITTI/seq
 
 # Opt into the local CUDA frontend in SharedSlam
 python src/main.py --slam --stereo --data-root /path/to/KITTI --sequence 00 --frontend-backend cuda --matching-backend auto
+
+# Benchmark CUDA full extraction with the lazy SLAM pipeline
+python src/loop_harness.py --tier custom --sequences 00 --data-root /path/to/KITTI --frontend-backend cuda --pipeline-extraction --pipeline-buffer 4 --no-profile
 
 # Run frontend checks (CUDA cases skip if PyTorch cannot access a CUDA device)
 python -m pytest -q tests/test_local_gpu_frontend.py

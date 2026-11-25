@@ -80,6 +80,24 @@ def test_cuda_quantized_read_only_views_on_nondefault_stream(cuda_matcher):
     assert cuda_matcher.metadata()["cuda_integer_calls"] == 1
 
 
+def test_fused_rank_matches_tensor_topk_on_partial_cuda_tiles(cuda_matcher, monkeypatch):
+    if cuda_matcher._cuda_rank_kernel is None:
+        pytest.skip("The fused CUDA rank kernel requires Windows NVRTC")
+    rng = np.random.default_rng(901)
+    first = rng.integers(0, 256, (129, 128), dtype=np.uint8).astype(np.float32)
+    second = np.concatenate((first[::-1], first[[0]], first[:35] + (first[:35] < 255)))
+
+    actual = cuda_matcher(first, second)
+    assert cuda_matcher.report()["cuda_fused_rank_calls"] == 1
+
+    monkeypatch.setattr(cuda_matcher, "_cuda_rank_kernel", None)
+    np.testing.assert_array_equal(actual, cuda_matcher(first, second))
+    assert cuda_matcher.report()["cuda_fused_rank_calls"] == 1
+    # The reversed descriptors give each row one exact match except row zero,
+    # whose two identical rows fail the strict ratio test.
+    np.testing.assert_array_equal(actual, np.column_stack((np.arange(1, 129), np.arange(127, -1, -1))))
+
+
 def test_cuda_cancellation_and_near_ratio_rows_match_cpu(cuda_matcher):
     # The high-norm row has true distances 8 and 16, which pass a 0.7 ratio
     # test but are vulnerable to cancellation in the matrix-distance identity.

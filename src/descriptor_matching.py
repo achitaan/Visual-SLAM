@@ -1,6 +1,9 @@
 """Optional exact CUDA L2 search; CPU remains the default and tie arbiter."""
 
+import ctypes
+from pathlib import Path
 import platform
+import sys
 from threading import Lock
 from time import perf_counter
 
@@ -33,6 +36,8 @@ class DescriptorMatcher:
         self.auto_decisions = {}
         self.cuda_calls = 0
         self.cuda_integer_calls = 0
+        self.cuda_fused_rank_calls = 0
+        self._cuda_rank_kernel = None
         self.cpu_calls = 0
         self.ambiguous_rows = 0
         self.init_elapsed_s = 0.0
@@ -68,6 +73,18 @@ class DescriptorMatcher:
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
                     # Provenance should not disable an otherwise usable CUDA path.
                     pass
+                if sys.platform == "win32" and self.cuda_device_index is not None:
+                    from cuda_kernels import load_cuda_kernels
+
+                    device = torch.device("cuda", self.cuda_device_index)
+                    path = Path(__file__).with_name("native_kernels") / "cuda_descriptor_rank.cu"
+                    try:
+                        kernels, launch = load_cuda_kernels(
+                            torch, device, path, ("rank_descriptor_dots",), (b"--std=c++17",),
+                        )
+                        self._cuda_rank_kernel = kernels["rank_descriptor_dots"], launch
+                    except (OSError, RuntimeError):
+                        pass
             except (ImportError, OSError, RuntimeError) as error:
                 self.reason = str(error)
                 if backend == "cuda":
@@ -175,6 +192,21 @@ class DescriptorMatcher:
             self.cuda_compute_s += max(comp_dt, 0.0)
         return mappings
 
+    def _rank_quantized_dots(self, dots, query_norm, train_norm, stream):
+        from cuda_kernels import _VOID, _check
+
+        rows, columns = dots.shape
+        compact = self.torch.empty((rows + columns, 3), dtype=self.torch.int32, device=dots.device)
+        arguments = [
+            *(_VOID(tensor.data_ptr()) for tensor in (dots, query_norm, train_norm, compact)),
+            ctypes.c_int(rows), ctypes.c_int(columns),
+        ]
+        parameters = (_VOID * len(arguments))(*(ctypes.addressof(value) for value in arguments))
+        kernel, launch = self._cuda_rank_kernel
+        _check(launch(kernel, rows + (columns + 15) // 16, 1, 1, 128, 1, 1, 0,
+                      stream.cuda_stream, parameters, None), "cuLaunchKernel")
+        return compact
+
     def _integer_directions(self, first, second, ratio):
         """Use one exact squared-distance matrix for quantized SIFT descriptors."""
         if (
@@ -206,25 +238,38 @@ class DescriptorMatcher:
         compute_start = perf_counter()
         # All products, sums and differences are integers with magnitude
         # below 2**24. Float32 GEMM therefore gives exact squared distances.
-        squared = (query @ train.T).mul_(-2).add_(query_norm[:, None]).add_(train_norm[None, :])
-        ranks = [matrix.topk(2, dim=1, largest=False, sorted=True) for matrix in (squared, squared.T)]
+        dots = query @ train.T
+        stream = torch.cuda.current_stream(device=dots.device)
+        use_fused_rank = self._cuda_rank_kernel is not None and dots.device.index == self.cuda_device_index
+        if use_fused_rank:
+            compact = self._rank_quantized_dots(dots, query_norm, train_norm, stream)
+        else:
+            squared = dots.mul_(-2).add_(query_norm[:, None]).add_(train_norm[None, :])
+            ranks = [matrix.topk(2, dim=1, largest=False, sorted=True) for matrix in (squared, squared.T)]
         copy_start = perf_counter()
-        directions = [
-            (values.to("cpu", non_blocking=True), ids.to("cpu", non_blocking=True))
-            for values, ids in ranks
-        ]
+        if use_fused_rank:
+            host_ranks = compact.to("cpu", non_blocking=True)
+        else:
+            host_ranks = [(values.to("cpu", non_blocking=True), ids.to("cpu", non_blocking=True))
+                          for values, ids in ranks]
         copy_end = perf_counter()
         # The CPU ratio check may read the results only after these copies complete.
-        torch.cuda.current_stream(device=squared.device).synchronize()
+        stream.synchronize()
         sync_end = perf_counter()
         with self._lock:
             self.cuda_transfer_s += compute_start - tx_start + copy_end - copy_start
             self.cuda_compute_s += copy_start - compute_start
             self.cuda_sync_s += sync_end - copy_end
+            self.cuda_fused_rank_calls += int(use_fused_rank)
 
+        if use_fused_rank:
+            host = host_ranks.numpy()
+            directions = ((part[:, :2].astype(np.float32), part[:, 2])
+                          for part in (host[:len(first)], host[len(first):]))
+        else:
+            directions = ((values.numpy(), ids.numpy()[:, 0]) for values, ids in host_ranks)
         mappings = []
-        for values, ids in directions:
-            values, ids = values.numpy(), ids.numpy()
+        for values, best_ids in directions:
             distances = np.sqrt(values).astype(np.float64)
             limit = ratio * distances[:, 1]
             # The OpenCV decision may differ within one float32 rounding step.
@@ -234,7 +279,7 @@ class DescriptorMatcher:
             )
             if near_limit.any():
                 return None
-            mappings.append(np.where(distances[:, 0] < limit, ids[:, 0], -1))
+            mappings.append(np.where(distances[:, 0] < limit, best_ids, -1))
         return mappings
 
     def _cuda(self, first, second, ratio):
@@ -266,6 +311,7 @@ class DescriptorMatcher:
                 "cuda_device_capability": self.cuda_device_capability,
                 "cuda_calls": self.cuda_calls,
                 "cuda_integer_calls": self.cuda_integer_calls,
+                "cuda_fused_rank_calls": self.cuda_fused_rank_calls,
                 "cpu_calls": self.cpu_calls,
                 "ambiguous_rows_on_cpu": self.ambiguous_rows,
                 "init_elapsed_s": float(self.init_elapsed_s),

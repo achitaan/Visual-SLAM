@@ -90,6 +90,8 @@ Remove-Item Env:VISUAL_SLAM_SIFT_FIRST_OCTAVE
 
 Starting at octave 0 changes native SIFT detections. Compare the harness's
 trajectory metrics when applying this configuration to other sequences.
+CUDA matching can rank both descriptor directions with one kernel on Windows.
+The `cuda_fused_rank_calls` counter in `run.json` records calls that used it.
 
 For sparse depth on Windows, add `--stereo-depth-policy verified_all
 --stereo-verification-backend cuda` to that command. This policy computes

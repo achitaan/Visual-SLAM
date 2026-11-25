@@ -91,6 +91,14 @@ Remove-Item Env:VISUAL_SLAM_SIFT_FIRST_OCTAVE
 Starting at octave 0 changes native SIFT detections. Compare the harness's
 trajectory metrics when applying this configuration to other sequences.
 
+For sparse depth on Windows, add `--stereo-depth-policy verified_all
+--stereo-verification-backend cuda` to that command. This policy computes
+stereo depth at feature coordinates. The CUDA verifier uses NVRTC from
+CUDA PyTorch for standard 11 × 11 grayscale batches of at least 256
+points. Smaller batches, other search settings, and unavailable CUDA
+use the CPU verifier. Check `stereo_verification_backend` in `run.json`
+for GPU batch counts and any fallback reason.
+
 Start the dashboard in a second terminal:
 
 ```sh

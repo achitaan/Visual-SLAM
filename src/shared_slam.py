@@ -498,6 +498,12 @@ class SharedSlam:
             self.cuda_frontend, self.cuda_frontend_device, self.cuda_frontend_reason = create_cuda_frontend(
                 features=self.config.features, grid_bucketing=self.config.use_grid_bucketing,
             )
+        self.cuda_stereo_verifier = None
+        self.cuda_stereo_verifier_reason = None
+        if self.stereo is not None and self.performance.stereo_verification_backend == "cuda":
+            from cuda_stereo_verification import create_cuda_stereo_verifier
+
+            self.cuda_stereo_verifier, self.cuda_stereo_verifier_reason = create_cuda_stereo_verifier()
         self._fast_stereo_sgbm = None
         if (
             self.stereo is not None
@@ -554,6 +560,10 @@ class SharedSlam:
     def _match(self, first, second):
         self.profile.count('descriptor_pairs', len(first) * len(second))
         return self.profile.call('matching', self.matcher, first, second)
+
+    def _verify_stereo_candidates(self, left, right, pixels, config, bounds):
+        verify = getattr(self, "cuda_stereo_verifier", None) or verify_stereo_depth_candidates
+        return verify(left, right, pixels, config, bounds)
 
     def _cached_landmarks(self):
         # A correction and its revision must be observed as one snapshot. A
@@ -636,7 +646,7 @@ class SharedSlam:
                     bounds = (max(0., offset+bf/100.), min(96., offset+bf/.1))
                     if bounds[0] < bounds[1]:
                         measured, counters = self.profile.call(
-                            'stereo_depth_verification', verify_stereo_depth_candidates,
+                            'stereo_depth_verification', self._verify_stereo_candidates,
                             self.current_left_gray, self.current_right_gray,
                             np.asarray(pixels, float)[ids], self.stereo_search_config, bounds)
             for key, value in counters.items():
@@ -713,7 +723,7 @@ class SharedSlam:
                     bounds = (max(0., offset+bf/100), min(96., offset+bf/.1))
                     if bounds[0] < bounds[1]:
                         measured, counters = self.profile.call(
-                            'stereo_depth_verification', verify_stereo_depth_candidates,
+                            'stereo_depth_verification', self._verify_stereo_candidates,
                             self.current_left_gray, self.current_right_gray,
                             pixels[candidates], self.stereo_search_config, bounds)
                         for key, value in counters.items():
@@ -792,7 +802,7 @@ class SharedSlam:
             id(self.current_right_gray),
             bounds,
             self.stereo_search_config,
-            id(verify_stereo_depth_candidates),
+            id(getattr(self, "cuda_stereo_verifier", None) or verify_stereo_depth_candidates),
         )
         frame_cache = getattr(self, "_frame_verified_right_cache", None)
         if frame_cache is not None and isinstance(frame_cache, dict):
@@ -806,7 +816,7 @@ class SharedSlam:
                 _, uniq_idx, inv_idx = np.unique(packed, return_index=True, return_inverse=True)
                 unique_pts = query_px[uniq_idx]
                 unique_measured, result_counts = self.profile.call(
-                    'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                    'stereo_map_depth_verification', self._verify_stereo_candidates,
                     self.current_left_gray, self.current_right_gray, unique_pts,
                     self.stereo_search_config, bounds)
                 measured = unique_measured[inv_idx]
@@ -842,7 +852,7 @@ class SharedSlam:
                 if miss_positions:
                     unique_pts = query_px[miss_positions]
                     unique_measured, result_counts = self.profile.call(
-                        'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                        'stereo_map_depth_verification', self._verify_stereo_candidates,
                         self.current_left_gray, self.current_right_gray, unique_pts,
                         self.stereo_search_config, bounds)
                     for key, val in zip(miss_keys, unique_measured.tolist()):
@@ -859,7 +869,7 @@ class SharedSlam:
                     counters['verified'] = counters.get('verified', 0) + int(hit_verified)
         else:
             measured, result_counts = self.profile.call(
-                'stereo_map_depth_verification', verify_stereo_depth_candidates,
+                'stereo_map_depth_verification', self._verify_stereo_candidates,
                 self.current_left_gray, self.current_right_gray, pixels[ids],
                 self.stereo_search_config, bounds)
             for key, value in result_counts.items():
@@ -886,8 +896,6 @@ class SharedSlam:
         if (self.stereo is not None and right is not None
                 and self.config.stereo_depth_policy == 'verified_all'):
             right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
-            self.current_left_gray = np.asarray(gray, np.float32)
-            self.current_right_gray = np.asarray(right_gray, np.float32)
         cuda_frontend = getattr(self, "cuda_frontend", None)
         cuda_disparity = None
         if cuda_frontend is not None:
@@ -933,8 +941,12 @@ class SharedSlam:
                     cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
                 )
             if self.config.stereo_depth_policy == 'verified_all':
-                self.current_left_gray = np.asarray(gray, np.float32)
-                self.current_right_gray = np.asarray(right_gray, np.float32)
+                if (getattr(self, "cuda_stereo_verifier", None) is not None
+                        and gray.dtype == right_gray.dtype == np.uint8):
+                    self.current_left_gray, self.current_right_gray = gray, right_gray
+                else:
+                    self.current_left_gray = np.asarray(gray, np.float32)
+                    self.current_right_gray = np.asarray(right_gray, np.float32)
                 self.current_disparity = None
             elif cuda_frontend is not None:
                 self.current_disparity = cuda_disparity

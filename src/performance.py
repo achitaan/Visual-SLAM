@@ -1,4 +1,4 @@
-"""Opt-in controls for retrieval, descriptor matching, and profiling."""
+"""Opt-in controls for retrieval, matching, stereo verification, and profiling."""
 
 from dataclasses import dataclass
 from functools import wraps
@@ -19,6 +19,7 @@ class PerformanceConfig:
     pipeline_extraction: bool = False
     frontend_backend: str = "cpu"
     coalesce_prefetch: bool = False
+    stereo_verification_backend: str = "cpu"
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):
@@ -27,6 +28,8 @@ class PerformanceConfig:
             raise ValueError("Matching backend must be cpu, cuda or auto")
         if self.frontend_backend not in ("cpu", "cuda"):
             raise ValueError("Frontend backend must be cpu or cuda")
+        if self.stereo_verification_backend not in ("cpu", "cuda"):
+            raise ValueError("Stereo verification backend must be cpu or cuda")
 
 
 # Keep the old import available without maintaining a second profiler.

@@ -74,11 +74,13 @@ def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypat
         opencv_threads=1,
         max_frames=2,
         frontend_backend="cuda",
+        stereo_verification_backend="cuda",
         pipeline_extraction=True,
         coalesce_prefetch=True,
     )
     assert resolved_seq == seq_dir.resolve()
     assert cmd[cmd.index("--frontend-backend") + 1] == "cuda"
+    assert cmd[cmd.index("--stereo-verification-backend") + 1] == "cuda"
     assert "--coalesce-prefetch" in cmd
     assert "--poses-root" not in cmd
     assert str(poses_dir) not in " ".join(cmd)

@@ -109,12 +109,14 @@ def _measure_stereo_pixels_owned(
     stereo_depth_policy: str,
     stereo_search_config: Any,
     capture_supported: bool,
+    stereo_verifier=None,
 ) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray] | None, dict[str, int]]:
     """Pure equivalent of SharedSlam._measure_stereo_pixels without mutating self."""
     points = np.full((len(pixels), 3), np.nan)
     right_u = np.full(len(pixels), np.nan)
     supported_extraction = None
     verification_counts: dict[str, int] = {}
+    verify = stereo_verifier or verify_stereo_depth_candidates
 
     if not len(pixels):
         return points, right_u, supported_extraction, verification_counts
@@ -169,7 +171,7 @@ def _measure_stereo_pixels_owned(
                 bf, offset = q23 / q32, -float(q[3, 3]) / q32
                 bounds = (max(0.0, offset + bf / 100.0), min(96.0, offset + bf / 0.1))
                 if bounds[0] < bounds[1]:
-                    measured, counters = verify_stereo_depth_candidates(
+                    measured, counters = verify(
                         left_gray_f32,
                         right_gray_f32,
                         np.asarray(pixels, float)[ids],
@@ -257,7 +259,7 @@ def _measure_stereo_pixels_owned(
                 bf, offset = Q[2, 3] / Q[3, 2], -Q[3, 3] / Q[3, 2]
                 bounds = (max(0.0, offset + bf / 100), min(96.0, offset + bf / 0.1))
                 if bounds[0] < bounds[1]:
-                    measured, counters = verify_stereo_depth_candidates(
+                    measured, counters = verify(
                         left_gray_f32,
                         right_gray_f32,
                         pixels[candidates],
@@ -322,6 +324,7 @@ def extract_frame_owned(
     io_elapsed_s: float = 0.0,
     precomputed_lk_pyramid: Any = None,
     cuda_frontend: TensorFrontend | None = None,
+    stereo_verifier=None,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
     if image is None:
@@ -411,6 +414,7 @@ def extract_frame_owned(
             stereo_depth_policy=config.stereo_depth_policy,
             stereo_search_config=stereo_search_config,
             capture_supported=capture_supported,
+            stereo_verifier=stereo_verifier,
         )
 
     lk_pyramid = precomputed_lk_pyramid
@@ -480,6 +484,7 @@ class FrontendExtractionPipeline:
         self._stereo_Q = slam.stereo.Q.copy() if slam.stereo is not None else None
         self._stereo_search_config = slam.stereo_search_config
         self._cuda_frontend = getattr(slam, "cuda_frontend", None)
+        self._stereo_verifier = getattr(slam, "cuda_stereo_verifier", None)
         self._lazy_extraction = bool(lazy_extraction and slam.stereo is not None)
         self._detector = _clone_sift(slam.config, has_stereo=slam.stereo is not None)
         src_sgbm = (
@@ -568,6 +573,7 @@ class FrontendExtractionPipeline:
                 io_elapsed_s=io_dt,
                 precomputed_lk_pyramid=lk_pyramid,
                 cuda_frontend=self._cuda_frontend,
+                stereo_verifier=self._stereo_verifier,
             )
 
         return ExtractedFrame(
@@ -633,6 +639,7 @@ class FrontendExtractionPipeline:
                             sgbm_executor=self._sgbm_executor,
                             io_elapsed_s=io_dt,
                             cuda_frontend=self._cuda_frontend,
+                            stereo_verifier=self._stereo_verifier,
                         )
                     self._put_output((index, extracted, None))
                 except BaseException as exc:

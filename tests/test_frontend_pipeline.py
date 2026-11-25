@@ -209,6 +209,28 @@ def test_concurrent_stereo_matches_sequential_and_shuts_down_cleanly():
         slam.close(finish=False)
 
 
+def test_scheduled_prefetch_coalesces_pending_frames_and_keeps_low_support_eager():
+    from types import SimpleNamespace
+    from performance import PerformanceConfig
+
+    slam = SimpleNamespace(
+        stereo=True,
+        config=SimpleNamespace(keyframe_interval=10),
+        performance=PerformanceConfig(coalesce_prefetch=True),
+        map=SimpleNamespace(keyframes={0: SimpleNamespace(frame=0), 1: SimpleNamespace(frame=2)},
+                            poses=[None] * 10),
+        previous_tracks=[None] * 100,
+    )
+    prefetch = SharedSlam.should_prefetch_full_extraction
+    assert prefetch(slam, 12)
+    assert not prefetch(slam, 13)
+    slam.previous_tracks.clear()
+    assert prefetch(slam, 14)
+    slam.previous_tracks = [None] * 100
+    slam.map.poses.extend([None] * 3)
+    assert prefetch(slam, 15)
+
+
 def test_lazy_extraction_materializes_bit_exact_and_respects_eager_hint():
     K, stereo = _make_stereo_camera()
     cfg = MappingConfig.from_preset("improved_stereo", stereo=True, loop_mode="off")

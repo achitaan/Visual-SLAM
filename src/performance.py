@@ -18,6 +18,7 @@ class PerformanceConfig:
     profile: bool = False
     pipeline_extraction: bool = False
     frontend_backend: str = "cpu"
+    coalesce_prefetch: bool = False
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):

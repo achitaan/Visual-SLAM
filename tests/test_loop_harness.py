@@ -61,6 +61,7 @@ def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypat
     poses_dir.mkdir(parents=True)
 
     monkeypatch.setenv("KITTI_POSES_ROOT", str(poses_dir))
+    monkeypatch.setenv("VISUAL_SLAM_SIFT_FIRST_OCTAVE", "0")
 
     cmd, env, resolved_seq = build_airgapped_estimator_invocation(
         sequence="04",
@@ -73,12 +74,16 @@ def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypat
         opencv_threads=1,
         max_frames=2,
         frontend_backend="cuda",
+        pipeline_extraction=True,
+        coalesce_prefetch=True,
     )
     assert resolved_seq == seq_dir.resolve()
     assert cmd[cmd.index("--frontend-backend") + 1] == "cuda"
+    assert "--coalesce-prefetch" in cmd
     assert "--poses-root" not in cmd
     assert str(poses_dir) not in " ".join(cmd)
     assert "KITTI_POSES_ROOT" not in env
+    assert env["VISUAL_SLAM_SIFT_FIRST_OCTAVE"] == "0"
     assert env["OPENBLAS_NUM_THREADS"] == "1"
     assert env["OMP_NUM_THREADS"] == "1"
 

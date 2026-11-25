@@ -79,6 +79,18 @@ AVX-512 features at build and load time. On an AVX2-only host, SIFT, matching,
 LK, and ZNCC use their existing fallbacks. The bundle and pose-graph kernels
 can still run natively on x64.
 
+For the throughput-tuned Windows stereo harness, use native-resolution SIFT,
+one pending scheduled keyframe prefetch, and CUDA descriptor matching:
+
+```powershell
+$env:VISUAL_SLAM_SIFT_FIRST_OCTAVE = '0'
+.\.venv\Scripts\python src/loop_harness.py --tier custom --sequences 00 --data-root .datasets/kitti --output-dir results/win_native_cuda_00 --openblas-threads 1 --opencv-threads 2 --pipeline-extraction --pipeline-buffer 4 --coalesce-prefetch --matching-backend cuda --no-profile
+Remove-Item Env:VISUAL_SLAM_SIFT_FIRST_OCTAVE
+```
+
+Starting at octave 0 changes native SIFT detections. Compare the harness's
+trajectory metrics when applying this configuration to other sequences.
+
 Start the dashboard in a second terminal:
 
 ```sh

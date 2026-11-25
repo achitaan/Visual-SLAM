@@ -81,6 +81,7 @@ _SANITIZED_ENV_ALLOWLIST = (
     "MPLCONFIGDIR",
     "CUDA_VISIBLE_DEVICES",
     "VISUAL_SLAM_DISABLE_NATIVE",
+    "VISUAL_SLAM_SIFT_FIRST_OCTAVE",
 )
 
 
@@ -243,6 +244,7 @@ def build_airgapped_estimator_invocation(
     matching_backend: str = "cpu",
     profile: bool = True,
     frontend_backend: str = "cpu",
+    coalesce_prefetch: bool = False,
 ) -> tuple[list[str], dict[str, str], Path]:
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
@@ -316,6 +318,8 @@ def build_airgapped_estimator_invocation(
     if pipeline_extraction:
         command.append("--pipeline-extraction")
         command.extend(["--pipeline-buffer", str(max(1, int(pipeline_buffer)))])
+        if coalesce_prefetch:
+            command.append("--coalesce-prefetch")
     if matching_backend != "cpu":
         command.extend(["--matching-backend", matching_backend])
     if frontend_backend != "cpu":
@@ -360,6 +364,7 @@ def run_airgapped_estimator_subprocess(
     matching_backend: str = "cpu",
     profile: bool = True,
     frontend_backend: str = "cpu",
+    coalesce_prefetch: bool = False,
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -379,6 +384,7 @@ def run_airgapped_estimator_subprocess(
         matching_backend=matching_backend,
         profile=profile,
         frontend_backend=frontend_backend,
+        coalesce_prefetch=coalesce_prefetch,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -547,6 +553,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=2)
+    parser.add_argument("--coalesce-prefetch", action="store_true")
     parser.add_argument(
         "--matching-backend", choices=["cpu", "cuda", "auto"], default="cpu"
     )
@@ -573,6 +580,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         profile=not bool(args.no_profile),
         pipeline_extraction=bool(args.pipeline_extraction),
         frontend_backend=args.frontend_backend,
+        coalesce_prefetch=args.coalesce_prefetch,
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -735,6 +743,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "seed": args.seed,
         "opencv_threads": args.opencv_threads,
         "openblas_threads": int(os.environ.get("OPENBLAS_NUM_THREADS", "1")),
+        "native_sift_first_octave": 0 if os.environ.get("VISUAL_SLAM_SIFT_FIRST_OCTAVE", "").strip() == "0" else -1,
         "pipeline_extraction": bool(args.pipeline_extraction),
         "matching_backend": matcher_meta,
         "preset": args.preset,
@@ -1412,6 +1421,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=1)
     parser.add_argument(
+        "--coalesce-prefetch", action="store_true",
+        help="Limit scheduled keyframe lookahead to one pending full extraction per last keyframe",
+    )
+    parser.add_argument(
         "--no-profile",
         action="store_true",
         help="Disable per-stage StageProfile instrumentation for unprofiled benchmark runs",
@@ -1462,6 +1475,8 @@ def resolve_loop_cli_args(argv: list[str] | None = None) -> tuple[argparse.Names
         parser.error("--openblas-threads must be positive")
     if args.pipeline_buffer < 1:
         parser.error("--pipeline-buffer must be positive")
+    if args.coalesce_prefetch and not args.pipeline_extraction:
+        parser.error("--coalesce-prefetch requires --pipeline-extraction")
     if args.tier == "custom" and not args.sequences:
         parser.error("--tier custom requires --sequences")
 
@@ -1548,6 +1563,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             matching_backend=str(args.matching_backend),
             profile=not bool(args.no_profile),
             frontend_backend=args.frontend_backend,
+            coalesce_prefetch=args.coalesce_prefetch,
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)

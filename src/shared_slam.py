@@ -7149,6 +7149,13 @@ class SharedSlam:
         last_kf_id = max(self.map.keyframes)
         last_kf = self.map.keyframes[last_kf_id]
         if idx - int(last_kf.frame) >= int(self.config.keyframe_interval):
+            if self.performance.coalesce_prefetch:
+                pending = getattr(self, "_scheduled_keyframe_prefetch", None)
+                if pending is not None and pending[0] == last_kf_id and pending[1] >= len(self.map.poses):
+                    # One pending frame already covers this keyframe deadline.
+                    # If a later frame needs extraction, its LK guard still materializes it.
+                    return False
+                self._scheduled_keyframe_prefetch = (last_kf_id, idx)
             self._last_eager_prefetch_index = idx
             return True
         if len(self.map.poses) >= 2:

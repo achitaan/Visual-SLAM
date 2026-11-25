@@ -68,7 +68,7 @@ def tensor_stereo_disparity(
     *,
     num_disparities: int = 96,
     block_size: int = 5,
-    chunk_size: int = 16,
+    chunk_size: int = 32,
 ) -> torch.Tensor:
     """Rectified SAD block matching for float [1,1,H,W] inputs on one device.
 
@@ -89,17 +89,28 @@ def tensor_stereo_disparity(
     if h < block_size or disparities < 2:
         return result
 
+    # The selected disparity indices are discrete; there is no autograd path.
+    left, right = left.detach(), right.detach()
     radius = block_size // 2
-    xs = torch.arange(w, device=left.device)
     right_pad = F.pad(right[0, 0], (disparities - 1, 0))
+    # Adjacent disparities are overlapping views of the right image. Write
+    # their differences straight into contiguous storage for the pooling kernel.
+    windows = right_pad.unfold(-1, w, 1).transpose(0, 1)
+    diff_buffer = torch.empty(
+        (min(chunk_size, disparities), h, w),
+        device=left.device, dtype=torch.promote_types(left.dtype, right.dtype),
+    )
     best = left.new_full((h - 2 * radius, w - 2 * radius), float("inf"))
     second = best.clone()
     best_index = torch.zeros_like(best, dtype=torch.long)
-    centers = xs[radius:-radius]
+    centers = torch.arange(radius, w - radius, device=left.device)
     for start in range(0, disparities, chunk_size):
-        ds = torch.arange(start, min(start + chunk_size, disparities), device=left.device)
-        shifted = right_pad[:, xs + (disparities - 1) - ds[:, None]].permute(1, 0, 2)
-        costs = F.avg_pool2d((left[0] - shifted).abs()[None], block_size, stride=1)[0]
+        stop = min(start + chunk_size, disparities)
+        ds = torch.arange(stop - 1, start - 1, -1, device=left.device)
+        shifted = windows[disparities - stop:disparities - start]
+        diff = diff_buffer[:stop - start]
+        torch.sub(left[0], shifted, out=diff)
+        costs = F.avg_pool2d(diff.abs_()[None], block_size, stride=1)[0]
         # The entire right block, not just its center, must be in bounds.
         costs.masked_fill_(centers < ds[:, None, None] + radius, float("inf"))
         values, local_ids = costs.topk(min(2, len(ds)), dim=0, largest=False, sorted=True)
@@ -156,6 +167,10 @@ class TensorFrontend:
         # Use the native resolution as octave zero: doubling both axes would
         # quadruple the working set for the largest 3-D DoG/NMS tensors.
         self.sift.detector.scale_pyr = ScalePyramid(3, 1.6, 32, double_image=False).to(self.device)
+        if self.device.type == "cuda":
+            from cuda_sift_localization import SparseQuadInterp3d
+
+            self.sift.detector.nms = SparseQuadInterp3d()
 
     def image(self, gray: np.ndarray) -> torch.Tensor:
         if gray.ndim != 2 or gray.dtype != np.uint8 or not gray.size:

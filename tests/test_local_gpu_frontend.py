@@ -105,6 +105,27 @@ def test_scale_space_sift_describes_translated_texture(tensor_device):
     assert frontend.extract(torch.zeros_like(a))[1].shape == (0, 128)
 
 
+@pytest.mark.parametrize("flat", [False, True])
+def test_sparse_sift_localization_matches_kornia(tensor_device, flat):
+    pytest.importorskip("kornia")
+    from kornia.geometry.subpix import ConvQuadInterp3d
+    from cuda_sift_localization import SparseQuadInterp3d
+
+    torch, device = tensor_device
+    rng = np.random.default_rng(812)
+    scores = torch.as_tensor(rng.normal(size=(2, 1, 5, 17, 19)), device=device, dtype=torch.float32)
+    if flat:
+        scores.fill_(1)
+    ref = ConvQuadInterp3d(strict_maxima_bonus=10)
+    sparse = SparseQuadInterp3d()
+    # Kornia's dense interpolator defines the existing coordinates and scores for both DoG polarities.
+    for volume in (scores, -scores):
+        coords, responses = sparse(volume)
+        expected_coords, expected_responses = ref(volume)
+        torch.testing.assert_close(coords, expected_coords, atol=2e-5, rtol=0)
+        torch.testing.assert_close(responses, expected_responses, atol=2e-5, rtol=0)
+
+
 def make_slam(backend, *, grid_bucketing=False):
     focal, center_x, center_y, baseline = 100, 75, 44, 0.54
     intrinsics = np.array([[focal, 0, center_x], [0, focal, center_y], [0, 0, 1]])

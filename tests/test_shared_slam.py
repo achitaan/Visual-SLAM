@@ -30,6 +30,39 @@ def pose(x):
     return result
 
 
+@pytest.mark.parametrize("native_available", [True, False])
+def test_seeded_pnp_native_refinement_and_cpu_fallback(monkeypatch, native_available):
+    import native_accel
+
+    points = scene()
+    target = pose(0.24)
+    pixels, _ = project(points, target, K)
+    initial = pose(0.20)
+    reference = estimate_pose(points, pixels, K, (640, 480), initial_pose=initial)
+    assert reference is not None
+    calls = []
+
+    def refine(rotation, translation, world, observed, weights, mask, *calibration):
+        calls.append(len(world))
+        assert observed.shape == weights.shape == mask.shape == (len(world), 3)
+        assert np.all(mask[:, :2] == 1) and not np.any(mask[:, 2])
+        assert calibration[4:6] == (0.0, 0.0)
+        if native_available:
+            return np.eye(3), -target[:3, 3], 1.0, 0.0, True, np.eye(6)
+        return None
+
+    monkeypatch.setattr(native_accel, "refine_stereo_pose_lm_cpp", refine)
+    candidate = estimate_pose(points, pixels, K, (640, 480), initial_pose=initial,
+                              native_seeded_pnp=True)
+    assert candidate is not None and len(calls) == 2
+    if native_available:
+        assert np.allclose(candidate[0], target, atol=1e-12)
+    else:
+        np.testing.assert_array_equal(candidate[0], reference[0])
+        np.testing.assert_array_equal(candidate[1], reference[1])
+        assert candidate[2] == reference[2]
+
+
 def test_monocular_initialization_and_degenerate_rotation():
     cv.setRNGSeed(0)
     world = scene()

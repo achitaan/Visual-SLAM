@@ -1,5 +1,7 @@
 """Image-only initialization, projection, triangulation and geometric pose checks."""
 
+from functools import lru_cache
+
 import cv2 as cv
 import numpy as np
 
@@ -360,8 +362,46 @@ def initialize_monocular(first, second, matrix, size):
     return pose, points, ids
 
 
+@lru_cache(maxsize=32)
+def _bearing_refinement_buffers(count):
+    weights = np.ones((count, 3), dtype=np.float64)
+    mask = np.ones((count, 3), dtype=np.uint8)
+    mask[:, 2] = 0
+    weights.setflags(write=False)
+    mask.setflags(write=False)
+    return weights, mask
+
+
+def _refine_seeded_pose_native(points, pixels, matrix, distortion, rotation_vector, translation):
+    """Use the analytic native solver with only the two bearing residuals."""
+    if (distortion is None and len(points) >= 15
+            and matrix[0, 1] == matrix[1, 0] == matrix[2, 0] == matrix[2, 1] == 0
+            and matrix[2, 2] == 1):
+        from native_accel import refine_stereo_pose_lm_cpp
+
+        observations = np.empty((len(points), 3), dtype=np.float64)
+        observations[:, :2] = pixels
+        observations[:, 2] = 0.0
+        weights, mask = _bearing_refinement_buffers(len(points))
+        try:
+            # Keep a quadratic cost for ordinary pixel reprojection errors.
+            result = refine_stereo_pose_lm_cpp(
+                cv.Rodrigues(rotation_vector)[0], translation, points, observations, weights, mask,
+                matrix[0, 0], matrix[1, 1], matrix[0, 2], matrix[1, 2], 0.0, 0.0, 1e5, 16,
+            )
+        except (AttributeError, OSError, RuntimeError, ValueError):
+            result = None
+        if result is not None:
+            rotation, offset, before, after, converged, _ = result
+            if (np.isfinite(rotation).all() and np.isfinite(offset).all()
+                    and np.isfinite(after) and after <= before and (converged or after < before)):
+                return cv.Rodrigues(rotation)[0], offset.reshape(3, 1)
+    return cv.solvePnPRefineLM(points, pixels, matrix, distortion, rotation_vector, translation)
+
+
 def estimate_pose(
-    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None
+    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None,
+    *, native_seeded_pnp=False,
 ):
     """Keep a geometrically validated seeded pose; retry independently on failure.
 
@@ -386,6 +426,7 @@ def estimate_pose(
                     min_inliers,
                     initial_pose,
                     seeded_diagnostics,
+                    native_seeded_pnp=native_seeded_pnp,
                 )
             except (cv.error, np.linalg.LinAlgError):
                 seeded_diagnostics["pose_rejection_reason"] = "seeded_solver_failed"
@@ -417,7 +458,8 @@ def estimate_pose(
 
 
 def _estimate_pose_hypothesis(
-    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None
+    points, pixels, matrix, size, min_inliers=15, initial_pose=None, diagnostics=None,
+    *, native_seeded_pnp=False,
 ):
     diagnostics = diagnostics if diagnostics is not None else {}
     if len(points) < min_inliers:
@@ -440,8 +482,9 @@ def _estimate_pose_hypothesis(
             err0_sq = diff0[:, 0] * diff0[:, 0] + diff0[:, 1] * diff0[:, 1]
             coarse = np.flatnonzero((depth0 > 0.0) & (err0_sq <= 36.0))
             if len(coarse) >= min_inliers and len(coarse) >= int(0.4 * len(pts_f64)):
+                refine_seeded = _refine_seeded_pose_native if native_seeded_pnp else cv.solvePnPRefineLM
                 try:
-                    rv_f, tv_f = cv.solvePnPRefineLM(
+                    rv_f, tv_f = refine_seeded(
                         pts_f64[coarse], pix_f64[coarse], matrix, None, rv0.copy(), tv0.copy()
                     )
                     pose_f = np.eye(4)
@@ -452,7 +495,7 @@ def _estimate_pose_hypothesis(
                     err1_sq = diff1[:, 0] * diff1[:, 0] + diff1[:, 1] * diff1[:, 1]
                     ids_f = np.flatnonzero((depth1 > 0.0) & (err1_sq <= 4.0))
                     if len(ids_f) >= min_inliers and len(ids_f) >= int(0.5 * len(pts_f64)):
-                        rv_f, tv_f = cv.solvePnPRefineLM(
+                        rv_f, tv_f = refine_seeded(
                             pts_f64[ids_f], pix_f64[ids_f], matrix, None, rv_f, tv_f
                         )
                         pose_f = np.eye(4)
@@ -607,7 +650,7 @@ def _refine_supported_pose_seed(points, pixels, matrix, size, min_inliers, seed)
 
 def estimate_stereo_reference(
     source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
-    *, capture_rows=False,
+    *, capture_rows=False, native_seeded_pnp=False,
 ):
     """Frame tracking with the map tracker's PnP checks, never a loop constraint.
 
@@ -619,6 +662,7 @@ def estimate_stereo_reference(
     if not len(pairs):
         return None
     a, b = pairs.T
+    pose_options = {"native_seeded_pnp": True} if native_seeded_pnp else {}
     available = np.isfinite(source.points[a]).all(axis=1)
     a_source, b_target = a[available], b[available]
     result = estimate_pose(
@@ -628,6 +672,7 @@ def estimate_stereo_reference(
         target.image_size,
         min_inliers,
         initial_pose=initial_pose,
+        **pose_options,
     )
     if result is None:
         return None
@@ -640,6 +685,7 @@ def estimate_stereo_reference(
         source.image_size,
         min_inliers,
         initial_pose=np.linalg.inv(measurement),
+        **pose_options,
     )
     reverse_translation = reverse_rotation = None
     refinement = None
@@ -956,7 +1002,7 @@ def refine_bidirectional_stereo(pose, source_points, target_pixels, target_point
 
 def estimate_stereo_reference_with_verified_retry(
     source, target, matrix, min_inliers=15, initial_pose=None, matcher=None,
-    *, fallback_matcher=None, capture_rows=False,
+    *, fallback_matcher=None, capture_rows=False, native_seeded_pnp=False,
 ):
     """Keep strong original geometry; retry only accepted one-way proposals.
 
@@ -964,16 +1010,17 @@ def estimate_stereo_reference_with_verified_retry(
     The retry is independent of the first pose/prior and must pass the existing
     metric PnP and reverse-consistency gates. Failed retries preserve behavior.
     """
+    pose_options = {"native_seeded_pnp": True} if native_seeded_pnp else {}
     original = estimate_stereo_reference(
         source, target, matrix, min_inliers, initial_pose, matcher,
-        capture_rows=capture_rows)
+        capture_rows=capture_rows, **pose_options)
     if (fallback_matcher is None or original is None
             or original.get('reverse_checked', False)):
         return original
     try:
         candidate = estimate_stereo_reference(
             source, target, matrix, min_inliers, initial_pose=None,
-            matcher=fallback_matcher, capture_rows=capture_rows)
+            matcher=fallback_matcher, capture_rows=capture_rows, **pose_options)
     except (cv.error, ValueError, np.linalg.LinAlgError):
         candidate = None
     if candidate is None or not candidate.get('reverse_checked', False):

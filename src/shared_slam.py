@@ -189,11 +189,14 @@ class MappingConfig:
     stereo_verified_reference_retry: bool = False
     covisible_bundle_max_keyframes: int = 8
     sift_detection_scale: float = 1.0
+    native_seeded_pnp: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
         object.__setattr__(self, "sift_detection_scale",
                            validate_sift_detection_scale(self.sift_detection_scale))
+        if not isinstance(self.native_seeded_pnp, bool):
+            raise ValueError("native_seeded_pnp must be a boolean")
         max_keyframes = self.covisible_bundle_max_keyframes
         if (isinstance(max_keyframes, (bool, np.bool_))
                 or not isinstance(max_keyframes, (int, np.integer)) or max_keyframes < 3):
@@ -404,6 +407,9 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        self._pose_refinement_options = (
+            {"native_seeded_pnp": True} if self.config.native_seeded_pnp else {}
+        )
         if self.config.sift_detection_scale < 1.0 and (
             not self.config.use_grid_bucketing or self.performance.frontend_backend != "cpu"
         ):
@@ -2529,6 +2535,7 @@ class SharedSlam:
                 self.config.min_inliers if not relocalize else 20,
                 initial_pose=seed,
                 diagnostics=diagnostics,
+                **self._pose_refinement_options,
             )
             measured_right = None
             if solution is not None and self.stereo is not None:
@@ -4215,12 +4222,14 @@ class SharedSlam:
                 source_frame, target_frame, self.K, min_inliers=minimum,
                 initial_pose=None, matcher=lambda first, second: fit.copy(),
                 capture_rows=True,
+                **self._pose_refinement_options,
             )
         else:
             verified = self.profile.call(
                 'stereo_pose_arbitration_fit', estimate_stereo_reference,
                 source_frame, target_frame, self.K, min_inliers=minimum,
-                initial_pose=None, matcher=lambda first, second: fit.copy())
+                initial_pose=None, matcher=lambda first, second: fit.copy(),
+                **self._pose_refinement_options)
         if verified is None or not verified['reverse_checked']:
             report['reason'] = 'independent_training_failed'
             return None, report
@@ -5009,7 +5018,8 @@ class SharedSlam:
                  else 'stereo_pose_full_supported_fallback_fit'), estimate_stereo_reference,
                 source_frame, target_frame, self.K,
                 min_inliers=self.config.min_inliers, initial_pose=None,
-                matcher=lambda first, second: pairs.copy())
+                matcher=lambda first, second: pairs.copy(),
+                **self._pose_refinement_options)
         except (cv.error, np.linalg.LinAlgError, TypeError, ValueError, IndexError):
             return None, {**report, 'eligible': False,
                           'reason': 'full_supported_reference_fit_error'}
@@ -7425,6 +7435,7 @@ class SharedSlam:
         solution = estimate_pose(
             cand_pos, cand_obs, self.K, size,
             self.config.min_inliers, initial_pose=seed, diagnostics=diag,
+            **self._pose_refinement_options,
         )
         if solution is None:
             return None
@@ -7832,6 +7843,7 @@ class SharedSlam:
                         initial_pose=prior,
                         matcher=reference_matcher,
                         **retry_arguments,
+                        **self._pose_refinement_options,
                     ))
                     if (verified is None and arbitration is None
                             and self.config.stereo_raw_reference_retry):

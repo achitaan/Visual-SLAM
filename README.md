@@ -161,6 +161,14 @@ Two full KITTI 00 runs at this scale reached 55.90–55.97 FPS with 2.25–2.26 
 ATE, 0.967–0.983% translation drift, and zero lost frames. Over the first 1,200
 frames, ATE was 1.45 m at this scale and 1.23 m at full resolution.
 
+To use the native CPU refiner for seeded PnP, keep the same CUDA backends and pass
+`--config-overrides '{"covisible_bundle_max_keyframes":3,"sift_detection_scale":0.78,"native_seeded_pnp":true}'`.
+The `fast_ba` kernel refines eligible pose estimates using image-coordinate residuals.
+OpenCV handles the refinement if the kernel is unavailable or declines a fit.
+In a paired full KITTI 00 benchmark, the option raised throughput from 55.23 to
+56.52 FPS. ATE went from 2.34 m to 2.23 m, translation drift went from 0.995% to
+0.971%, and both runs lost zero frames.
+
 Start the dashboard in a second terminal:
 
 ```sh

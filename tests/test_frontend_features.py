@@ -40,6 +40,44 @@ def test_grid_bucketing_balances_clumped_vs_sparse_regions():
     assert spread_selected >= 100, f"Expected >= 100 spread features, got {spread_selected}"
 
 
+def test_scaled_sift_maps_pixel_centers_back_to_the_full_image():
+    shape = (80, 160)
+    detected = np.array([[12.25, 10.0], [46.0, 30.75]], dtype=np.float32)
+    desc = np.arange(256, dtype=np.float32).reshape(2, 128)
+
+    def extract(image, **kwargs):
+        assert image.shape == (40, 80)
+        return detected, desc, np.zeros(2, np.int16), np.zeros(2, np.float32), np.ones(2, np.float32)
+
+    actual = extract_grid_bucketed_sift(
+        np.zeros(shape, dtype=np.uint8), target_features=2, detection_scale=0.5, native_sift=extract
+    )
+
+    # Each reduced pixel spans two original pixels, so its center shifts by
+    # half a full-resolution pixel after doubling its reduced coordinate.
+    expected = np.array([[25.0, 20.5], [92.5, 62.0]], dtype=np.float32)
+    np.testing.assert_array_equal(actual.pixels, expected)
+    np.testing.assert_array_equal([point.pt for point in actual.keypoints], expected)
+    np.testing.assert_array_equal(actual.descriptors, desc)
+
+
+def test_scaled_sift_retries_full_resolution_when_feature_support_is_low():
+    gray = np.zeros((80, 160), dtype=np.uint8)
+    pixels = np.array([[30, 20], [60, 40]], dtype=np.float32)
+    calls = []
+
+    def extract(image, **kwargs):
+        calls.append(image.shape)
+        count = 2 if image is gray else 1
+        return (pixels[:count], np.zeros((count, 128), np.float32), np.zeros(count, np.int16),
+                np.zeros(count, np.float32), np.ones(count, np.float32))
+
+    actual = extract_grid_bucketed_sift(gray, target_features=2, detection_scale=0.5, native_sift=extract)
+
+    assert calls == [(40, 80), gray.shape]
+    np.testing.assert_array_equal(actual.pixels, pixels)
+
+
 def test_extract_grid_bucketed_sift_and_classify_stereo():
     rng = np.random.default_rng(7)
     img = rng.integers(0, 255, size=(376, 1241), dtype=np.uint8)

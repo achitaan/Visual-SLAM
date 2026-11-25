@@ -149,6 +149,18 @@ lost frames. To reproduce that configuration, append
 `--config-overrides '{"covisible_bundle_max_keyframes":3}'`
 to the 900-feature command.
 
+For faster SIFT detection on KITTI 00, use `--sift-pyramid-backend cuda` and
+`--config-overrides '{"covisible_bundle_max_keyframes":3,"sift_detection_scale":0.78}'`
+with the 900-feature command. The scale applies to the grid-bucketed SIFT
+detector. The frontend maps detections back to the original pixel grid before
+stereo verification and pose estimation. It retries detection on the original
+image when the reduced image has too few features. Compare trajectory metrics
+when applying this setting to other sequences.
+
+Two full KITTI 00 runs at this scale reached 55.90–55.97 FPS with 2.25–2.26 m
+ATE, 0.967–0.983% translation drift, and zero lost frames. Over the first 1,200
+frames, ATE was 1.45 m at this scale and 1.23 m at full resolution.
+
 Start the dashboard in a second terminal:
 
 ```sh

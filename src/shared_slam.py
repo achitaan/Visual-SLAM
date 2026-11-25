@@ -23,6 +23,7 @@ from local_bundle import local_bundle_adjustment
 from live_loops import LiveLoopWorker
 from loop_geometry import StereoLoopFrame, verify_loop
 from stage_profile import StageProfile
+from frontend_features import validate_sift_detection_scale
 from keyframe_retrieval import KeyframeRetrieval
 from keyframe_index import KeyframeIndex
 from descriptor_matching import DescriptorMatcher, match_vo_forward
@@ -187,9 +188,12 @@ class MappingConfig:
     stereo_bundle_holdout_guard: bool = False
     stereo_verified_reference_retry: bool = False
     covisible_bundle_max_keyframes: int = 8
+    sift_detection_scale: float = 1.0
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
+        object.__setattr__(self, "sift_detection_scale",
+                           validate_sift_detection_scale(self.sift_detection_scale))
         max_keyframes = self.covisible_bundle_max_keyframes
         if (isinstance(max_keyframes, (bool, np.bool_))
                 or not isinstance(max_keyframes, (int, np.integer)) or max_keyframes < 3):
@@ -400,6 +404,10 @@ class SharedSlam:
                 "Stereo input must contain calibration and disparity computation only"
             )
         self.config = config or MappingConfig()
+        if self.config.sift_detection_scale < 1.0 and (
+            not self.config.use_grid_bucketing or self.performance.frontend_backend != "cpu"
+        ):
+            raise ValueError("sift_detection_scale requires the grid-bucketed SIFT frontend")
         if stereo is None and self.config.bundle_landmark_policy == "joint_tracks":
             raise ValueError("Joint landmark tracks currently require calibrated stereo")
         if stereo is None and getattr(self.config, "stereo_bundle_holdout_guard", False):
@@ -971,6 +979,7 @@ class SharedSlam:
                 detector=self._grid_detector,
                 build_cv_keypoints=False,
                 native_sift=None if sift_pyramid is None else sift_pyramid.extract,
+                detection_scale=self.config.sift_detection_scale,
             )
             pixels = bucketed.pixels
             desc = bucketed.descriptors

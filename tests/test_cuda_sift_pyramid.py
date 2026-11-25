@@ -51,6 +51,21 @@ def test_grid_sift_falls_back_to_the_same_cpu_features(monkeypatch, disable_nati
         np.testing.assert_array_equal(getattr(actual, field), getattr(expected, field))
 
 
+def test_scaled_cuda_grid_sift_matches_the_scaled_cpu_extractor():
+    cuda, reason = create_cuda_sift_pyramid()
+    if cuda is None:
+        pytest.skip(reason)
+    gray = _texture()
+    options = dict(target_features=64, detection_scale=0.78, build_cv_keypoints=False)
+    expected = extract_grid_bucketed_sift(gray, **options)
+    actual = extract_grid_bucketed_sift(gray, native_sift=cuda.extract, **options)
+    assert len(expected.pixels) == options["target_features"]
+    assert actual.keypoints == []
+    for field in ("pixels", "descriptors", "octaves", "angles", "responses"):
+        np.testing.assert_array_equal(getattr(actual, field), getattr(expected, field))
+    assert cuda.report()["cuda_frames"] == 1
+
+
 def test_native_sift_rejects_a_truncated_cuda_pyramid():
     if not sift_pyramid_available():
         pytest.skip("native SIFT pyramid consumer is unavailable")

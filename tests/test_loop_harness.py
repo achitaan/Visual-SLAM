@@ -64,6 +64,17 @@ def test_covisible_bundle_window_override_preserves_ordinary_window():
             resolve_preset_config(config_overrides={"covisible_bundle_max_keyframes": invalid})
 
 
+def test_sift_detection_scale_override_preserves_full_resolution_default():
+    control, _ = resolve_preset_config()
+    tuned, overrides = resolve_preset_config(config_overrides={"sift_detection_scale": 0.78})
+    assert control.sift_detection_scale == 1.0
+    assert tuned.sift_detection_scale == 0.78
+    assert overrides == {"sift_detection_scale": 0.78}
+    for invalid in (0, True, 1.1, float("nan"), "0.78"):
+        with pytest.raises(ValueError, match="sift_detection_scale"):
+            resolve_preset_config(config_overrides={"sift_detection_scale": invalid})
+
+
 def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypatch):
     seq_dir = tmp_path / "kitti" / "sequences" / "04"
     for cam in ("image_0", "image_1"):

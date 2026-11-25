@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from numbers import Real
 
 import cv2 as cv
 import numpy as np
@@ -14,6 +15,12 @@ def unpack_sift_octave(octave_packed: int) -> int:
     if oct_val >= 128:
         oct_val -= 256
     return oct_val
+
+
+def validate_sift_detection_scale(value) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) or not 0 < value <= 1:
+        raise ValueError("sift_detection_scale must be a number in (0, 1]")
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -114,12 +121,33 @@ def extract_grid_bucketed_sift(
     *,
     build_cv_keypoints: bool = True,
     native_sift=None,
+    detection_scale: float = 1.0,
 ) -> BucketedKeypoints:
     """Detect SIFT keypoints with spatial grid bucketing and compute descriptors only for kept keypoints."""
     if image_gray is None or np.ndim(image_gray) != 2:
         raise ValueError("image_gray must be a 2D grayscale image")
     height, width = image_gray.shape
     target = max(1, int(target_features))
+    scale = validate_sift_detection_scale(detection_scale)
+    if scale < 1.0:
+        small_width, small_height = round(width * scale), round(height * scale)
+        if min(small_width, small_height) >= 16 and (small_width, small_height) != (width, height):
+            reduced = cv.resize(image_gray, (small_width, small_height), interpolation=cv.INTER_AREA)
+            features = extract_grid_bucketed_sift(
+                reduced, target, grid_cols, grid_rows, contrast_threshold, detector,
+                build_cv_keypoints=build_cv_keypoints, native_sift=native_sift,
+            )
+            if len(features.pixels) >= min(target, 100):
+                # Map detector pixel centers to the original coordinate grid.
+                ratios = np.array([width / small_width, height / small_height], dtype=np.float32)
+                pixels = (features.pixels + np.float32(0.5)) * ratios - np.float32(0.5)
+                if features.keypoints:
+                    size_ratio = float(np.sqrt(ratios.prod()))
+                    for keypoint, pixel in zip(features.keypoints, pixels):
+                        keypoint.pt = (float(pixel[0]), float(pixel[1]))
+                        keypoint.size *= size_ratio
+                return replace(features, pixels=pixels)
+
     if (detector is None or isinstance(detector, cv.SIFT)) and image_gray.dtype == np.uint8:
         from native_accel import extract_sift_grid_avx512
 

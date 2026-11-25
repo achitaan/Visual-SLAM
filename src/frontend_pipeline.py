@@ -371,6 +371,7 @@ def extract_frame_owned(
             detector=detector,
             build_cv_keypoints=False,
             native_sift=native_sift,
+            detection_scale=getattr(config, "sift_detection_scale", 1.0),
         )
         pixels = bucketed.pixels
         desc = bucketed.descriptors

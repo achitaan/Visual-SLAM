@@ -187,6 +187,17 @@ In a full KITTI 00 comparison on the GTX 1660 SUPER, compact SIFT reached
 all 4,541 frames with zero lost frames. ATE was 2.29 m with compact SIFT and
 2.34 m with the regular pyramid.
 
+Add `"use_lazy_stereo_geometry":true` to the same `--config-overrides` JSON to
+let the CUDA optical-flow path try short-lived, stereo-verified corners when
+persistent landmark support is low. Persistent landmarks constrain the refined
+pose, and the extra corners expire after three frames. This option also checks
+for live loop closures more frequently. It requires pipelined CUDA optical flow
+and verified stereo depth, and is off by default.
+
+On full KITTI 00, the option reached 60.34 FPS versus 59.43 FPS and reduced
+live translation drift from 1.32% to 1.09%. Final aligned ATE moved from
+2.30 m to 2.36 m, with zero lost frames in both runs.
+
 Start the dashboard in a second terminal:
 
 ```sh

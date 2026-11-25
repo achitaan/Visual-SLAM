@@ -195,6 +195,7 @@ class LiveLoopWorker:
         max_keyframes=300,
         use_weighted_pgo=False,
         use_vlad_retrieval=False,
+        min_schedule_frame_gap=20,
     ):
         if mode not in ("off", "live", "offline"):
             raise ValueError("Loop mode must be off, live or offline")
@@ -210,6 +211,7 @@ class LiveLoopWorker:
         self.max_keyframes = int(max_keyframes)
         self.use_weighted_pgo = bool(use_weighted_pgo)
         self.use_vlad_retrieval = bool(use_vlad_retrieval)
+        self.min_schedule_frame_gap = min_schedule_frame_gap
         self.retrieval = KeyframeRetrieval() if retrieval == "current" else None
         self.retrieval_index = KeyframeIndex() if retrieval == "indexed" else None
         self.cpu_optimizations = bool(getattr(performance, "cpu_optimizations", False))
@@ -340,7 +342,7 @@ class LiveLoopWorker:
             if (
                 not self.pending_loops
                 and not self.finalizing
-                and (latest.frame - last_sched_frame) < 20
+                and (latest.frame - last_sched_frame) < self.min_schedule_frame_gap
             ):
                 return
             self._last_scheduled_frame = int(latest.frame)

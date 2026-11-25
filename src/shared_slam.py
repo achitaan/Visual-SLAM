@@ -21,6 +21,12 @@ from mapping_geometry import (
 )
 from local_bundle import local_bundle_adjustment
 from live_loops import LiveLoopWorker
+from lazy_stereo_geometry import (
+    MIN_PERSISTENT_TRACKS,
+    MIN_REFRESH_SUPPORT,
+    refine_with_lazy_stereo_geometry,
+    seed_lazy_stereo_geometry,
+)
 from loop_geometry import StereoLoopFrame, verify_loop
 from stage_profile import StageProfile
 from frontend_features import validate_sift_detection_scale
@@ -190,6 +196,7 @@ class MappingConfig:
     covisible_bundle_max_keyframes: int = 8
     sift_detection_scale: float = 1.0
     native_seeded_pnp: bool = False
+    use_lazy_stereo_geometry: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
@@ -197,6 +204,8 @@ class MappingConfig:
                            validate_sift_detection_scale(self.sift_detection_scale))
         if not isinstance(self.native_seeded_pnp, bool):
             raise ValueError("native_seeded_pnp must be a boolean")
+        if not isinstance(self.use_lazy_stereo_geometry, bool):
+            raise ValueError("use_lazy_stereo_geometry must be a boolean")
         max_keyframes = self.covisible_bundle_max_keyframes
         if (isinstance(max_keyframes, (bool, np.bool_))
                 or not isinstance(max_keyframes, (int, np.integer)) or max_keyframes < 3):
@@ -545,6 +554,12 @@ class SharedSlam:
                 self.cuda_optical_flow, self.cuda_optical_flow_reason = create_cuda_optical_flow()
             else:
                 self.cuda_optical_flow_reason = "CUDA optical flow requires pipelined lazy stereo tracking"
+        self._lazy_stereo_geometry_enabled = (
+            self.config.use_lazy_stereo_geometry and self.cuda_optical_flow is not None
+            and self.config.stereo_depth_policy == "verified_all"
+            and self.config.stereo_map_depth_policy == "verified"
+        )
+        self._lazy_stereo_geometry = None
         self._fast_stereo_sgbm = None
         if (
             self.stereo is not None
@@ -582,6 +597,9 @@ class SharedSlam:
             max_keyframes=getattr(self.config, "max_live_loop_keyframes", 300),
             use_weighted_pgo=bool(getattr(self.config, "use_weighted_pgo", False)),
             use_vlad_retrieval=bool(getattr(self.config, "use_vlad_loop_retrieval", False)),
+            min_schedule_frame_gap=(
+                16 if self._lazy_stereo_geometry_enabled and self.config.loop_mode == "live" else 20
+            ),
         )
         self.retrieval = KeyframeRetrieval()
         self.retrieval_index = KeyframeIndex() if self.performance.retrieval == 'indexed' else None
@@ -7246,12 +7264,17 @@ class SharedSlam:
         while keeping intermediate non-keyframes lightweight.
         """
         idx = int(next_index)
+        use_refresh = getattr(self, "_lazy_stereo_geometry_enabled", False)
+        refresh = self._lazy_stereo_geometry if use_refresh else None
+        minimum_tracks = 61 if use_refresh else 92
         if (
             self.stereo is None
             or not self.performance.cpu_optimizations
             or idx < 2
             or len(self.map.keyframes) < 2
-            or len(self.previous_tracks) < 92
+            or (len(self.previous_tracks) < minimum_tracks and (
+                refresh is None or not refresh.active(idx, self.last_keyframe, require_previous=False)
+            ))
         ):
             self._last_eager_prefetch_index = idx
             return True
@@ -7337,12 +7360,16 @@ class SharedSlam:
         coverage, and parallax are all well within safe non-keyframe bounds. Otherwise
         returns ``None`` so the caller materializes full SIFT + StereoSGBM extraction.
         """
+        use_refresh = getattr(self, "_lazy_stereo_geometry_enabled", False)
+        refresh = self._lazy_stereo_geometry if use_refresh else None
+        if refresh is not None and not refresh.active(index, self.last_keyframe):
+            refresh = None
         if (
             self.stereo is None
             or not self.performance.cpu_optimizations
             or len(self.map.keyframes) < 2
             or self.previous_gray is None
-            or len(self.previous_tracks) < 90
+            or len(self.previous_tracks) < (MIN_PERSISTENT_TRACKS if use_refresh else 90)
             or self._tracking_trace_enabled(index)
             or bool(getattr(self.config, "bundle_diagnostic_frames", ()))
             or self.config.stereo_owned_image_bundle
@@ -7372,11 +7399,17 @@ class SharedSlam:
             (lid, p) for lid, p in self.previous_tracks
             if lid in landmarks_map and lid not in ambiguous_landmarks
         ]
-        if len(prev_tracks) < 85:
+        primary_count = len(prev_tracks)
+        if primary_count < (MIN_PERSISTENT_TRACKS if use_refresh else 85):
             return None
 
         old_pixels = np.array([p for _, p in prev_tracks], np.float32).reshape(-1, 1, 2)
         world_all = np.array([landmarks_map[lid].position for lid, _ in prev_tracks], np.float64)
+        if primary_count >= 112:
+            refresh = None
+        if refresh is not None:
+            old_pixels = np.concatenate((old_pixels, refresh.pixels[:, None, :]))
+            world_all = np.concatenate((world_all, refresh.world_points(last_kf.pose)))
         seed = self._motion_prediction()
         prev_pose = self.map.poses[-1]
         step_trans_m = float(np.linalg.norm((np.linalg.inv(prev_pose) @ seed)[:3, 3]))
@@ -7389,7 +7422,7 @@ class SharedSlam:
             & (projected[:, 0] >= 0.0) & (projected[:, 0] < size[0])
             & (projected[:, 1] >= 0.0) & (projected[:, 1] < size[1])
         )
-        if int(flow_visible.sum()) < 85:
+        if int(flow_visible.sum()) < (58 if use_refresh and refresh is None else 85):
             return None
         predicted_pixels = old_pixels.copy()
         predicted_pixels[flow_visible, 0] = projected[flow_visible]
@@ -7406,9 +7439,11 @@ class SharedSlam:
         flowed_pts = flowed[:, 0]
         rev_pts = reversed_pixels[:, 0]
         # Only fallback tracking consumes this cache. Gather the needed rows then.
+        # The expanded LK batch can include stereo geometry that has no map ID.
         self._cached_lk_flow = (
             int(index), id(self.previous_gray), id(self.current_gray), prev_tracks,
-            flowed, ok, reversed_pixels, back_ok,
+            flowed[:primary_count], ok[:primary_count],
+            reversed_pixels[:primary_count], back_ok[:primary_count],
         )
         fb_err = np.linalg.norm(rev_pts - old_pixels[:, 0], axis=1)
         lk_valid = (
@@ -7420,10 +7455,20 @@ class SharedSlam:
             & (flowed_pts[:, 1] >= 0.0) & (flowed_pts[:, 1] < size[1])
         )
         valid_j = np.flatnonzero(lk_valid)
-        if len(valid_j) < 80:
+        # LK rows are ordered with persistent landmarks first.
+        common_count = len(valid_j)
+        if refresh is not None:
+            common_count = int(np.searchsorted(valid_j, primary_count))
+            if common_count >= 94:
+                valid_j = valid_j[:common_count]
+                refresh = None
+            elif common_count < MIN_PERSISTENT_TRACKS:
+                return None
+        fit_minimum = MIN_REFRESH_SUPPORT if use_refresh and refresh is None else 80
+        if len(valid_j) < fit_minimum:
             return None
 
-        cand_ids = [prev_tracks[j][0] for j in valid_j.tolist()]
+        cand_ids = [prev_tracks[j][0] for j in valid_j[:common_count].tolist()]
         cand_pos = world_all[valid_j]
         cand_obs = flowed_pts[valid_j].astype(np.float64, copy=False)
         diag = {}
@@ -7435,7 +7480,7 @@ class SharedSlam:
         if solution is None:
             return None
         pose, inlier_idx, med_err = solution
-        if (len(inlier_idx) < 80 or med_err > 0.85
+        if (len(inlier_idx) < fit_minimum or med_err > 0.85
                 or diag.get("candidate_feature_cells", 0) < 6):
             return None
 
@@ -7449,19 +7494,27 @@ class SharedSlam:
         weights_uv_uR = None
         if use_hetero:
             right_for_refine, weights_uv_uR = self._stereo_pose_weights(
-                cand_ids, cand_obs, measured_right,
+                cand_ids, cand_obs[:common_count], measured_right[:common_count],
             )
-        refined, stereo_diag = refine_stereo_map_pose(
-            solution, cand_pos, cand_obs, right_for_refine, self.K,
-            self.stereo.baseline, size, self.config.min_inliers,
-            self.stereo.disparity_offset,
-            use_analytic=True,
-            weights_uv_uR=weights_uv_uR,
-        )
+            if refresh is not None:
+                right_for_refine = np.concatenate((right_for_refine, measured_right[common_count:]))
+                weights_uv_uR = np.pad(weights_uv_uR, ((0, len(cand_obs) - common_count), (0, 0)),
+                                       constant_values=1.0)
+        if refresh is None:
+            refined, _ = refine_stereo_map_pose(
+                solution, cand_pos, cand_obs, right_for_refine, self.K,
+                self.stereo.baseline, size, self.config.min_inliers,
+                self.stereo.disparity_offset, use_analytic=True, weights_uv_uR=weights_uv_uR,
+            )
+        else:
+            refined = refine_with_lazy_stereo_geometry(
+                solution, cand_pos, cand_obs, right_for_refine, common_count, self.K,
+                self.stereo, size, self.config.min_inliers, weights_uv_uR,
+            )
         if refined is None:
             return None
         pose, inlier_idx, med_err = refined
-        if (len(inlier_idx) < 80 or med_err > 0.85
+        if (len(inlier_idx) < fit_minimum or med_err > 0.85
                 or int(np.isfinite(measured_right[inlier_idx]).sum()) < 40):
             return None
 
@@ -7475,10 +7528,25 @@ class SharedSlam:
             if kf_trans_m >= 12.0 or kf_rot_deg >= 12.0:
                 return None
 
+        if refresh is not None:
+            keep = valid_j[inlier_idx[inlier_idx >= common_count]]
+            self._lazy_stereo_geometry = refresh.advance(index, keep - primary_count, flowed_pts[keep])
+        elif use_refresh and len(inlier_idx) < 80:
+            tracked_pixels = cand_obs[inlier_idx]
+            if len(inlier_idx) / len(cand_obs) < .72 or coverage(tracked_pixels, size) < 6:
+                return None
+            seeded = seed_lazy_stereo_geometry(index, last_kf, pose, self.current_gray, tracked_pixels,
+                                              size, self._measure_map_stereo_pixels)
+            if seeded is None:
+                return None
+            self._lazy_stereo_geometry = seeded
+
         # Commit non-keyframe tracking state and landmark miss aging.
         inlier_id_set = set()
         accepted_tracks = []
         for idx_i in inlier_idx.tolist():
+            if idx_i >= common_count:
+                continue
             lid = int(cand_ids[idx_i])
             inlier_id_set.add(lid)
             accepted_tracks.append((lid, flowed_pts[valid_j[idx_i]].copy()))
@@ -7533,7 +7601,7 @@ class SharedSlam:
                 self.map.revision += 1
                 self.map.geometry_revision += 1
         info = {
-            "num_matches": len(cand_ids),
+            "num_matches": len(cand_obs),
             "num_inliers": len(inlier_idx),
             "reprojection_error": float(med_err),
             "tracking_ok": True,

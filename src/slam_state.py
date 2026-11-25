@@ -496,17 +496,20 @@ class MapState:
                         bulk_anchor_updates.append(
                             (upd_ids, upd_slots, np.asarray(upd_rows, dtype=np.float64))
                         )
+                reuse_anchor_slots = (self.index._position_stamps is not None
+                                      and not landmark_updates and len(moved_kfs) >= 12)
                 for anchor_id in moved_kfs:
                     lm_set = anc_map.get(anchor_id)
                     if not lm_set:
                         continue
-                    if landmark_updates:
-                        id_list = [i for i in lm_set if i not in landmark_updates]
+                    if reuse_anchor_slots:
+                        id_list, slots = self.index._correction_slots_for_anchor(anchor_id)
                     else:
-                        id_list = list(lm_set)
-                    if not id_list:
-                        continue
-                    slots = [id_to_slot[i] for i in id_list]
+                        id_list = ([i for i in lm_set if i not in landmark_updates]
+                                   if landmark_updates else list(lm_set))
+                        if not id_list:
+                            continue
+                        slots = [id_to_slot[i] for i in id_list]
                     rotation, scale, translation = corrections[anchor_id]
                     new_arr = (scale * (idx_pos[slots] @ rotation.T)) + translation
                     if not np.isfinite(new_arr).all():

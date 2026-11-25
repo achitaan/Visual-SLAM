@@ -63,6 +63,7 @@ class IncrementalMapIndex:
         # Reverse anchor index: anchor_keyframe_id -> set of landmark_ids anchored there
         self._anchor_landmarks: dict[int, set[int]] = {}
         self._landmark_anchor: dict[int, int] = {}
+        self._anchor_correction_slots: dict[int, tuple[list[int], np.ndarray]] = {}
 
         # Visibility/found counters for stale single-view pruning
         self._visible_counts: dict[int, int] = {}
@@ -119,6 +120,15 @@ class IncrementalMapIndex:
             stamps[slots] = next_epoch
         self._position_epoch = next_epoch
         return True
+
+    def _correction_slots_for_anchor(self, anchor_id: int) -> tuple[list[int], np.ndarray]:
+        cached = self._anchor_correction_slots.get(anchor_id)
+        if cached is None:
+            identities = list(self._anchor_landmarks[anchor_id])
+            slots = np.fromiter((self._id_to_slot[i] for i in identities), np.intp, count=len(identities))
+            cached = identities, slots
+            self._anchor_correction_slots[anchor_id] = cached
+        return cached
 
     def _add_claim(self, landmark_id: int, keyframe_id: int, pixel: Any) -> None:
         pkey = _pixel_identity_key(pixel)
@@ -193,6 +203,11 @@ class IncrementalMapIndex:
         lm_id = landmark.id
         if type(lm_id) is not int:
             lm_id = int(lm_id)
+        cached_slots = self._anchor_correction_slots
+        if cached_slots:
+            cached_slots.pop(self._landmark_anchor.get(lm_id), None)
+            if landmark.anchor is not None:
+                cached_slots.pop(int(landmark.anchor), None)
         raw_pos = landmark.position
         if type(raw_pos) is np.ndarray and raw_pos.dtype == np.float64 and raw_pos.shape == (3,):
             pos = raw_pos
@@ -312,6 +327,7 @@ class IncrementalMapIndex:
         count = len(ids_list)
         if count == 0:
             return
+        self._anchor_correction_slots.pop(anchor_id, None)
         start = self._size
         end = start + count
         while end > self._capacity:
@@ -489,6 +505,9 @@ class IncrementalMapIndex:
 
     def on_landmark_removed(self, landmark_id: int) -> None:
         lm_id = int(landmark_id)
+        cached_slots = self._anchor_correction_slots
+        if cached_slots:
+            cached_slots.pop(self._landmark_anchor.get(lm_id), None)
         if self._position_landmarks is not None:
             landmark = self._position_landmarks.pop(lm_id, None)
             if landmark is not None:
@@ -498,6 +517,8 @@ class IncrementalMapIndex:
             last = self._size - 1
             if slot != last:
                 moved_id = int(self._ids[last])
+                if cached_slots:
+                    cached_slots.pop(self._landmark_anchor.get(moved_id), None)
                 self._ids[slot] = moved_id
                 self._positions[slot] = self._positions[last]
                 if self._position_stamps is not None:
@@ -799,6 +820,7 @@ class IncrementalMapIndex:
 
     def rebuild_from_map(self, map_state: Any) -> None:
         """Synchronize index completely from a MapState (e.g., after external edits)."""
+        self._anchor_correction_slots.clear()
         bound = self._position_landmarks
         if bound is not None:
             for landmark in bound.values():

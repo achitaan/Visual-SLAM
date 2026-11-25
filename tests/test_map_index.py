@@ -17,6 +17,45 @@ from map_index import IncrementalMapIndex
 from slam_state import Landmark, MapState, Observation
 
 
+def test_anchor_correction_slots_follow_insertions_and_swap_removal():
+    state = MapState(metric=True, defer_bulk_landmark_positions=True)
+    index = state.index
+    descriptor = np.zeros(8, dtype=np.float32)
+
+    def add(anchor, x):
+        return state.add_landmark([x, 0., 10.], descriptor, anchor,
+                                  {anchor: Observation(np.array([x, 20.], dtype=np.float32))})
+
+    def assert_slots(anchor):
+        ids, slots = index._correction_slots_for_anchor(anchor)
+        assert ids == list(index._anchor_landmarks[anchor])
+        np.testing.assert_array_equal(index._ids[slots], ids)
+        return slots
+
+    removed = add(0, 10.)
+    add(0, 20.)
+    add(2, 30.)
+    moved = add(1, 40.)
+    slots_before = assert_slots(1)
+    assert_slots(0)
+    unchanged = assert_slots(2)
+
+    state.remove_landmark(removed)
+    assert_slots(0)
+    slots_after = assert_slots(1)
+    # Dense index deletion fills the vacated slot with the last landmark.
+    assert slots_before[0] == 3 and slots_after[0] == 0 and index._ids[0] == moved
+    assert assert_slots(2) is unchanged
+
+    state.add_landmarks_batch(np.array([[1., 0., 10.]]), descriptor[None], 0,
+                              np.array([[50., 20.]]), np.array([40.]), [0])
+    assert len(assert_slots(0)) == 2
+    index.rebuild_from_map(state)
+    assert assert_slots(2) is not unchanged
+    assert_slots(0)
+    assert_slots(1)
+
+
 def test_incremental_conflict_tracking_matches_bruteforce():
     state = MapState(metric=True)
     desc = np.zeros(128, dtype=np.float32)

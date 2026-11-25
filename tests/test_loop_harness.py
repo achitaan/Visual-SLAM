@@ -395,9 +395,12 @@ def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkey
         opencv_threads=2,
         max_frames=2,
         matching_backend="cuda",
+        sift_pyramid_backend="cuda-compact",
     )
     idx = cmd_cuda.index("--matching-backend")
     assert cmd_cuda[idx + 1] == "cuda"
+    idx = cmd_cuda.index("--sift-pyramid-backend")
+    assert cmd_cuda[idx + 1] == "cuda-compact"
 
     with pytest.raises(ValueError):
         build_airgapped_estimator_invocation(

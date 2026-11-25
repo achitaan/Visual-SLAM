@@ -8,6 +8,9 @@ import numpy as np
 from stage_profile import StageProfile
 
 
+SIFT_PYRAMID_BACKENDS = ("cpu", "cuda", "cuda-compact")
+
+
 @dataclass(frozen=True)
 class PerformanceConfig:
     """Performance choices kept separate from estimator accuracy settings."""
@@ -34,8 +37,8 @@ class PerformanceConfig:
             raise ValueError("Stereo verification backend must be cpu or cuda")
         if self.optical_flow_backend not in ("cpu", "cuda"):
             raise ValueError("Optical flow backend must be cpu or cuda")
-        if self.sift_pyramid_backend not in ("cpu", "cuda"):
-            raise ValueError("SIFT pyramid backend must be cpu or cuda")
+        if self.sift_pyramid_backend not in SIFT_PYRAMID_BACKENDS:
+            raise ValueError("SIFT pyramid backend must be cpu, cuda or cuda-compact")
 
 
 # Keep the old import available without maintaining a second profiler.

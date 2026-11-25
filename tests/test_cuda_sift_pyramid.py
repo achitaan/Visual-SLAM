@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from cuda_sift_pyramid import create_cuda_sift_pyramid
-from frontend_features import extract_grid_bucketed_sift
+from frontend_features import SiftDescriptorReadback, extract_grid_bucketed_sift
 from native_accel import extract_sift_grid_avx512, sift_pyramid_available
 
 
@@ -71,3 +71,51 @@ def test_native_sift_rejects_a_truncated_cuda_pyramid():
         pytest.skip("native SIFT pyramid consumer is unavailable")
     # No valid octave layout can fit in one int16 sample.
     assert extract_sift_grid_avx512(_texture(), pyramid=np.zeros(1, dtype=np.int16)) is None
+
+
+@pytest.mark.parametrize("first_octave", [0, -1])
+def test_compact_cuda_sift_matches_native_features(first_octave):
+    cuda, reason = create_cuda_sift_pyramid(compact=True)
+    if cuda is None:
+        pytest.skip(reason)
+
+    gray = _texture()[:, ::-1]
+    options = dict(target_features=160, first_octave=first_octave)
+    expected = extract_sift_grid_avx512(gray, **options)
+    actual = cuda.extract_deferred(gray, **options)
+    assert actual is not None and len(actual[0]) == 160, cuda.report()
+    assert isinstance(actual[1], SiftDescriptorReadback)
+    # Reuse the same workspace before consuming the first copy.
+    next_result = cuda.extract(_texture(), **options)
+    assert next_result is not None, cuda.report()
+    pixels, pending, octaves, angles, responses = actual
+    descriptors = pending.finish()
+    assert isinstance(descriptors, np.ndarray) and descriptors.dtype == np.float32
+    assert descriptors.shape == (160, 128)
+    # The native SIFT implementation supplies the reference keypoint order and histogram.
+    # CUDA and AVX-512 can round the final orientation and quantized bins differently.
+    np.testing.assert_array_equal(pixels, expected[0])
+    np.testing.assert_allclose(descriptors, expected[1], rtol=0, atol=1)
+    np.testing.assert_array_equal(octaves, expected[2])
+    np.testing.assert_allclose(angles, expected[3], rtol=0, atol=2e-4)
+    np.testing.assert_array_equal(responses, expected[4])
+    assert cuda.report()["compact_frames"] == 2
+
+
+def test_compact_cuda_sift_uses_exact_legacy_path_on_seed_overflow(monkeypatch):
+    from cuda_sift_compact import _CompactSiftWorkspace
+
+    cuda, reason = create_cuda_sift_pyramid(compact=True)
+    if cuda is None:
+        pytest.skip(reason)
+    monkeypatch.setattr(_CompactSiftWorkspace, "seed_capacity", 1)
+    gray = _texture()
+    options = dict(target_features=160, first_octave=0)
+    expected = extract_sift_grid_avx512(gray, **options)
+    actual = cuda.extract(gray, **options)
+    assert actual is not None, cuda.report()
+    for result, reference in zip(actual, expected):
+        assert result.tobytes() == reference.tobytes()
+    assert cuda.report()["cuda_frames"] == 1
+    assert cuda.report()["compact_frames"] == 0
+    assert cuda.report()["compact_seed_overflows"] == 1

@@ -169,6 +169,24 @@ In a paired full KITTI 00 benchmark, the option raised throughput from 55.23 to
 56.52 FPS. ATE went from 2.34 m to 2.23 m, translation drift went from 0.995% to
 0.971%, and both runs lost zero frames.
 
+For compact SIFT on Windows, rebuild `fast_sift` and replace
+`--sift-pyramid-backend cuda` with `--sift-pyramid-backend cuda-compact` in the
+900-feature command with seeded PnP. This backend finds extrema and builds
+descriptors on CUDA. The CPU selects grid-bucketed keypoints, and the pipelined
+frontend overlaps descriptor readback with stereo verification. Use the same
+AVX-512 CPU and CUDA-enabled PyTorch requirements as for `cuda`. Descriptor
+rounding can differ between CUDA and the native CPU extractor.
+
+Check `sift_pyramid_backend.compact_frames` in `run.json` to verify that the
+compact path ran. Frames that exceed the compact extrema buffer use the
+regular CUDA pyramid. If the compact backend is unavailable or fails, feature
+extraction falls back to the CPU.
+
+In a full KITTI 00 comparison on the GTX 1660 SUPER, compact SIFT reached
+57.31 FPS versus 54.34 FPS with the regular CUDA pyramid. Both runs processed
+all 4,541 frames with zero lost frames. ATE was 2.29 m with compact SIFT and
+2.34 m with the regular pyramid.
+
 Start the dashboard in a second terminal:
 
 ```sh

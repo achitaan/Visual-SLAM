@@ -385,6 +385,23 @@ def sift_pyramid_available() -> bool:
             and hasattr(lib, "sift_pyramid_parameters"))
 
 
+def compact_sift_functions():
+    """Return the native compact detector and descriptor weights, if available."""
+    lib = _get_sift_lib()
+    if lib is None or not hasattr(lib, "detect_sift_sparse_seeds") or not hasattr(lib, "copy_sift_descriptor_weights"):
+        return None
+    detect = lib.detect_sift_sparse_seeds
+    detect.argtypes = [
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_int32,
+        *([ctypes.c_int32] * 5), ctypes.c_float, ctypes.c_int32, *([ctypes.c_void_p] * 6),
+    ]
+    detect.restype = ctypes.c_int32
+    copy_weights = lib.copy_sift_descriptor_weights
+    copy_weights.argtypes = [ctypes.c_void_p]
+    copy_weights.restype = None
+    return detect, copy_weights
+
+
 def sift_pyramid_parameters(shape: tuple[int, int], first_octave: int):
     """Return the octave shapes and exact integer coefficients from the native SIFT kernel."""
     lib = _get_sift_lib()

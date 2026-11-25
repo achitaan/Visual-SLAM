@@ -22,7 +22,7 @@ def _blocks(length, size):
 
 
 class _SiftPyramidWorkspace:
-    def __init__(self, backend, shape, first_octave, parameters):
+    def __init__(self, backend, shape, first_octave, parameters, *, readback=True):
         shapes, weights, radii = parameters
         self.key = shape, first_octave
         self._torch = torch = backend._torch
@@ -38,21 +38,25 @@ class _SiftPyramidWorkspace:
         if size > np.iinfo(np.int32).max:
             raise ValueError("CUDA SIFT image exceeds the pyramid index range")
         self._host_input = torch.empty(shape, dtype=torch.uint8, pin_memory=True)
-        self._host_output = torch.empty(self._output_count, dtype=torch.int16, pin_memory=True)
         self._input = self._host_input.numpy()
-        self._output = self._host_output.numpy()
         self._image = torch.empty(shape, dtype=torch.uint8, device=backend._device)
         self._pyramid = torch.empty(size, dtype=torch.int16, device=backend._device)
         self._weights = torch.from_numpy(weights).to(backend._device)
-        self._graph = None
+        if readback:
+            self._host_output = torch.empty(self._output_count, dtype=torch.int16, pin_memory=True)
+            self._output = self._host_output.numpy()
+            self._graph = self._capture_graph(self._launch_pyramid)
+
+    def _capture_graph(self, launch):
+        torch = self._torch
         try:
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph, stream=self._stream, capture_error_mode="thread_local"):
-                self._launch_pyramid()
-            self._graph = graph
+                launch()
+            return graph
         except (AttributeError, RuntimeError, TypeError):
             # Direct launches also support drivers where graph capture is unavailable.
-            pass
+            return None
 
     def _call(self, name, grid, block, *args):
         values = [ctypes.c_int32(arg) if isinstance(arg, int) else _VOID(arg.data_ptr()) for arg in args]
@@ -146,7 +150,7 @@ class CudaSiftPyramid:
                     "pyramid_s": self._pyramid_s, "native_descriptors_s": self._native_s}
 
 
-def create_cuda_sift_pyramid():
+def create_cuda_sift_pyramid(*, compact=False):
     if sys.platform != "win32":
         return None, "CUDA SIFT currently loads the Windows PyTorch NVRTC library"
     if not sift_pyramid_available():
@@ -157,6 +161,10 @@ def create_cuda_sift_pyramid():
         if not torch.version.cuda or not torch.cuda.is_available():
             return None, "PyTorch cannot access an NVIDIA CUDA device"
         device = torch.device("cuda", torch.cuda.current_device())
+        if compact:
+            from cuda_sift_compact import CudaCompactSift
+
+            return CudaCompactSift(torch, device), None
         return CudaSiftPyramid(torch, device), None
     except (AttributeError, ImportError, OSError, RuntimeError) as error:
         return None, str(error)

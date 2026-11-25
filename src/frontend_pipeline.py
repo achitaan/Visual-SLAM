@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import cv2 as cv
 import numpy as np
 
-from frontend_features import extract_grid_bucketed_sift, unpack_sift_octave
+from frontend_features import SiftDescriptorReadback, extract_grid_bucketed_sift, unpack_sift_octave
 from stereo_depth import verify_stereo_depth_candidates
 
 if TYPE_CHECKING:
@@ -358,11 +358,8 @@ def extract_frame_owned(
                 _compute_disparity_f32, sgbm, gray, right_gray, half_sgbm=half_sgbm
             )
 
-    cuda_disparity = None
-    if cuda_frontend is not None:
-        pixels, desc, octaves, cuda_disparity = cuda_frontend.frame(gray, right_gray if need_disparity else None)
-    elif getattr(config, "use_grid_bucketing", False):
-        bucketed = extract_grid_bucketed_sift(
+    def grid_sift(extractor):
+        return extract_grid_bucketed_sift(
             gray,
             target_features=config.features,
             grid_cols=16,
@@ -370,12 +367,16 @@ def extract_frame_owned(
             contrast_threshold=config.stereo_feature_contrast_threshold,
             detector=detector,
             build_cv_keypoints=False,
-            native_sift=native_sift,
+            native_sift=extractor,
             detection_scale=getattr(config, "sift_detection_scale", 1.0),
         )
-        pixels = bucketed.pixels
-        desc = bucketed.descriptors
-        octaves = bucketed.octaves
+
+    cuda_disparity = None
+    if cuda_frontend is not None:
+        pixels, desc, octaves, cuda_disparity = cuda_frontend.frame(gray, right_gray if need_disparity else None)
+    elif getattr(config, "use_grid_bucketing", False):
+        bucketed = grid_sift(native_sift)
+        pixels, desc, octaves = bucketed.pixels, bucketed.descriptors, bucketed.octaves
     else:
         keypoints, desc = detector.detectAndCompute(gray, None)
         pixels = np.array([k.pt for k in keypoints], np.float32).reshape(-1, 2)
@@ -408,18 +409,22 @@ def extract_frame_owned(
         capture_supported = bool(
             config.stereo_pose_arbitration or config.stereo_raw_reference_retry
         )
-        points, right_u, supported_extraction, verification_counts = _measure_stereo_pixels_owned(
-            pixels,
-            disparity_map=disparity,
-            left_gray_f32=left_gray_f32,
-            right_gray_f32=right_gray_f32,
-            Q=stereo_Q,
-            inverse_K=inverse_K,
-            stereo_depth_policy=config.stereo_depth_policy,
-            stereo_search_config=stereo_search_config,
-            capture_supported=capture_supported,
-            stereo_verifier=stereo_verifier,
-        )
+
+        def measure_stereo(image_pixels):
+            return _measure_stereo_pixels_owned(
+                image_pixels,
+                disparity_map=disparity,
+                left_gray_f32=left_gray_f32,
+                right_gray_f32=right_gray_f32,
+                Q=stereo_Q,
+                inverse_K=inverse_K,
+                stereo_depth_policy=config.stereo_depth_policy,
+                stereo_search_config=stereo_search_config,
+                capture_supported=capture_supported,
+                stereo_verifier=stereo_verifier,
+            )
+
+        points, right_u, supported_extraction, verification_counts = measure_stereo(pixels)
 
     lk_pyramid = precomputed_lk_pyramid
     if lk_pyramid is None:
@@ -430,6 +435,18 @@ def extract_frame_owned(
             lk_pyramid = builder(gray, max_level=lk_levels)
         except Exception:
             lk_pyramid = None
+
+    if isinstance(desc, SiftDescriptorReadback):
+        desc = desc.finish()
+        if desc is None:
+            # The CPU detector can select different pixels. Bind depth to those rows.
+            bucketed = grid_sift(None)
+            pixels, desc, octaves = bucketed.pixels, bucketed.descriptors, bucketed.octaves
+            if has_stereo:
+                points, right_u, supported_extraction, verification_counts = measure_stereo(pixels)
+            else:
+                points = np.full((len(pixels), 3), np.nan)
+                right_u = np.full(len(pixels), np.nan)
 
     for _arr in (pixels, desc):
         if isinstance(_arr, np.ndarray) and _arr.base is None:
@@ -490,7 +507,8 @@ class FrontendExtractionPipeline:
         self._stereo_search_config = slam.stereo_search_config
         self._cuda_frontend = getattr(slam, "cuda_frontend", None)
         sift_pyramid = getattr(slam, "cuda_sift_pyramid", None)
-        self._native_sift = None if sift_pyramid is None else sift_pyramid.extract
+        self._native_sift = (None if sift_pyramid is None else
+                             getattr(sift_pyramid, "extract_deferred", sift_pyramid.extract))
         self._stereo_verifier = getattr(slam, "cuda_stereo_verifier", None)
         self._pyramid_builder = (slam._build_tracking_pyramid
                                  if getattr(slam, "cuda_optical_flow", None) is not None else None)

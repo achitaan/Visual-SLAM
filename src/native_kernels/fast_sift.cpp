@@ -359,6 +359,18 @@ void downsample_2x_i16(const int16_t* __restrict src, int32_t sh, int32_t sw,
     }
 }
 
+struct SiftExtremumSeed {
+    int32_t order, octave, row, column, layer;
+    float xc, xr, xi, value, dx, dy, ds, dxx, dyy, dxy;
+};
+static_assert(sizeof(SiftExtremumSeed) == 60);
+
+struct SiftDescriptorKeypoint {
+    float x, y, cos_scale, sin_scale, angle;
+    int32_t offset, width, height;
+};
+static_assert(sizeof(SiftDescriptorKeypoint) == 32);
+
 struct RawExtremum {
     float x, y, response, scl_octv;
     int32_t ri, ci, octave_idx, layer, pyr_o;
@@ -722,6 +734,7 @@ struct SiftWorkspace {
 
 thread_local SiftWorkspace g_ws;
 
+template<bool Compact = false>
 int32_t extract_sift_grid(
     const uint8_t* gray,
     int32_t h,
@@ -738,7 +751,10 @@ int32_t extract_sift_grid(
     float* out_responses,
     int32_t* out_count,
     const int16_t* packed_pyramid,
-    size_t packed_count
+    size_t packed_count,
+    const SiftExtremumSeed* seeds = nullptr,
+    int32_t seed_count = 0,
+    SiftDescriptorKeypoint* descriptor_keys = nullptr
 ) {
     if (h < 16 || w < 16 || target_features <= 0) {
         *out_count = 0;
@@ -756,7 +772,16 @@ int32_t extract_sift_grid(
     const int16_t* gaussian[SIFT_OCTAVES][SIFT_LAYERS];
     const int16_t* dog[SIFT_OCTAVES][SIFT_LAYERS + 2];
     float sig[nG];
-    if (packed_pyramid != nullptr) {
+    if constexpr (Compact) {
+        size_t required = 0;
+        for (int32_t o = 0; o < n_octaves; ++o) required += SIFT_LAYERS * oct_h[o] * oct_w[o];
+        if (packed_count != required || seed_count < 0) return 0;
+        const int16_t* next = packed_pyramid;
+        for (int32_t o = 0; o < n_octaves; ++o) {
+            const size_t size = static_cast<size_t>(oct_h[o]) * oct_w[o];
+            for (auto& layer : gaussian[o]) { layer = next; next += size; }
+        }
+    } else if (packed_pyramid != nullptr) {
         // Each octave stores Gaussian layers 1..3 and all five DoG planes.
         constexpr size_t planes = 2 * SIFT_LAYERS + 2;
         size_t required = 0;
@@ -792,6 +817,36 @@ int32_t extract_sift_grid(
     std::vector<RawExtremum> raw_ext;
     raw_ext.reserve(8192);
 
+    if constexpr (Compact) {
+        std::vector<const SiftExtremumSeed*> ordered;
+        ordered.reserve(seed_count);
+        for (int32_t row = 0; row < seed_count; ++row) ordered.push_back(&seeds[row]);
+        std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) {
+            return a->order < b->order;
+        });
+        for (const auto* seed : ordered) {
+            if (seed->octave < 0 || seed->octave >= n_octaves
+                || seed->layer < 1 || seed->layer > nOctaveLayers) return 0;
+            const int32_t actual_oct = seed->octave + first_octave;
+            const float oct_scale = (actual_oct >= 0)
+                ? static_cast<float>(1 << actual_oct)
+                : (1.0f / static_cast<float>(1 << (-actual_oct)));
+            const float contr = (seed->value + 0.5f * (seed->dx * seed->xc + seed->dy * seed->xr
+                                + seed->ds * seed->xi)) * INV_DOG_Q;
+            if (std::abs(contr) < final_thresh) continue;
+            const float tr = seed->dxx + seed->dyy;
+            const float det = seed->dxx * seed->dyy - seed->dxy * seed->dxy;
+            if (det <= 0.0f || tr * tr * edgeThreshold >= (edgeThreshold + 1.0f) * (edgeThreshold + 1.0f) * det)
+                continue;
+            const float x = (static_cast<float>(seed->column) + seed->xc) * oct_scale;
+            const float y = (static_cast<float>(seed->row) + seed->xr) * oct_scale;
+            if (x < 0.0f || x >= static_cast<float>(w) || y < 0.0f || y >= static_cast<float>(h))
+                continue;
+            const float scale = sigma * std::pow(2.0f, (static_cast<float>(seed->layer) + seed->xi) / nOctaveLayers);
+            raw_ext.push_back({x, y, std::abs(contr) / 255.0f, scale, seed->row, seed->column,
+                              actual_oct, seed->layer, seed->octave});
+        }
+    } else {
     // 1+2. Unified Q7 gpyr + Q9 dogpyr 32-wide AVX-512BW pyramid and extrema scan
     for (int32_t o = 0; o < n_octaves; ++o) {
         const int32_t oh = oct_h[o];
@@ -985,6 +1040,8 @@ int32_t extract_sift_grid(
         }
     }
 
+    }
+
     const int32_t total_ext = static_cast<int32_t>(raw_ext.size());
     if (total_ext == 0) {
         *out_count = 0;
@@ -1112,13 +1169,23 @@ int32_t extract_sift_grid(
             : static_cast<float>(1 << (-kp.octave_idx));
         const float ori = 360.0f - kp.angle;
         const float adj_ori = (ori >= 360.0f ? 0.0f : ori);
-        calc_sift_descriptor_grid_avx512<int16_t>(
-            gaussian[o][kp.layer - 1],
-            oct_h[o], oct_w[o],
-            kp.x * inv_oct_scale, kp.y * inv_oct_scale,
-            adj_ori, kp.scl_octv,
-            out_descriptors + static_cast<size_t>(idx) * 128
-        );
+        if constexpr (Compact) {
+            const float hist_width = 3.0f * kp.scl_octv;
+            descriptor_keys[idx] = {
+                kp.x * inv_oct_scale, kp.y * inv_oct_scale,
+                std::cos(adj_ori * DEG2RAD) * hist_width,
+                std::sin(adj_ori * DEG2RAD) * hist_width, adj_ori,
+                static_cast<int32_t>(gaussian[o][kp.layer - 1] - packed_pyramid), oct_w[o], oct_h[o],
+            };
+        } else {
+            calc_sift_descriptor_grid_avx512<int16_t>(
+                gaussian[o][kp.layer - 1],
+                oct_h[o], oct_w[o],
+                kp.x * inv_oct_scale, kp.y * inv_oct_scale,
+                adj_ori, kp.scl_octv,
+                out_descriptors + static_cast<size_t>(idx) * 128
+            );
+        }
         out_pixels[2 * idx + 0] = kp.x;
         out_pixels[2 * idx + 1] = kp.y;
         out_octaves[idx] = static_cast<int16_t>(kp.octave_idx);
@@ -1166,4 +1233,22 @@ int32_t extract_sift_pyramid_grid_avx512(
         out_count, packed, count);
 }
 
+void copy_sift_descriptor_weights(float* weights) {
+    std::memcpy(weights + 0 * 256, g_desc_lut.w00, sizeof(g_desc_lut.w00));
+    std::memcpy(weights + 1 * 256, g_desc_lut.w01, sizeof(g_desc_lut.w01));
+    std::memcpy(weights + 2 * 256, g_desc_lut.w10, sizeof(g_desc_lut.w10));
+    std::memcpy(weights + 3 * 256, g_desc_lut.w11, sizeof(g_desc_lut.w11));
+}
+
+int32_t detect_sift_sparse_seeds(
+    const int16_t* packed, size_t packed_count, const SiftExtremumSeed* seeds, int32_t seed_count,
+    int32_t h, int32_t w, int32_t target_features, int32_t grid_cols, int32_t grid_rows,
+    float contrast_threshold, int32_t first_octave, float* out_pixels, SiftDescriptorKeypoint* keys,
+    int16_t* out_octaves, float* out_angles, float* out_responses, int32_t* out_count) {
+    if (!packed || !seeds || !keys || h < 16 || w < 16 || h > 8192 || w > 8192
+        || (first_octave != -1 && first_octave != 0)) return 0;
+    return extract_sift_grid<true>(nullptr, h, w, target_features, grid_cols, grid_rows,
+        contrast_threshold, first_octave, out_pixels, nullptr, out_octaves, out_angles,
+        out_responses, out_count, packed, packed_count, seeds, seed_count, keys);
+}
 }  // extern "C"

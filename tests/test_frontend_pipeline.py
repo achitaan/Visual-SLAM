@@ -14,6 +14,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from frontend_features import SiftDescriptorReadback
 from frontend_pipeline import (
     ExtractedFrame,
     FrontendExtractionPipeline,
@@ -60,6 +61,43 @@ def _make_stereo_camera() -> tuple[np.ndarray, StereoCamera]:
         speckleRange=32,
     )
     return K, StereoCamera(sgbm, Q, baseline)
+
+
+@pytest.mark.parametrize("readback_ok", [True, False])
+def test_stereo_work_precedes_descriptor_readback(monkeypatch, readback_ok):
+    K, stereo = _make_stereo_camera()
+    left, right = _synthetic_stereo_pair()
+    config = MappingConfig.from_preset("improved_stereo", stereo=True, stereo_depth_policy="verified_all")
+    calls = []
+    gpu_pixels = np.array([[7, 9]], dtype=np.float32)
+    gpu_descriptors = np.ones((1, 128), dtype=np.float32)
+
+    def measure(pixels, **_):
+        calls.append("stereo")
+        return np.column_stack((pixels, np.ones(len(pixels)))), pixels[:, 0] - 7, None, {}
+
+    def wait():
+        calls.append("readback")
+        return gpu_descriptors if readback_ok else None
+
+    def native_sift(*_, **__):
+        return gpu_pixels, SiftDescriptorReadback(wait), np.array([0]), np.array([0.0]), np.array([1.0])
+
+    monkeypatch.setattr("frontend_pipeline._measure_stereo_pixels_owned", measure)
+    arguments = dict(config=config, inverse_K=np.linalg.inv(K), stereo_Q=stereo.Q,
+                     stereo_search_config=None, detector=_clone_sift(config, has_stereo=True))
+    frame = extract_frame_owned(0, left, right, native_sift=native_sift, **arguments)
+    assert calls[:2] == ["stereo", "readback"]
+    if readback_ok:
+        assert len(calls) == 2
+        np.testing.assert_array_equal(frame.pixels, gpu_pixels)
+        np.testing.assert_array_equal(frame.descriptors, gpu_descriptors)
+    else:
+        assert calls == ["stereo", "readback", "stereo"]
+        cpu_frame = extract_frame_owned(0, left, right, **arguments)
+        assert len(frame.pixels) > 1
+        for field in ("pixels", "descriptors", "octaves", "points", "right_u"):
+            assert getattr(frame, field).tobytes() == getattr(cpu_frame, field).tobytes()
 
 
 @pytest.mark.parametrize("preset", ["verified_baseline", "improved_stereo"])

@@ -31,7 +31,7 @@ import numpy as np
 from eval_kitti import _segment_weighted_mean
 from kitti import image_paths, load_poses_txt, save_poses_txt
 from metrics import evaluate_trajectory
-from performance import PerformanceConfig
+from performance import PerformanceConfig, SIFT_PYRAMID_BACKENDS
 from shared_slam import MAPPING_PRESET_NAMES, MappingConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -257,8 +257,8 @@ def build_airgapped_estimator_invocation(
         raise ValueError("Stereo verification backend must be cpu or cuda")
     if optical_flow_backend not in ("cpu", "cuda"):
         raise ValueError("Optical flow backend must be cpu or cuda")
-    if sift_pyramid_backend not in ("cpu", "cuda"):
-        raise ValueError("SIFT pyramid backend must be cpu or cuda")
+    if sift_pyramid_backend not in SIFT_PYRAMID_BACKENDS:
+        raise ValueError("SIFT pyramid backend must be cpu, cuda or cuda-compact")
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
     data_root_resolved = Path(data_root).expanduser().resolve(strict=False)
@@ -581,7 +581,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--frontend-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--stereo-verification-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--optical-flow-backend", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--sift-pyramid-backend", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--sift-pyramid-backend", choices=SIFT_PYRAMID_BACKENDS, default="cpu")
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1506,8 +1506,8 @@ def build_cli_parser() -> argparse.ArgumentParser:
         help="Use fused CUDA forward-backward optical flow in the pipelined stereo estimator on Windows",
     )
     parser.add_argument(
-        "--sift-pyramid-backend", choices=["cpu", "cuda"], default="cpu",
-        help="Build the fixed-point pyramid for native grid-bucketed SIFT on CUDA on Windows",
+        "--sift-pyramid-backend", choices=SIFT_PYRAMID_BACKENDS, default="cpu",
+        help="Use CUDA for the native SIFT pyramid or compact SIFT extraction on Windows",
     )
     parser.add_argument("--mark-baseline", action="store_true")
 

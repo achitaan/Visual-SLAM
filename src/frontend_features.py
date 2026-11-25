@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from numbers import Real
+from typing import Callable
 
 import cv2 as cv
 import numpy as np
@@ -23,11 +24,25 @@ def validate_sift_detection_scale(value) -> float:
     return float(value)
 
 
+class SiftDescriptorReadback:
+    """Resolve one pending descriptor copy to host memory."""
+
+    def __init__(self, wait: Callable[[], np.ndarray | None]):
+        self._wait = wait
+        self._descriptors = None
+
+    def finish(self) -> np.ndarray | None:
+        if self._wait is not None:
+            wait, self._wait = self._wait, None
+            self._descriptors = wait()
+        return self._descriptors
+
+
 @dataclass(frozen=True)
 class BucketedKeypoints:
     keypoints: list[cv.KeyPoint]
     pixels: np.ndarray       # float32 [N, 2]
-    descriptors: np.ndarray  # float32 [N, 128]
+    descriptors: np.ndarray | SiftDescriptorReadback  # float32 [N, 128] after readback
     octaves: np.ndarray      # int16 [N]
     angles: np.ndarray       # float32 [N]
     responses: np.ndarray    # float32 [N]
@@ -147,6 +162,8 @@ def extract_grid_bucketed_sift(
                         keypoint.pt = (float(pixel[0]), float(pixel[1]))
                         keypoint.size *= size_ratio
                 return replace(features, pixels=pixels)
+            if isinstance(features.descriptors, SiftDescriptorReadback):
+                features.descriptors.finish()
 
     if (detector is None or isinstance(detector, cv.SIFT)) and image_gray.dtype == np.uint8:
         from native_accel import extract_sift_grid_avx512

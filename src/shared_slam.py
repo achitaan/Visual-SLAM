@@ -521,11 +521,13 @@ class SharedSlam:
             )
         self.cuda_sift_pyramid = None
         self.cuda_sift_pyramid_reason = None
-        if self.performance.sift_pyramid_backend == "cuda":
+        if self.performance.sift_pyramid_backend != "cpu":
             if self._grid_detector is not None and self.cuda_frontend is None:
                 from cuda_sift_pyramid import create_cuda_sift_pyramid
 
-                self.cuda_sift_pyramid, self.cuda_sift_pyramid_reason = create_cuda_sift_pyramid()
+                self.cuda_sift_pyramid, self.cuda_sift_pyramid_reason = create_cuda_sift_pyramid(
+                    compact=self.performance.sift_pyramid_backend == "cuda-compact",
+                )
             else:
                 self.cuda_sift_pyramid_reason = "CUDA SIFT pyramid requires native grid-bucketed extraction"
         self.cuda_stereo_verifier = None

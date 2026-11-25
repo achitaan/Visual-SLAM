@@ -113,6 +113,23 @@ the selected octave. If the DLL or CUDA is unavailable, extraction uses the
 usual CPU path. Check `sift_pyramid_backend` in `run.json` for the number of
 GPU extractions and any fallback reason.
 
+For the 900-feature KITTI 00 benchmark, use the native CPU SIFT pyramid with
+CUDA matching, sparse stereo verification, and optical flow.
+
+```powershell
+$env:VISUAL_SLAM_SIFT_FIRST_OCTAVE = '0'
+.\.venv\Scripts\python src/loop_harness.py --tier custom --sequences 00 --data-root .datasets/kitti --output-dir results/win_native_cuda_00_900 --openblas-threads 1 --opencv-threads 2 --pipeline-extraction --pipeline-buffer 4 --coalesce-prefetch --no-profile --matching-backend cuda --stereo-depth-policy verified_all --stereo-verification-backend cuda --optical-flow-backend cuda --sift-pyramid-backend cpu --features 900
+Remove-Item Env:VISUAL_SLAM_SIFT_FIRST_OCTAVE
+```
+
+On a Core i5-11400F with a GTX 1660 SUPER, the paired runs processed all 4,541
+frames with live loop closure and zero lost frames.
+
+| Feature budget | FPS | SE(3) ATE | Translation drift |
+| ---: | ---: | ---: | ---: |
+| 1,500 | 41.06 | 2.42 m | 1.028% |
+| 900 | 44.52 | 2.43 m | 1.024% |
+
 Start the dashboard in a second terminal:
 
 ```sh

@@ -32,6 +32,7 @@ class DescriptorMatcher:
         self.cuda_device_capability = None
         self.auto_decisions = {}
         self.cuda_calls = 0
+        self.cuda_integer_calls = 0
         self.cpu_calls = 0
         self.ambiguous_rows = 0
         self.init_elapsed_s = 0.0
@@ -174,15 +175,63 @@ class DescriptorMatcher:
             self.cuda_compute_s += max(comp_dt, 0.0)
         return mappings
 
+    def _integer_directions(self, first, second, ratio):
+        """Use one exact squared-distance matrix for quantized SIFT descriptors."""
+        if (
+            first.ndim != 2 or second.ndim != 2
+            or first.shape[1] != 128 or second.shape[1] != 128
+            or len(first) * len(second) > 4_000_000 or not 0 < ratio < 1
+        ):
+            return None
+        if any(not np.all((a >= 0) & (a <= 255) & (a == np.rint(a))) for a in (first, second)):
+            return None
+
+        torch = self.torch
+        tx_start = perf_counter()
+        query = torch.tensor(first, device="cuda")
+        train = torch.tensor(second, device="cuda")
+        query_norm = torch.tensor(np.einsum("ij,ij->i", first, first), device="cuda")
+        train_norm = torch.tensor(np.einsum("ij,ij->i", second, second), device="cuda")
+        compute_start = perf_counter()
+        # All products, sums and differences are integers with magnitude
+        # below 2**24. Float32 GEMM therefore gives exact squared distances.
+        squared = (query @ train.T).mul_(-2).add_(query_norm[:, None]).add_(train_norm[None, :])
+        ranks = [matrix.topk(2, dim=1, largest=False, sorted=True) for matrix in (squared, squared.T)]
+        copy_start = perf_counter()
+        directions = [(values.cpu().numpy(), ids.cpu().numpy()) for values, ids in ranks]
+        copy_end = perf_counter()
+        with self._lock:
+            self.cuda_transfer_s += compute_start - tx_start + copy_end - copy_start
+            self.cuda_compute_s += copy_start - compute_start
+
+        mappings = []
+        for values, ids in directions:
+            distances = np.sqrt(values).astype(np.float64)
+            limit = ratio * distances[:, 1]
+            # The OpenCV decision may differ within one float32 rounding step.
+            # Exact zero-distance ties reject directly for any ratio below one.
+            near_limit = (distances[:, 1] > 0) & (
+                np.abs(distances[:, 0] - limit) <= 2 * np.finfo(np.float32).eps * distances[:, 1]
+            )
+            if near_limit.any():
+                return None
+            mappings.append(np.where(distances[:, 0] < limit, ids[:, 0], -1))
+        return mappings
+
     def _cuda(self, first, second, ratio):
         with self.torch.inference_mode():
-            forward = self._direction(first, second, ratio)
-            backward = self._direction(second, first, ratio)
+            integer_directions = self._integer_directions(first, second, ratio)
+            if integer_directions is None:
+                forward = self._direction(first, second, ratio)
+                backward = self._direction(second, first, ratio)
+            else:
+                forward, backward = integer_directions
             t_sync = perf_counter()
             self.torch.cuda.synchronize()
             sync_dt = max(perf_counter() - t_sync, 0.0)
         with self._lock:
             self.cuda_calls += 1
+            self.cuda_integer_calls += int(integer_directions is not None)
             self.cuda_sync_s += sync_dt
         rows = np.flatnonzero(forward >= 0)
         rows = rows[backward[forward[rows]] == rows]
@@ -201,6 +250,7 @@ class DescriptorMatcher:
                 "cuda_device_name": self.cuda_device_name,
                 "cuda_device_capability": self.cuda_device_capability,
                 "cuda_calls": self.cuda_calls,
+                "cuda_integer_calls": self.cuda_integer_calls,
                 "cpu_calls": self.cpu_calls,
                 "ambiguous_rows_on_cpu": self.ambiguous_rows,
                 "init_elapsed_s": float(self.init_elapsed_s),

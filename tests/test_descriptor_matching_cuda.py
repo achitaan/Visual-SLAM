@@ -46,6 +46,19 @@ def test_cuda_repeated_ties_match_cpu_and_report_cpu_rechecks(cuda_matcher):
     assert cuda_matcher.report()["ambiguous_rows_on_cpu"] > 0
 
 
+def test_cuda_uses_one_matrix_for_quantized_sift(cuda_matcher):
+    rng = np.random.default_rng(952)
+    first = rng.integers(0, 256, size=(290, 128)).astype(np.float32)
+    second = np.vstack((first[0], first[0], first[1:] + (first[1:] < 255)))
+    expected = DescriptorMatcher("cpu")(first, second)
+    actual = cuda_matcher(first, second)
+    # The duplicate zero-distance nearest neighbors for row zero must reject.
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.shape == (289, 2)
+    assert (actual[:, 0] > 0).all()
+    assert cuda_matcher.metadata()["cuda_integer_calls"] == 1
+
+
 def test_cuda_cancellation_and_near_ratio_rows_match_cpu(cuda_matcher):
     # The high-norm row has true distances 8 and 16, which pass a 0.7 ratio
     # test but are vulnerable to cancellation in the matrix-distance identity.

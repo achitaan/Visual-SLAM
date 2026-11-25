@@ -158,6 +158,62 @@ Telemetry schema v1 publishes `pose_T_wc`, frame index, timestamp, mode, matches
 
 Original mathematical notes are available in [VisualOdometry.tex](VisualOdometry.tex). They describe the early project background rather than the current stereo implementation.
 
+## Local NVIDIA GPU frontend (experimental)
+
+Use a Windows or Linux Python environment with a CUDA-capable NVIDIA GPU and a
+compatible driver. Install the normal project dependencies first, then install
+the CUDA extras in the same environment:
+
+```sh
+python -m pip install -r requirement.txt
+python -m pip install -r requirements-performance-gpu.txt
+python -m pip install -r requirements-local-gpu.txt
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+The pinned example uses PyTorch 2.7.1 with CUDA 12.6. If that wheel does not
+support your Python version or GPU, use the [PyTorch installation selector](https://pytorch.org/get-started/locally/)
+to choose a compatible CUDA build, then install the Kornia extras. Allow several
+GB of free disk space for the download and installation. The
+verification command should end in `True`. CuPy, CUDA-enabled OpenCV, and a
+separate CUDA toolkit are not needed with the prebuilt PyTorch wheel. The CPU
+path needs neither PyTorch nor Kornia.
+
+```sh
+# Synthetic rectified stereo at KITTI 00 resolution (1241 x 376), no download
+python scripts/bench_local_gpu.py
+
+# Run both backends on identical decoded KITTI pairs and emit JSON
+python scripts/bench_local_gpu.py --backend both --kitti-root /path/to/KITTI/sequences/00 --json
+
+# Opt into the local CUDA frontend in SharedSlam
+python src/main.py --slam --stereo --data-root /path/to/KITTI --sequence 00 --frontend-backend cuda --matching-backend auto
+
+# Run frontend checks (CUDA cases skip if PyTorch cannot access a CUDA device)
+python -m pytest -q tests/test_local_gpu_frontend.py
+```
+
+The benchmark detects the CUDA device name, compute capability, and VRAM.
+Its default `auto` mode uses the OpenCV CPU path if CUDA or Kornia cannot be
+initialized; `--backend cpu` skips GPU detection, and explicit `cuda` or
+`both` modes fail if CUDA is unavailable. The timings include the gradient
+pyramid, SIFT extraction, matching against the previous left frame, disparity,
+and CPU/GPU transfers for the feature, match, and disparity outputs. They exclude
+file decoding and warm-up, synchronize CUDA before recording each sample, and
+report mean, median, and p95 latency and effective sequential FPS. They do not
+measure SLAM trajectory accuracy or full-pipeline FPS.
+
+When running SLAM, `--frontend-backend cuda` falls back to the unchanged CPU
+frontend with a message if CUDA cannot initialize. Once active, it uses Kornia
+scale-space SIFT and rectified SAD block disparity in place of OpenCV SIFT and
+StereoSGBM. The CUDA disparity uses a uniqueness check but not SGBM's
+smoothness model. Features and disparities can differ from the CPU versions,
+so trajectories can differ too. `--matching-backend auto` uses the
+existing CUDA descriptor matcher only when it is both faster and agrees with
+the CPU matcher on its initial comparison. The separate `verified_all` stereo
+policy still uses its original CPU correspondence verifier instead of a dense
+disparity map. Tracking, optimization, and other back-end work stay on CPU.
+
 ## Shared mapping pipeline (experimental)
 
 Performance integration and bounded stereo diagnostics are documented in

@@ -3,6 +3,7 @@ import os
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 import json
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -159,6 +160,8 @@ def parse_main_args(argv=None):
     parser.add_argument("--opencv-threads", type=int, default=1, help="Bound OpenCV worker memory (default: 1)")
     parser.add_argument("--slam", action="store_true")
     parser.add_argument('--matching-backend', choices=['cpu', 'cuda', 'auto'], default='cpu')
+    parser.add_argument('--frontend-backend', choices=['cpu', 'cuda'], default='cpu',
+                        help='Experimental CUDA SIFT and block disparity; falls back to CPU when unavailable')
     parser.add_argument('--stereo-depth-policy', choices=['supported', 'verified_fallback', 'verified_all'], default=None)
     parser.add_argument('--stereo-map-depth-policy', choices=['inherit', 'verified'], default=None,
                         help='Map geometry source only; verified uses full-range right-image correspondences')
@@ -215,6 +218,8 @@ def parse_main_args(argv=None):
         parser.error(f"--preset {args.preset} requires --slam --stereo")
     if args.preset == "legacy_default" and not args.slam:
         parser.error("--preset requires --slam")
+    if args.frontend_backend != 'cpu' and not args.slam:
+        parser.error('--frontend-backend cuda requires --slam')
     base_cfg = (
         MappingConfig.from_preset(args.preset, stereo=bool(args.stereo))
         if args.preset is not None
@@ -366,7 +371,8 @@ def main() -> None:
     stereo_camera=StereoCamera(vo.stereo,vo.Q,vo.baseline) if use_stereo else None
     performance = PerformanceConfig(retrieval=args.retrieval, matching_backend=args.matching_backend,
                                     cpu_optimizations=not args.no_cpu_optimizations, profile=args.profile is not None,
-                                    pipeline_extraction=bool(args.pipeline_extraction))
+                                    pipeline_extraction=bool(args.pipeline_extraction),
+                                    frontend_backend=args.frontend_backend)
     bundle_diagnostic_writer = None
     if args.bundle_diagnostics_dir is not None:
         from bundle_diagnostics import BundleDiagnosticsWriter
@@ -378,6 +384,11 @@ def main() -> None:
                         config=_mapping_config_from_args(args),
                         performance=performance,
                         bundle_diagnostic_writer=bundle_diagnostic_writer) if args.slam else None
+    if shared is not None and args.frontend_backend == 'cuda':
+        if shared.cuda_frontend is None:
+            print(f"CUDA frontend unavailable; using CPU: {shared.cuda_frontend_reason}", file=sys.stderr)
+        else:
+            print(f"CUDA frontend: {shared.cuda_frontend_device.name}", file=sys.stderr)
 
     num_frames = len(vo.Images_1) if use_stereo else len(vo.Images)
     if args.max_frames is not None:

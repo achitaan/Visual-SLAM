@@ -1,0 +1,2 @@
+# Install CUDA PyTorch first (see README or requirements-performance-gpu.txt).
+kornia==0.8.2

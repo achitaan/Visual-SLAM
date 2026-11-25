@@ -489,6 +489,15 @@ class SharedSlam:
             if getattr(self.config, "use_grid_bucketing", False)
             else None
         )
+        self.cuda_frontend = None
+        self.cuda_frontend_device = None
+        self.cuda_frontend_reason = None
+        if self.performance.frontend_backend == "cuda":
+            from local_gpu_frontend import create_cuda_frontend
+
+            self.cuda_frontend, self.cuda_frontend_device, self.cuda_frontend_reason = create_cuda_frontend(
+                features=self.config.features, grid_bucketing=self.config.use_grid_bucketing,
+            )
         self._fast_stereo_sgbm = None
         if (
             self.stereo is not None
@@ -879,7 +888,18 @@ class SharedSlam:
             right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
             self.current_left_gray = np.asarray(gray, np.float32)
             self.current_right_gray = np.asarray(right_gray, np.float32)
-        if getattr(self.config, "use_grid_bucketing", False):
+        cuda_frontend = getattr(self, "cuda_frontend", None)
+        cuda_disparity = None
+        if cuda_frontend is not None:
+            stereo_input = None
+            if self.stereo is not None:
+                if right is None or right.shape[:2] != image.shape[:2]:
+                    raise ValueError("Stereo requires matching right image")
+                if self.config.stereo_depth_policy != "verified_all":
+                    right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
+                    stereo_input = right_gray
+            pixels, desc, self._current_octaves, cuda_disparity = cuda_frontend.frame(gray, stereo_input)
+        elif getattr(self.config, "use_grid_bucketing", False):
             from frontend_features import extract_grid_bucketed_sift
 
             bucketed = extract_grid_bucketed_sift(
@@ -916,6 +936,8 @@ class SharedSlam:
                 self.current_left_gray = np.asarray(gray, np.float32)
                 self.current_right_gray = np.asarray(right_gray, np.float32)
                 self.current_disparity = None
+            elif cuda_frontend is not None:
+                self.current_disparity = cuda_disparity
             else:
                 from frontend_pipeline import _clone_half_sgbm, _compute_disparity_f32
 

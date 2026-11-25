@@ -12,13 +12,16 @@ from dataclasses import dataclass
 import queue
 import threading
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import cv2 as cv
 import numpy as np
 
 from frontend_features import extract_grid_bucketed_sift, unpack_sift_octave
 from stereo_depth import verify_stereo_depth_candidates
+
+if TYPE_CHECKING:
+    from local_gpu_frontend import TensorFrontend
 
 
 @dataclass(frozen=True)
@@ -318,6 +321,7 @@ def extract_frame_owned(
     sgbm_executor: ThreadPoolExecutor | None = None,
     io_elapsed_s: float = 0.0,
     precomputed_lk_pyramid: Any = None,
+    cuda_frontend: TensorFrontend | None = None,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
     if image is None:
@@ -327,7 +331,7 @@ def extract_frame_owned(
     gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY) if image.ndim == 3 else image
     image_size = (int(image.shape[1]), int(image.shape[0]))
     has_stereo = stereo_Q is not None
-    need_sgbm = has_stereo and (config.stereo_depth_policy != "verified_all")
+    need_disparity = has_stereo and config.stereo_depth_policy != "verified_all"
     need_f32_pair = has_stereo and (
         config.stereo_depth_policy in ("verified_fallback", "verified_all")
         or getattr(config, "stereo_map_depth_policy", "inherit") == "verified"
@@ -339,17 +343,20 @@ def extract_frame_owned(
     if has_stereo:
         if right is None or right.shape[:2] != image.shape[:2]:
             raise ValueError("Stereo requires matching right image")
-        if need_sgbm and sgbm is None:
+        if need_disparity and sgbm is None and cuda_frontend is None:
             raise ValueError("Stereo extraction requires a StereoSGBM matcher instance")
         right_gray = cv.cvtColor(right, cv.COLOR_BGR2GRAY) if right.ndim == 3 else right
-        if need_sgbm and sgbm_executor is not None:
+        if need_disparity and sgbm_executor is not None and cuda_frontend is None:
             # Launch StereoSGBM concurrently on its own single-thread executor while
             # SIFT runs on the calling extraction thread (both OpenCV calls release the GIL).
             sgbm_future = sgbm_executor.submit(
                 _compute_disparity_f32, sgbm, gray, right_gray, half_sgbm=half_sgbm
             )
 
-    if getattr(config, "use_grid_bucketing", False):
+    cuda_disparity = None
+    if cuda_frontend is not None:
+        pixels, desc, octaves, cuda_disparity = cuda_frontend.frame(gray, right_gray if need_disparity else None)
+    elif getattr(config, "use_grid_bucketing", False):
         bucketed = extract_grid_bucketed_sift(
             gray,
             target_features=config.features,
@@ -384,8 +391,10 @@ def extract_frame_owned(
             else:
                 left_gray_f32 = np.asarray(gray, np.float32)
                 right_gray_f32 = np.asarray(right_gray, np.float32)
-        if need_sgbm:
-            if sgbm_future is not None:
+        if need_disparity:
+            if cuda_frontend is not None:
+                disparity = cuda_disparity
+            elif sgbm_future is not None:
                 disparity = sgbm_future.result()
             else:
                 disparity = _compute_disparity_f32(sgbm, gray, right_gray, half_sgbm=half_sgbm)
@@ -470,6 +479,7 @@ class FrontendExtractionPipeline:
         self._inverse_K = slam.inverse_K.copy()
         self._stereo_Q = slam.stereo.Q.copy() if slam.stereo is not None else None
         self._stereo_search_config = slam.stereo_search_config
+        self._cuda_frontend = getattr(slam, "cuda_frontend", None)
         self._lazy_extraction = bool(lazy_extraction and slam.stereo is not None)
         self._detector = _clone_sift(slam.config, has_stereo=slam.stereo is not None)
         src_sgbm = (
@@ -557,6 +567,7 @@ class FrontendExtractionPipeline:
                 sgbm_executor=self._lazy_sgbm_executor,
                 io_elapsed_s=io_dt,
                 precomputed_lk_pyramid=lk_pyramid,
+                cuda_frontend=self._cuda_frontend,
             )
 
         return ExtractedFrame(
@@ -621,6 +632,7 @@ class FrontendExtractionPipeline:
                             half_sgbm=self._half_sgbm,
                             sgbm_executor=self._sgbm_executor,
                             io_elapsed_s=io_dt,
+                            cuda_frontend=self._cuda_frontend,
                         )
                     self._put_output((index, extracted, None))
                 except BaseException as exc:

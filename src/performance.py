@@ -17,12 +17,15 @@ class PerformanceConfig:
     cpu_optimizations: bool = True
     profile: bool = False
     pipeline_extraction: bool = False
+    frontend_backend: str = "cpu"
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):
             raise ValueError("Retrieval must be current, indexed or exhaustive")
         if self.matching_backend not in ("cpu", "cuda", "auto"):
             raise ValueError("Matching backend must be cpu, cuda or auto")
+        if self.frontend_backend not in ("cpu", "cuda"):
+            raise ValueError("Frontend backend must be cpu or cuda")
 
 
 # Keep the old import available without maintaining a second profiler.

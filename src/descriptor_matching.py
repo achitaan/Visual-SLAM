@@ -187,25 +187,44 @@ class DescriptorMatcher:
             return None
 
         torch = self.torch
+
+        def upload(array):
+            array = np.ascontiguousarray(array)
+            # PyTorch cannot borrow read-only extraction buffers safely.
+            host = (
+                torch.from_numpy(array)
+                if array.flags.writeable
+                else torch.tensor(array, device="cpu")
+            )
+            return host.to("cuda", non_blocking=True)
+
         tx_start = perf_counter()
-        query = torch.tensor(first, device="cuda")
-        train = torch.tensor(second, device="cuda")
-        query_norm = torch.tensor(np.einsum("ij,ij->i", first, first), device="cuda")
-        train_norm = torch.tensor(np.einsum("ij,ij->i", second, second), device="cuda")
+        query = upload(first)
+        train = upload(second)
+        query_norm = upload(np.einsum("ij,ij->i", first, first))
+        train_norm = upload(np.einsum("ij,ij->i", second, second))
         compute_start = perf_counter()
         # All products, sums and differences are integers with magnitude
         # below 2**24. Float32 GEMM therefore gives exact squared distances.
         squared = (query @ train.T).mul_(-2).add_(query_norm[:, None]).add_(train_norm[None, :])
         ranks = [matrix.topk(2, dim=1, largest=False, sorted=True) for matrix in (squared, squared.T)]
         copy_start = perf_counter()
-        directions = [(values.cpu().numpy(), ids.cpu().numpy()) for values, ids in ranks]
+        directions = [
+            (values.to("cpu", non_blocking=True), ids.to("cpu", non_blocking=True))
+            for values, ids in ranks
+        ]
         copy_end = perf_counter()
+        # The CPU ratio check may read the results only after these copies complete.
+        torch.cuda.current_stream(device=squared.device).synchronize()
+        sync_end = perf_counter()
         with self._lock:
             self.cuda_transfer_s += compute_start - tx_start + copy_end - copy_start
             self.cuda_compute_s += copy_start - compute_start
+            self.cuda_sync_s += sync_end - copy_end
 
         mappings = []
         for values, ids in directions:
+            values, ids = values.numpy(), ids.numpy()
             distances = np.sqrt(values).astype(np.float64)
             limit = ratio * distances[:, 1]
             # The OpenCV decision may differ within one float32 rounding step.
@@ -226,13 +245,9 @@ class DescriptorMatcher:
                 backward = self._direction(second, first, ratio)
             else:
                 forward, backward = integer_directions
-            t_sync = perf_counter()
-            self.torch.cuda.synchronize()
-            sync_dt = max(perf_counter() - t_sync, 0.0)
         with self._lock:
             self.cuda_calls += 1
             self.cuda_integer_calls += int(integer_directions is not None)
-            self.cuda_sync_s += sync_dt
         rows = np.flatnonzero(forward >= 0)
         rows = rows[backward[forward[rows]] == rows]
         return np.column_stack([rows, forward[rows]]).astype(int)

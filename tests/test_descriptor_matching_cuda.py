@@ -59,6 +59,27 @@ def test_cuda_uses_one_matrix_for_quantized_sift(cuda_matcher):
     assert cuda_matcher.metadata()["cuda_integer_calls"] == 1
 
 
+def test_cuda_quantized_read_only_views_on_nondefault_stream(cuda_matcher):
+    rng = np.random.default_rng(8146)
+    descriptors = rng.integers(0, 256, size=(300, 256)).astype(np.float32)
+    first = descriptors[:, ::2]
+    query = np.arange(len(first))
+    first[:, 0] = query // 256
+    first[:, 1] = query % 256
+    second = first[::-1].copy()
+    first.setflags(write=False)
+    second.setflags(write=False)
+
+    torch = cuda_matcher.torch
+    with torch.cuda.stream(torch.cuda.Stream()):
+        actual = cuda_matcher(first, second)
+
+    # Every descriptor occurs once in each input. Reversing the order gives
+    # one exact zero-distance neighbor at train index len(first) - 1 - query.
+    np.testing.assert_array_equal(actual, np.column_stack((query, query[::-1])))
+    assert cuda_matcher.metadata()["cuda_integer_calls"] == 1
+
+
 def test_cuda_cancellation_and_near_ratio_rows_match_cpu(cuda_matcher):
     # The high-norm row has true distances 8 and 16, which pass a 0.7 ratio
     # test but are vulnerable to cancellation in the matrix-distance identity.

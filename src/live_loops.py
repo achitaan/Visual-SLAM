@@ -415,9 +415,10 @@ class LiveLoopWorker:
         self.profiler.count("loop_keyframes_matched", len(shortlisted))
         candidates = []
         precomputed_pairs = {}
+        loop_matcher = getattr(self.matcher, "match_loop", self.matcher)
         for i in shortlisted:
             matched_pairs = self.profiler.call(
-                "loop_matching", self.matcher, measured_descriptors(keyframes[i]), query
+                "loop_matching", loop_matcher, measured_descriptors(keyframes[i]), query
             )
             candidates.append((len(matched_pairs), i))
             precomputed_pairs[(i, current)] = matched_pairs

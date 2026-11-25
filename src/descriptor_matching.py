@@ -13,6 +13,9 @@ import numpy as np
 from mapping_geometry import match_descriptors
 
 
+_NATIVE_LOOP_PAIR_LIMIT = 250_000
+
+
 class DescriptorMatcher:
     """Mutual ratio matcher with an optional CUDA path for float SIFT rows.
 
@@ -39,6 +42,7 @@ class DescriptorMatcher:
         self.cuda_fused_rank_calls = 0
         self._cuda_rank_kernel = None
         self.cpu_calls = 0
+        self.cpu_native_loop_calls = 0
         self.ambiguous_rows = 0
         self.init_elapsed_s = 0.0
         self.cuda_transfer_s = 0.0
@@ -96,6 +100,26 @@ class DescriptorMatcher:
         with self._lock:
             self.cpu_calls += 1
         return match_descriptors(first, second, ratio)
+
+    def match_loop(self, first, second, ratio=0.7):
+        """Avoid GPU transfers for small, exact background loop matches."""
+        if (
+            self.requested == "cuda"
+            and all(isinstance(a, np.ndarray) and a.dtype == np.float32
+                    and a.ndim == 2 and a.shape[1] == 128 and len(a) >= 2
+                    for a in (first, second))
+            and len(first) * len(second) <= _NATIVE_LOOP_PAIR_LIMIT
+            and 0 < ratio < 1
+        ):
+            from native_accel import match_sift_mutual_vnni
+
+            pairs = match_sift_mutual_vnni(first, second, ratio)
+            if pairs is not None:
+                with self._lock:
+                    self.cpu_calls += 1
+                    self.cpu_native_loop_calls += 1
+                return pairs
+        return self(first, second, ratio)
 
     def __call__(self, first, second, ratio=0.7):
         if first is None or second is None or len(first) < 2 or len(second) < 2:
@@ -313,6 +337,7 @@ class DescriptorMatcher:
                 "cuda_integer_calls": self.cuda_integer_calls,
                 "cuda_fused_rank_calls": self.cuda_fused_rank_calls,
                 "cpu_calls": self.cpu_calls,
+                "cpu_native_loop_calls": self.cpu_native_loop_calls,
                 "ambiguous_rows_on_cpu": self.ambiguous_rows,
                 "init_elapsed_s": float(self.init_elapsed_s),
                 "cuda_transfer_s": float(self.cuda_transfer_s),

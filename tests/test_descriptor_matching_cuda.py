@@ -98,6 +98,43 @@ def test_fused_rank_matches_tensor_topk_on_partial_cuda_tiles(cuda_matcher, monk
     np.testing.assert_array_equal(actual, np.column_stack((np.arange(1, 129), np.arange(127, -1, -1))))
 
 
+def test_small_loop_match_uses_native_cpu_without_changing_pairs(cuda_matcher):
+    from native_accel import match_sift_mutual_vnni
+
+    rng = np.random.default_rng(8120)
+    first = rng.integers(0, 256, size=(128, 128)).astype(np.float32)
+    second = first[::-1].copy()
+    if match_sift_mutual_vnni(first, second, 0.7) is None:
+        pytest.skip("The native VNNI matcher is unavailable")
+
+    np.testing.assert_array_equal(cuda_matcher.match_loop(first, second), cuda_matcher(first, second))
+
+    metadata = cuda_matcher.report()
+    assert metadata["cpu_native_loop_calls"] == 1
+    assert metadata["cpu_calls"] == metadata["cuda_calls"] == 1
+
+
+@pytest.mark.parametrize("row_count,native_attempts", [(128, 1), (501, 0)])
+def test_loop_match_uses_cuda_outside_the_native_path(cuda_matcher, monkeypatch, row_count, native_attempts):
+    import native_accel
+
+    rng = np.random.default_rng(8121)
+    first = rng.integers(0, 256, size=(row_count, 128)).astype(np.float32)
+    second = first[::-1].copy()
+    attempts = []
+
+    def unavailable(*args):
+        attempts.append(args)
+        return None
+
+    monkeypatch.setattr(native_accel, "match_sift_mutual_vnni", unavailable)
+
+    np.testing.assert_array_equal(cuda_matcher.match_loop(first, second), cuda_matcher(first, second))
+    assert len(attempts) == native_attempts
+    assert cuda_matcher.report()["cpu_native_loop_calls"] == 0
+    assert cuda_matcher.report()["cuda_calls"] == 2
+
+
 def test_cuda_cancellation_and_near_ratio_rows_match_cpu(cuda_matcher):
     # The high-norm row has true distances 8 and 16, which pass a 0.7 ratio
     # test but are vulnerable to cancellation in the matrix-distance identity.

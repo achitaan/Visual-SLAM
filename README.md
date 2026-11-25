@@ -92,6 +92,9 @@ Starting at octave 0 changes native SIFT detections. Compare the harness's
 trajectory metrics when applying this configuration to other sequences.
 CUDA matching can rank both descriptor directions with one kernel on Windows.
 The `cuda_fused_rank_calls` counter in `run.json` records calls that used it.
+Small loop-closure batches can use the native CPU matcher to avoid GPU
+synchronization while tracking uses CUDA. The `cpu_native_loop_calls` counter
+records matches routed this way.
 
 For sparse depth on Windows, add `--stereo-depth-policy verified_all
 --stereo-verification-backend cuda` to that command. This policy computes
@@ -138,6 +141,13 @@ command. In a matched full KITTI 00 trial, five keyframes reached 47.31 FPS
 with 2.50 m ATE and 1.042% translation drift. Eight reached 44.54 FPS with
 2.43 m ATE and 1.024% drift. A regular harness rerun with five keyframes reached
 47.67 FPS, 2.33 m ATE, and 0.986% drift. All three runs lost zero frames.
+
+With native routing for small loop matches, a five-keyframe window reached
+48.38 FPS on KITTI 00. Two full runs with a three-keyframe window reached
+49.91–50.10 FPS with 2.23–2.34 m ATE, 0.970–1.001% translation drift, and zero
+lost frames. To reproduce that configuration, append
+`--config-overrides '{"covisible_bundle_max_keyframes":3}'`
+to the 900-feature command.
 
 Start the dashboard in a second terminal:
 

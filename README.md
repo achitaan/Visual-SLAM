@@ -202,11 +202,17 @@ On Windows, try `--windows-core-placement split` with the pipelined CUDA
 command. It assigns the tracking, extraction, and loop workers to separate
 physical cores in the benchmark worker. Check `windows_core_placement` in
 `run.json` for the applied thread masks and any placement error.
+`--windows-core-placement isolated` also limits the estimator process to one
+logical processor per physical core, so its other threads avoid using the
+tracking and extraction cores' simultaneous multithreading (SMT) siblings.
 
 On an i5-11400F with a GTX 1660 SUPER, split placement raised full KITTI 00
 throughput from 63.95 to 68.72 FPS with the compact SIFT and lazy stereo
 settings above. Both runs had zero tracking losses. Final aligned ATE went
 from 2.31 to 2.24 m, and live translation drift went from 1.10% to 1.18%.
+In a later paired run, `isolated` reached 71.01 FPS versus 69.56 FPS with
+`split`. Both runs had zero tracking losses and 2.26 m final aligned ATE.
+Live translation drift went from 1.20% to 1.06%.
 
 Start the dashboard in a second terminal:
 

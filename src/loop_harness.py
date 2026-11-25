@@ -600,7 +600,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     from shared_slam import SharedSlam, StereoCamera
 
     placement = WindowsCorePlacement(args.windows_core_placement)
-    split_placement = args.windows_core_placement == "split"
+    place_threads = args.windows_core_placement != "default"
     gc.set_threshold(50000, 20, 200)
     np.random.seed(args.seed)
     cv.setRNGSeed(args.seed)
@@ -641,7 +641,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     stereo_cam = StereoCamera(vo.stereo, vo.Q, vo.baseline)
     slam = SharedSlam(
         vo.K1, stereo=stereo_cam, config=cfg, performance=perf,
-        loop_thread_initializer=(lambda: placement.bind("loop")) if split_placement else None,
+        loop_thread_initializer=(lambda: placement.bind("loop")) if place_threads else None,
     )
     if args.frontend_backend == "cuda" and slam.cuda_frontend is None:
         slam.close(finish=False)
@@ -668,10 +668,10 @@ def _estimator_worker_main(argv: list[str]) -> int:
             slam,
             buffer_size=max(1, int(args.pipeline_buffer)),
             lazy_extraction=True,
-            worker_initializer=(lambda: placement.bind("frontend")) if split_placement else None,
+            worker_initializer=(lambda: placement.bind("frontend")) if place_threads else None,
         )
 
-    if split_placement:
+    if place_threads:
         placement.bind("tracking")
     started = time.perf_counter()
     try:

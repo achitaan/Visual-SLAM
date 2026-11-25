@@ -20,7 +20,8 @@ def test_core_masks_decline_unsupported_topology(topology):
         affinity._physical_core_masks(topology, 255)
 
 
-def test_default_and_non_windows_placements_do_not_call_win32(monkeypatch):
+@pytest.mark.parametrize("mode", ["split", "isolated"])
+def test_default_and_non_windows_placements_do_not_call_win32(monkeypatch, mode):
     def unexpected_api():
         raise AssertionError("Windows API should only load on supported hosts when requested")
 
@@ -29,7 +30,7 @@ def test_default_and_non_windows_placements_do_not_call_win32(monkeypatch):
     default = affinity.WindowsCorePlacement("default")
     default.bind("tracking")
     assert default.report["fallback_reason"] is None
-    split = affinity.WindowsCorePlacement("split")
-    split.bind("tracking")
-    assert split.report["fallback_reason"] == "Core placement requires 64-bit Windows"
-    assert split.report["applied_threads"] == {}
+    requested = affinity.WindowsCorePlacement(mode)
+    requested.bind("tracking")
+    assert requested.report["fallback_reason"] == "Core placement requires 64-bit Windows"
+    assert requested.report["applied_threads"] == {}

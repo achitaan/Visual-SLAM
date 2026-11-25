@@ -6,7 +6,7 @@ from struct import Struct
 import sys
 
 
-WINDOWS_CORE_PLACEMENTS = ("default", "split")
+WINDOWS_CORE_PLACEMENTS = ("default", "split", "isolated")
 
 # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX followed by the fixed part of
 # PROCESSOR_RELATIONSHIP, then one x64 GROUP_AFFINITY per reported group.
@@ -50,6 +50,8 @@ def _windows_api():
     api.GetCurrentThread.restype = wintypes.HANDLE
     api.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, size_pointer, size_pointer]
     api.GetProcessAffinityMask.restype = wintypes.BOOL
+    api.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    api.SetProcessAffinityMask.restype = wintypes.BOOL
     api.SetThreadAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
     api.SetThreadAffinityMask.restype = ctypes.c_size_t
     return api
@@ -93,6 +95,15 @@ class WindowsCorePlacement:
         self.report["physical_core_masks"] = cores
         first_threads = [mask & -mask for mask in cores]
         self._thread_masks = dict(zip(("tracking", "frontend", "loop"), reversed(first_threads[-3:])))
+        if self.report["requested"] == "isolated":
+            mask = sum(first_threads)
+            if api.SetProcessAffinityMask(process, mask):
+                self.report["applied_process_mask"] = mask
+            else:
+                error = ctypes.WinError(ctypes.get_last_error())
+                self.report["fallback_reason"] = (
+                    f"Could not limit the estimator to one logical processor per core: {error}"
+                )
 
     def bind(self, role):
         mask = self._thread_masks.get(role)

@@ -336,7 +336,8 @@ def test_subprocess_isolation_metadata_matches_enforced_boundary(tmp_path, monke
     assert payload["peak_rss_mb"] == pytest.approx(42.5)
 
 
-def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkeypatch):
+@pytest.mark.parametrize("core_placement", ["split", "isolated"])
+def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkeypatch, core_placement):
     import loop_harness
 
     seq_dir = tmp_path / "kitti" / "sequences" / "04"
@@ -363,13 +364,13 @@ def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkey
             "--matching-backend",
             "cuda",
             "--windows-core-placement",
-            "split",
+            core_placement,
         ]
     )
     assert args_cpu.matching_backend == "cpu"
     assert args_cuda.matching_backend == "cuda"
     assert args_cpu.windows_core_placement == "default"
-    assert args_cuda.windows_core_placement == "split"
+    assert args_cuda.windows_core_placement == core_placement
     assert cfg_cpu == cfg_cuda
     assert ov_cpu == ov_cuda == {}
 
@@ -401,14 +402,14 @@ def test_matching_backend_invocation_preserves_estimator_config(tmp_path, monkey
         max_frames=2,
         matching_backend="cuda",
         sift_pyramid_backend="cuda-compact",
-        windows_core_placement="split",
+        windows_core_placement=core_placement,
     )
     idx = cmd_cuda.index("--matching-backend")
     assert cmd_cuda[idx + 1] == "cuda"
     idx = cmd_cuda.index("--sift-pyramid-backend")
     assert cmd_cuda[idx + 1] == "cuda-compact"
     idx = cmd_cuda.index("--windows-core-placement")
-    assert cmd_cuda[idx + 1] == "split"
+    assert cmd_cuda[idx + 1] == core_placement
 
     with pytest.raises(ValueError):
         build_airgapped_estimator_invocation(

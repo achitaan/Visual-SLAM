@@ -99,6 +99,12 @@ points. Smaller batches, other search settings, and unavailable CUDA
 use the CPU verifier. Check `stereo_verification_backend` in `run.json`
 for GPU batch counts and any fallback reason.
 
+Add `--optical-flow-backend cuda` to use fused forward-backward Lucas–Kanade
+for stereo tracking with `--pipeline-extraction`. The CUDA backend uses
+NVRTC from the same PyTorch installation. Unavailable CUDA falls back to
+the existing CPU path. `optical_flow_backend` in `run.json` records fused
+pair counts and any fallback reason.
+
 Start the dashboard in a second terminal:
 
 ```sh

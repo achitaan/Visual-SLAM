@@ -20,6 +20,7 @@ class PerformanceConfig:
     frontend_backend: str = "cpu"
     coalesce_prefetch: bool = False
     stereo_verification_backend: str = "cpu"
+    optical_flow_backend: str = "cpu"
 
     def __post_init__(self):
         if self.retrieval not in ("current", "indexed", "exhaustive"):
@@ -30,6 +31,8 @@ class PerformanceConfig:
             raise ValueError("Frontend backend must be cpu or cuda")
         if self.stereo_verification_backend not in ("cpu", "cuda"):
             raise ValueError("Stereo verification backend must be cpu or cuda")
+        if self.optical_flow_backend not in ("cpu", "cuda"):
+            raise ValueError("Optical flow backend must be cpu or cuda")
 
 
 # Keep the old import available without maintaining a second profiler.

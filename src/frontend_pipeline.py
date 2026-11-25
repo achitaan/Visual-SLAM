@@ -325,6 +325,7 @@ def extract_frame_owned(
     precomputed_lk_pyramid: Any = None,
     cuda_frontend: TensorFrontend | None = None,
     stereo_verifier=None,
+    pyramid_builder=None,
 ) -> ExtractedFrame:
     """Run frontend extraction purely on frame inputs without mutating shared SLAM state."""
     if image is None:
@@ -422,7 +423,8 @@ def extract_frame_owned(
         try:
             from native_accel import build_lk_pyramid_avx512
             lk_levels = 4 if getattr(config, "use_projective_tracking", False) else 3
-            lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
+            builder = pyramid_builder or build_lk_pyramid_avx512
+            lk_pyramid = builder(gray, max_level=lk_levels)
         except Exception:
             lk_pyramid = None
 
@@ -485,6 +487,8 @@ class FrontendExtractionPipeline:
         self._stereo_search_config = slam.stereo_search_config
         self._cuda_frontend = getattr(slam, "cuda_frontend", None)
         self._stereo_verifier = getattr(slam, "cuda_stereo_verifier", None)
+        self._pyramid_builder = (slam._build_tracking_pyramid
+                                 if getattr(slam, "cuda_optical_flow", None) is not None else None)
         self._lazy_extraction = bool(lazy_extraction and slam.stereo is not None)
         self._detector = _clone_sift(slam.config, has_stereo=slam.stereo is not None)
         src_sgbm = (
@@ -546,7 +550,8 @@ class FrontendExtractionPipeline:
         try:
             from native_accel import build_lk_pyramid_avx512
             lk_levels = 4 if getattr(self._config, "use_projective_tracking", False) else 3
-            lk_pyramid = build_lk_pyramid_avx512(gray, max_level=lk_levels)
+            builder = self._pyramid_builder or build_lk_pyramid_avx512
+            lk_pyramid = builder(gray, max_level=lk_levels)
         except Exception:
             lk_pyramid = None
         left_f32 = gray if gray.dtype == np.uint8 else np.asarray(gray, np.float32)
@@ -640,6 +645,7 @@ class FrontendExtractionPipeline:
                             io_elapsed_s=io_dt,
                             cuda_frontend=self._cuda_frontend,
                             stereo_verifier=self._stereo_verifier,
+                            pyramid_builder=self._pyramid_builder,
                         )
                     self._put_output((index, extracted, None))
                 except BaseException as exc:

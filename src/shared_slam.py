@@ -505,6 +505,15 @@ class SharedSlam:
             from cuda_stereo_verification import create_cuda_stereo_verifier
 
             self.cuda_stereo_verifier, self.cuda_stereo_verifier_reason = create_cuda_stereo_verifier()
+        self.cuda_optical_flow = None
+        self.cuda_optical_flow_reason = None
+        if self.performance.optical_flow_backend == "cuda":
+            if self.stereo is not None and self.performance.pipeline_extraction and self.performance.cpu_optimizations:
+                from cuda_optical_flow import create_cuda_optical_flow
+
+                self.cuda_optical_flow, self.cuda_optical_flow_reason = create_cuda_optical_flow()
+            else:
+                self.cuda_optical_flow_reason = "CUDA optical flow requires pipelined lazy stereo tracking"
         self._fast_stereo_sgbm = None
         if (
             self.stereo is not None
@@ -2295,32 +2304,10 @@ class SharedSlam:
                     used_fast_lk = True
             if not used_fast_lk and cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK:
                 try:
-                    from native_accel import build_lk_pyramid_avx512, track_lk_pyramids_avx512
-                    prev_pyr = getattr(self, "previous_lk_pyramid", None)
-                    curr_pyr = getattr(self, "current_lk_pyramid", None)
-                    if (prev_pyr is None or prev_pyr.source_gray is not self.previous_gray
-                            or prev_pyr.max_level < lk_levels):
-                        prev_pyr = build_lk_pyramid_avx512(self.previous_gray, max_level=lk_levels)
-                        self.previous_lk_pyramid = prev_pyr
-                    if (curr_pyr is None or curr_pyr.source_gray is not self.current_gray
-                            or curr_pyr.max_level < lk_levels):
-                        curr_pyr = build_lk_pyramid_avx512(self.current_gray, max_level=lk_levels)
-                        self.current_lk_pyramid = curr_pyr
-                    if prev_pyr is not None and curr_pyr is not None:
-                        res_fwd = track_lk_pyramids_avx512(
-                            prev_pyr, curr_pyr, old_pixels, predicted_pixels,
-                            max_level=lk_levels, use_initial_flow=True,
-                        )
-                        if res_fwd is not None:
-                            flowed, ok = res_fwd
-                            res_bwd = track_lk_pyramids_avx512(
-                                curr_pyr, prev_pyr, flowed,
-                                old_pixels if lk_levels >= 4 else None,
-                                max_level=lk_levels, use_initial_flow=(lk_levels >= 4),
-                            )
-                            if res_bwd is not None:
-                                reversed_pixels, back_ok = res_bwd
-                                used_fast_lk = True
+                    pair = self._track_pyramid_pair(old_pixels, predicted_pixels, lk_levels)
+                    if pair is not None:
+                        flowed, ok, reversed_pixels, back_ok = pair
+                        used_fast_lk = True
                 except Exception:
                     used_fast_lk = False
 
@@ -7217,6 +7204,51 @@ class SharedSlam:
                     return True
         return False
 
+    def _build_tracking_pyramid(self, gray, max_level):
+        from native_accel import build_lk_pyramid_avx512
+
+        backend = getattr(self, "cuda_optical_flow", None)
+        if backend is not None:
+            prepared = backend.prepare(gray, max_level)
+            if prepared is not None:
+                return prepared
+        return build_lk_pyramid_avx512(gray, max_level=max_level)
+
+    def _track_pyramid_pair(self, old_pixels, predicted_pixels, levels):
+        from native_accel import track_lk_pyramids_avx512
+
+        previous = getattr(self, "previous_lk_pyramid", None)
+        current = getattr(self, "current_lk_pyramid", None)
+        if (previous is None or previous.source_gray is not self.previous_gray
+                or previous.max_level < levels):
+            previous = self._build_tracking_pyramid(self.previous_gray, levels)
+            self.previous_lk_pyramid = previous
+        if (current is None or current.source_gray is not self.current_gray
+                or current.max_level < levels):
+            current = self._build_tracking_pyramid(self.current_gray, levels)
+            self.current_lk_pyramid = current
+        if previous is None or current is None:
+            return None
+        backend = getattr(self, "cuda_optical_flow", None)
+        if backend is not None:
+            pair = backend.track_pair(previous, current, old_pixels, predicted_pixels, levels)
+            if pair is not None:
+                return pair
+            from cuda_optical_flow import CudaLkPyramid
+
+            previous = previous.native() if isinstance(previous, CudaLkPyramid) else previous
+            current = current.native() if isinstance(current, CudaLkPyramid) else current
+        forward = track_lk_pyramids_avx512(previous, current, old_pixels, predicted_pixels,
+                                          max_level=levels, use_initial_flow=True)
+        if forward is None:
+            return None
+        backward = track_lk_pyramids_avx512(current, previous, forward[0],
+                                           old_pixels if levels >= 4 else None,
+                                           max_level=levels, use_initial_flow=levels >= 4)
+        if backward is None:
+            return None
+        return (*forward, *backward)
+
     def _try_lk_only_non_keyframe(self, index, extracted):
         """Track a strong intermediate non-keyframe via forward-backward LK + stereo-refined PnP.
 
@@ -7283,34 +7315,10 @@ class SharedSlam:
 
         lk_levels = 4 if getattr(self.config, "use_projective_tracking", False) else 3
         try:
-            from native_accel import build_lk_pyramid_avx512, track_lk_pyramids_avx512
-            prev_pyr = getattr(self, "previous_lk_pyramid", None)
-            curr_pyr = self.current_lk_pyramid
-            if (prev_pyr is None or prev_pyr.source_gray is not self.previous_gray
-                    or prev_pyr.max_level < lk_levels):
-                prev_pyr = build_lk_pyramid_avx512(self.previous_gray, max_level=lk_levels)
-                self.previous_lk_pyramid = prev_pyr
-            if (curr_pyr is None or curr_pyr.source_gray is not self.current_gray
-                    or curr_pyr.max_level < lk_levels):
-                curr_pyr = build_lk_pyramid_avx512(self.current_gray, max_level=lk_levels)
-                self.current_lk_pyramid = curr_pyr
-            if prev_pyr is None or curr_pyr is None:
+            pair = self._track_pyramid_pair(old_pixels, predicted_pixels, lk_levels)
+            if pair is None:
                 return None
-            res_fwd = track_lk_pyramids_avx512(
-                prev_pyr, curr_pyr, old_pixels, predicted_pixels,
-                max_level=lk_levels, use_initial_flow=True,
-            )
-            if res_fwd is None:
-                return None
-            flowed, ok = res_fwd
-            res_bwd = track_lk_pyramids_avx512(
-                curr_pyr, prev_pyr, flowed,
-                old_pixels if lk_levels >= 4 else None,
-                max_level=lk_levels, use_initial_flow=(lk_levels >= 4),
-            )
-            if res_bwd is None:
-                return None
-            reversed_pixels, back_ok = res_bwd
+            flowed, ok, reversed_pixels, back_ok = pair
         except Exception:
             return None
 

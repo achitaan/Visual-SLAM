@@ -246,6 +246,7 @@ def build_airgapped_estimator_invocation(
     frontend_backend: str = "cpu",
     coalesce_prefetch: bool = False,
     stereo_verification_backend: str = "cpu",
+    optical_flow_backend: str = "cpu",
 ) -> tuple[list[str], dict[str, str], Path]:
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
@@ -253,6 +254,8 @@ def build_airgapped_estimator_invocation(
         raise ValueError(f"Invalid frontend_backend: {frontend_backend!r} (expected cpu or cuda)")
     if stereo_verification_backend not in ("cpu", "cuda"):
         raise ValueError("Stereo verification backend must be cpu or cuda")
+    if optical_flow_backend not in ("cpu", "cuda"):
+        raise ValueError("Optical flow backend must be cpu or cuda")
     if len(sequence) != 2 or not sequence.isdigit():
         raise ValueError(f"Invalid KITTI sequence ID: {sequence!r}")
     data_root_resolved = Path(data_root).expanduser().resolve(strict=False)
@@ -329,6 +332,8 @@ def build_airgapped_estimator_invocation(
         command.extend(["--frontend-backend", frontend_backend])
     if stereo_verification_backend != "cpu":
         command.extend(["--stereo-verification-backend", stereo_verification_backend])
+    if optical_flow_backend != "cpu":
+        command.extend(["--optical-flow-backend", optical_flow_backend])
     if not profile:
         command.append("--no-profile")
 
@@ -371,6 +376,7 @@ def run_airgapped_estimator_subprocess(
     frontend_backend: str = "cpu",
     coalesce_prefetch: bool = False,
     stereo_verification_backend: str = "cpu",
+    optical_flow_backend: str = "cpu",
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -392,6 +398,7 @@ def run_airgapped_estimator_subprocess(
         frontend_backend=frontend_backend,
         coalesce_prefetch=coalesce_prefetch,
         stereo_verification_backend=stereo_verification_backend,
+        optical_flow_backend=optical_flow_backend,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -566,6 +573,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     )
     parser.add_argument("--frontend-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--stereo-verification-backend", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--optical-flow-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
@@ -590,6 +598,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         frontend_backend=args.frontend_backend,
         coalesce_prefetch=args.coalesce_prefetch,
         stereo_verification_backend=args.stereo_verification_backend,
+        optical_flow_backend=args.optical_flow_backend,
     )
 
     seq_dir = args.sequence_dir.resolve()
@@ -755,6 +764,12 @@ def _estimator_worker_main(argv: list[str]) -> int:
             "cuda_points": 0,
         }
     )
+    flow_meta = (
+        slam.cuda_optical_flow.report()
+        if slam.cuda_optical_flow is not None
+        else {"requested": args.optical_flow_backend, "fallback_reason": slam.cuda_optical_flow_reason,
+              "prepared_frames": 0, "fused_pairs": 0, "tracked_points": 0}
+    )
     run_payload = {
         "sequence": args.sequence,
         "frames": total_frames,
@@ -766,6 +781,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "pipeline_extraction": bool(args.pipeline_extraction),
         "matching_backend": matcher_meta,
         "stereo_verification_backend": verifier_meta,
+        "optical_flow_backend": flow_meta,
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -888,6 +904,8 @@ def evaluate_sequence_posthoc(
         result["matching_backend"] = run_payload["matching_backend"]
     if "stereo_verification_backend" in run_payload:
         result["stereo_verification_backend"] = run_payload["stereo_verification_backend"]
+    if "optical_flow_backend" in run_payload:
+        result["optical_flow_backend"] = run_payload["optical_flow_backend"]
     if "frame_latency_ms" in run_payload:
         result["frame_latency_ms"] = run_payload["frame_latency_ms"]
     if "loop_events" in run_payload:
@@ -1465,6 +1483,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "--stereo-verification-backend", choices=["cpu", "cuda"], default="cpu",
         help="Use CUDA for large sparse stereo verification batches on Windows",
     )
+    parser.add_argument(
+        "--optical-flow-backend", choices=["cpu", "cuda"], default="cpu",
+        help="Use fused CUDA forward-backward optical flow in the pipelined stereo estimator on Windows",
+    )
     parser.add_argument("--mark-baseline", action="store_true")
 
     # Explicit CLI overrides (take highest precedence over --preset and --config-overrides)
@@ -1591,6 +1613,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             frontend_backend=args.frontend_backend,
             coalesce_prefetch=args.coalesce_prefetch,
             stereo_verification_backend=args.stereo_verification_backend,
+            optical_flow_backend=args.optical_flow_backend,
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1625,6 +1648,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         for opt_key in (
             "matching_backend",
             "stereo_verification_backend",
+            "optical_flow_backend",
             "frame_latency_ms",
             "loop_events",
             "online_first_metrics",
@@ -1666,6 +1690,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "frontend_backend_requested": args.frontend_backend,
         "matching_backend_requested": str(args.matching_backend),
         "stereo_verification_backend_requested": args.stereo_verification_backend,
+        "optical_flow_backend_requested": args.optical_flow_backend,
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,
         "evaluation_isolation": {

@@ -10,11 +10,12 @@ constexpr double tolerance = 8.0 * 1.1920928955078125e-7;
 struct SearchBuffers {
     float patch[area];
     float strip[side * strip_width];
-    double sum[strip_width + 1];
-    double squares[strip_width + 1];
+    unsigned int sum[strip_width + 1];
+    unsigned long long squares[strip_width + 1];
     double scores[max_disp + 1];
-    double warp_sum[4];
-    double warp_squares[4];
+    unsigned int warp_sum[4];
+    unsigned long long warp_squares[4];
+    double warp_scores[4];
     int warp_best[4];
     double patch_variance;
     double match_x;
@@ -117,17 +118,21 @@ __device__ void search(SearchBuffers& b, const unsigned char* source,
         b.patch_variance = variance;
         b.reason = sqrt(variance / area) < 2.0 ? 2 : 0;
     }
-    double sum = 0.0, squares = 0.0;
+    // Bilinear weights are multiples of 1/1024. For an entire 11x107
+    // strip, scaled sums are below 2^29 and squared sums are below 2^47.
+    // Both fit in these counters and convert back to float64 exactly.
+    unsigned int sum = 0;
+    unsigned long long squares = 0;
     if (lane < strip_width) {
         for (int row = 0; row < side; ++row) {
-            double v = b.strip[row * strip_width + lane];
+            unsigned int v = __float2uint_rz(b.strip[row * strip_width + lane] * 1024.0f);
             sum += v;
-            squares += v * v;
+            squares += static_cast<unsigned long long>(v) * v;
         }
     }
     for (int offset = 1; offset < 32; offset *= 2) {
-        double low_sum = __shfl_up_sync(0xffffffff, sum, offset);
-        double low_squares = __shfl_up_sync(0xffffffff, squares, offset);
+        unsigned int low_sum = __shfl_up_sync(0xffffffff, sum, offset);
+        unsigned long long low_squares = __shfl_up_sync(0xffffffff, squares, offset);
         if (in_warp >= offset) {
             sum += low_sum;
             squares += low_squares;
@@ -141,7 +146,6 @@ __device__ void search(SearchBuffers& b, const unsigned char* source,
     if (b.reason) return;
     if (lane == 0) b.sum[0] = b.squares[0] = 0;
     if (lane < strip_width) {
-        // Quantized uint8 interpolation gives exact dyadic sums in float64.
         for (int i = 0; i < warp; ++i) {
             sum += b.warp_sum[i];
             squares += b.warp_squares[i];
@@ -161,8 +165,8 @@ __device__ void search(SearchBuffers& b, const unsigned char* source,
                 for (int col = 0; col < side; ++col)
                     dot = fmaf(b.patch[row * side + col], b.strip[row * strip_width + col + lane], dot);
             }
-            double sum = b.sum[lane + side] - b.sum[lane];
-            double squares = b.squares[lane + side] - b.squares[lane];
+            double sum = (b.sum[lane + side] - b.sum[lane]) * (1.0 / 1024.0);
+            double squares = (b.squares[lane + side] - b.squares[lane]) * (1.0 / 1048576.0);
             double variance = squares - sum * sum / area;
             score = variance > 1e-6 * area
                 ? fmax(-1.0, fmin(1.0, dot / sqrt(b.patch_variance * variance)))
@@ -182,13 +186,13 @@ __device__ void search(SearchBuffers& b, const unsigned char* source,
     }
     if (in_warp == 0) {
         b.warp_best[warp] = best;
-        b.warp_sum[warp] = value;
+        b.warp_scores[warp] = value;
     }
     __syncthreads();
     if (lane == 0) {
         for (int i = 1; i < 4; ++i) {
-            if (b.warp_sum[i] > value) {
-                value = b.warp_sum[i];
+            if (b.warp_scores[i] > value) {
+                value = b.warp_scores[i];
                 best = b.warp_best[i];
             }
         }
@@ -201,10 +205,10 @@ __device__ void search(SearchBuffers& b, const unsigned char* source,
     double competitor = abs(lane - peak) > 1 ? score : -2.0;
     for (int offset = 16; offset > 0; offset /= 2)
         competitor = fmax(competitor, __shfl_down_sync(0xffffffff, competitor, offset));
-    if (in_warp == 0) b.warp_sum[warp] = competitor;
+    if (in_warp == 0) b.warp_scores[warp] = competitor;
     __syncthreads();
     if (lane == 0) {
-        for (int i = 1; i < 4; ++i) competitor = fmax(competitor, b.warp_sum[i]);
+        for (int i = 1; i < 4; ++i) competitor = fmax(competitor, b.warp_scores[i]);
         b.reason = select_peak(b, peak, competitor, w, x, start, direction, lower, upper);
     }
     __syncthreads();

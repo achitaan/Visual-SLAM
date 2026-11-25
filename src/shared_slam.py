@@ -186,9 +186,15 @@ class MappingConfig:
     stereo_bundle_gauge_mode: str = "veto"
     stereo_bundle_holdout_guard: bool = False
     stereo_verified_reference_retry: bool = False
+    covisible_bundle_max_keyframes: int = 8
 
     def __post_init__(self):
         object.__setattr__(self, "features", validate_feature_budget(self.features))
+        max_keyframes = self.covisible_bundle_max_keyframes
+        if (isinstance(max_keyframes, (bool, np.bool_))
+                or not isinstance(max_keyframes, (int, np.integer)) or max_keyframes < 3):
+            raise ValueError("covisible_bundle_max_keyframes must be an integer of at least 3")
+        object.__setattr__(self, "covisible_bundle_max_keyframes", int(max_keyframes))
         if self.stereo_bundle_holdout_guard and (
                 not self.stereo_pose_arbitration or not self.bundle_enabled
                 or self.stereo_owned_image_bundle or self.stereo_source_history_bundle
@@ -8756,7 +8762,8 @@ class SharedSlam:
                     )
                     if getattr(self.config, "use_covisible_ba", False) and anchor is not None:
                         covis_window = self._covisibility.select_ba_window(
-                            self.map, anchor, max_keyframes=8, min_shared=8
+                            self.map, anchor,
+                            max_keyframes=self.config.covisible_bundle_max_keyframes, min_shared=8,
                         )
                         bundle_kwargs["selected_keyframes"] = covis_window
                         bundle_kwargs["max_landmarks"] = 350

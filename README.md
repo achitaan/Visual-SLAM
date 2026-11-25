@@ -130,6 +130,13 @@ frames with live loop closure and zero lost frames.
 | 1,500 | 41.06 | 2.42 m | 1.028% |
 | 900 | 44.52 | 2.43 m | 1.024% |
 
+To use a smaller covisible bundle adjustment window, append
+`--config-overrides '{"covisible_bundle_max_keyframes":5}'` to the 900-feature
+command. In a matched full KITTI 00 trial, five keyframes reached 47.31 FPS
+with 2.50 m ATE and 1.042% translation drift. Eight reached 44.54 FPS with
+2.43 m ATE and 1.024% drift. A regular harness rerun with five keyframes reached
+47.67 FPS, 2.33 m ATE, and 0.986% drift. All three runs lost zero frames.
+
 Start the dashboard in a second terminal:
 
 ```sh

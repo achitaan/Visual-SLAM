@@ -25,6 +25,7 @@ from loop_harness import (
     compute_paired_baseline_comparison,
     format_comparison_markdown,
     load_reference_baselines,
+    resolve_preset_config,
 )
 from shared_slam import MappingConfig
 
@@ -48,6 +49,19 @@ def test_mapping_config_presets_and_validation():
         MappingConfig.from_preset("unknown_preset")
     with pytest.raises(ValueError):
         MappingConfig.from_preset("verified_baseline", nonexistent_flag=123)
+
+
+def test_covisible_bundle_window_override_preserves_ordinary_window():
+    control, _ = resolve_preset_config()
+    candidate, overrides = resolve_preset_config(config_overrides={"covisible_bundle_max_keyframes": 5})
+    assert control.covisible_bundle_max_keyframes == 8
+    assert candidate.covisible_bundle_max_keyframes == 5
+    assert candidate.bundle_window == control.bundle_window
+    assert candidate.use_covisible_ba
+    assert overrides == {"covisible_bundle_max_keyframes": 5}
+    for invalid in (2, True, 5.0):
+        with pytest.raises(ValueError, match="covisible_bundle_max_keyframes"):
+            resolve_preset_config(config_overrides={"covisible_bundle_max_keyframes": invalid})
 
 
 def test_airgap_invocation_rejects_overlap_and_sanitizes_env(tmp_path, monkeypatch):

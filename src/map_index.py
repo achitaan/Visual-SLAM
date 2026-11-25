@@ -29,7 +29,7 @@ class IncrementalMapIndex:
     on every tracking frame or local bundle adjustment.
     """
 
-    def __init__(self, initial_capacity: int = 2048) -> None:
+    def __init__(self, initial_capacity: int = 2048, *, deferred_position_lock=None) -> None:
         cap = max(16, int(initial_capacity))
         self._capacity = cap
         self._size = 0
@@ -40,6 +40,12 @@ class IncrementalMapIndex:
         self._num_obs = np.zeros(cap, dtype=np.int32)
         self._is_conflicted = np.zeros(cap, dtype=bool)
         self._id_to_slot: dict[int, int] = {}
+        self._deferred_position_lock = deferred_position_lock
+        self._position_epoch = 0
+        self._position_stamps = (
+            np.zeros(cap, dtype=np.uint64) if deferred_position_lock is not None else None
+        )
+        self._position_landmarks = {} if deferred_position_lock is not None else None
 
         # (keyframe_id, pixel_key) -> set of landmark_ids claiming that exact pixel
         self._pixel_claims: dict[tuple[int, tuple[int, int]], set[int]] = {}
@@ -92,6 +98,27 @@ class IncrementalMapIndex:
         self._num_obs = new_num_obs
         self._is_conflicted = new_conflicted
         self._capacity = new_cap
+        if self._position_stamps is not None:
+            stamps = np.zeros(new_cap, dtype=self._position_stamps.dtype)
+            stamps[: self._size] = self._position_stamps[: self._size]
+            self._position_stamps = stamps
+
+    def _bind_landmark_position(self, landmark) -> None:
+        self._position_landmarks[landmark.id] = landmark
+        landmark._bind_position(self)
+
+    def defer_landmark_positions(self, updates, landmark_count: int) -> bool:
+        """Commit indexed positions now and refresh landmark objects on demand."""
+        stamps = self._position_stamps
+        if (stamps is None or len(self._position_landmarks) != landmark_count
+                or sum(len(slots) for _, slots, _ in updates) < 12_000):
+            return False
+        next_epoch = self._position_epoch + 1
+        for _, slots, positions in updates:
+            self._positions[slots] = positions
+            stamps[slots] = next_epoch
+        self._position_epoch = next_epoch
+        return True
 
     def _add_claim(self, landmark_id: int, keyframe_id: int, pixel: Any) -> None:
         pkey = _pixel_identity_key(pixel)
@@ -462,6 +489,10 @@ class IncrementalMapIndex:
 
     def on_landmark_removed(self, landmark_id: int) -> None:
         lm_id = int(landmark_id)
+        if self._position_landmarks is not None:
+            landmark = self._position_landmarks.pop(lm_id, None)
+            if landmark is not None:
+                landmark._unbind_position()
         slot = self._id_to_slot.pop(lm_id, None)
         if slot is not None:
             last = self._size - 1
@@ -469,6 +500,8 @@ class IncrementalMapIndex:
                 moved_id = int(self._ids[last])
                 self._ids[slot] = moved_id
                 self._positions[slot] = self._positions[last]
+                if self._position_stamps is not None:
+                    self._position_stamps[slot] = self._position_stamps[last]
                 self._is_far[slot] = self._is_far[last]
                 self._max_obs_kf[slot] = self._max_obs_kf[last]
                 self._num_obs[slot] = self._num_obs[last]
@@ -766,6 +799,12 @@ class IncrementalMapIndex:
 
     def rebuild_from_map(self, map_state: Any) -> None:
         """Synchronize index completely from a MapState (e.g., after external edits)."""
+        bound = self._position_landmarks
+        if bound is not None:
+            for landmark in bound.values():
+                landmark._unbind_position()
+            self._position_landmarks = {}
+            self._position_stamps.fill(0)
         self._size = 0
         self._id_to_slot.clear()
         self._pixel_claims.clear()
@@ -783,3 +822,5 @@ class IncrementalMapIndex:
         self._recent_kf_slots = None
         for lm in map_state.landmarks.values():
             self.on_landmark_added(lm)
+            if bound is not None and bound.get(lm.id) is lm:
+                self._bind_landmark_position(lm)

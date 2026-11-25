@@ -1,7 +1,7 @@
 """Corrections retain the map gauge and may only cross verified append-only progress."""
 import numpy as np
 import pytest
-from slam_state import MapState, MappingKeyframe, Observation
+from slam_state import Landmark, MapState, MappingKeyframe, Observation
 
 
 def pose(x):
@@ -48,3 +48,53 @@ def test_large_correction_propagation_is_finite_and_consistent(count):
     assert state.apply_snapshot_corrections(0,0,source,corrected)
     assert all(np.isfinite(p).all() for p in state.poses)
     assert state.poses[-1][0,3]==pytest.approx((count-1)*.9)
+
+
+def test_deferred_landmark_positions_survive_swap_growth_and_rebuild():
+    state = MapState(metric=True, defer_bulk_landmark_positions=True)
+    state.keyframes = {i: keyframe(i) for i in range(2)}
+    points = np.random.default_rng(12).normal(size=(13_000, 3))
+    count = len(points)
+
+    def add(anchor):
+        return state.add_landmarks_batch(points, np.zeros((count, 8), dtype=np.uint8), anchor,
+                                         np.zeros((count, 2), dtype=np.float32), np.ones(count),
+                                         np.zeros(count, dtype=np.int16))
+
+    ids = add(1)
+    old_position = state.landmarks[ids[1]].position
+    assert state.apply_corrections(state.revision, {0: state.keyframes[0].pose, 1: pose(1.5)})
+    assert state.index._position_epoch == 1
+    dropped = state.remove_landmark(ids[1])
+    # Changing the anchor from x=1 to x=1.5 translates only its landmarks by 0.5 m.
+    translation = np.array([.5, 0., 0.])
+    np.testing.assert_array_equal(old_position, points[1])
+    np.testing.assert_array_equal(dropped.position, points[1] + translation)
+    np.testing.assert_array_equal(state.landmarks[ids[-1]].position, points[-1] + translation)
+
+    updated = points[5] + 2.
+    assert state.apply_corrections(state.revision, {i: frame.pose for i, frame in state.keyframes.items()},
+                                   propagate_landmarks=False, landmark_updates={ids[5]: updated})
+    added = add(0)
+    state.index.rebuild_from_map(state)
+    np.testing.assert_array_equal(state.landmarks[ids[5]].position, updated)
+    np.testing.assert_array_equal(state.landmarks[ids[6]].position, points[6] + translation)
+    np.testing.assert_array_equal(state.landmarks[added[-1]].position, points[-1])
+
+    assert state.apply_corrections(state.revision, {0: state.keyframes[0].pose, 1: pose(1.75)})
+    assert state.index._position_epoch == 2
+    # The second anchor move adds 0.25 m even to an explicitly updated landmark.
+    np.testing.assert_array_equal(state.landmarks[ids[5]].position, updated + [.25, 0., 0.])
+    np.testing.assert_array_equal(state.landmarks[added[-1]].position, points[-1])
+
+    # A legacy landmark installed by rebuilding the index retains its ordinary position field.
+    detached = state.landmarks[ids[8]]
+    old_value = points[8] + [.75, 0., 0.]
+    state.landmarks[ids[8]] = Landmark(ids[8], old_value.copy(), detached.descriptor,
+                                      detached.anchor, detached.observations)
+    state.index.rebuild_from_map(state)
+    assert state.apply_corrections(state.revision, {0: state.keyframes[0].pose, 1: pose(2.)})
+    assert state.index._position_epoch == 2
+    np.testing.assert_allclose(detached.position, old_value, rtol=0., atol=1e-12)
+    np.testing.assert_allclose(state.landmarks[ids[8]].position, old_value + [.25, 0., 0.],
+                               rtol=0., atol=1e-12)

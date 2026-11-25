@@ -51,6 +51,38 @@ def _lm_set_misses(self, value: int) -> None:
 Landmark.misses = property(_lm_get_misses, _lm_set_misses)  # type: ignore[assignment]
 
 
+class _DeferredPositionLandmark(Landmark):
+    """Keep an owned position array while large corrections arrive via the index."""
+
+    __slots__ = ("_coordinate_index", "_coordinate_epoch", "_position_value")
+
+    @property
+    def position(self):
+        index = self._coordinate_index
+        if index is not None and self._coordinate_epoch != index._position_epoch:
+            with index._deferred_position_lock:
+                slot = index._id_to_slot[self.id]
+                if index._position_stamps[slot] > self._coordinate_epoch:
+                    self._position_value = index._positions[slot].copy()
+                self._coordinate_epoch = index._position_epoch
+        return self._position_value
+
+    @position.setter
+    def position(self, value):
+        index = getattr(self, "_coordinate_index", None)
+        self._coordinate_index = index
+        self._coordinate_epoch = 0 if index is None else index._position_epoch
+        self._position_value = value
+
+    def _bind_position(self, index):
+        self._coordinate_index = index
+        self._coordinate_epoch = index._position_epoch
+
+    def _unbind_position(self):
+        self._position_value = self.position
+        self._coordinate_index = None
+
+
 @dataclass
 class MappingKeyframe:
     id: int
@@ -125,7 +157,7 @@ def _batch_metric_frame_corrections(poses, pose_anchors, frames_by_anchor,
 
 
 class MapState:
-    def __init__(self, metric=False):
+    def __init__(self, metric=False, *, defer_bulk_landmark_positions=False):
         self.metric = metric
         self.keyframes = {}
         self.landmarks = {}
@@ -144,7 +176,10 @@ class MapState:
         self.pose_revision = 0
         self.next_landmark = 0
         self.lock = RLock()
-        self.index = IncrementalMapIndex()
+        self.index = IncrementalMapIndex(
+            deferred_position_lock=self.lock if defer_bulk_landmark_positions else None,
+        )
+        self._landmark_type = _DeferredPositionLandmark if defer_bulk_landmark_positions else Landmark
         self._high_miss_landmarks: set[int] = set()
         self._high_miss_tracked_count: int = 0
         self._stereo_motion_by_anchor: dict[int, list[tuple[int, int]]] = {}
@@ -176,7 +211,7 @@ class MapState:
             raise ValueError("Nonfinite landmark")
         ident = self.next_landmark
         self.next_landmark += 1
-        landmark = Landmark(
+        landmark = self._landmark_type(
             ident, position.copy(), descriptor.copy(), anchor, observations,
             octave=int(octave), is_far=bool(is_far),
         )
@@ -186,6 +221,8 @@ class MapState:
         self.landmarks[ident] = landmark
         self._high_miss_tracked_count += 1
         self.index.on_landmark_added(landmark)
+        if self._landmark_type is _DeferredPositionLandmark:
+            self.index._bind_landmark_position(landmark)
         return ident
 
     def add_landmarks_batch(
@@ -230,6 +267,7 @@ class MapState:
         pid_i32_list: list[tuple[int, int] | None] = [None] * n
         landmarks = self.landmarks
         hms = self._high_miss_landmarks
+        landmark_type = self._landmark_type
         is_far_b = bool(is_far)
         _from_f32 = OwnedObservation.from_f32_bytes
 
@@ -246,7 +284,7 @@ class MapState:
                 obs = _from_f32(x, y, buf, pid, ru_list[k])
             else:
                 obs = OwnedObservation(px_arr[k], ru_list[k])
-            lm = Landmark(
+            lm = landmark_type(
                 ident,
                 pos_arr[k],
                 desc_arr[k],
@@ -257,6 +295,8 @@ class MapState:
             )
             lm._high_miss_set = hms
             landmarks[ident] = lm
+            if landmark_type is _DeferredPositionLandmark:
+                self.index._bind_landmark_position(lm)
 
         self._high_miss_tracked_count += n
         self.index.on_landmarks_added_batch(
@@ -684,11 +724,12 @@ class MapState:
                     }
             if bulk_anchor_updates:
                 landmarks_map = self.landmarks
-                idx_pos = self.index._positions
-                for id_list, slots, new_arr in bulk_anchor_updates:
-                    idx_pos[slots] = new_arr
-                    for i, row in zip(id_list, new_arr):
-                        landmarks_map[i].position = row
+                if not self.index.defer_landmark_positions(bulk_anchor_updates, len(landmarks_map)):
+                    idx_pos = self.index._positions
+                    for id_list, slots, new_arr in bulk_anchor_updates:
+                        idx_pos[slots] = new_arr
+                        for i, row in zip(id_list, new_arr):
+                            landmarks_map[i].position = row
             elif positions:
                 for ident, position in positions.items():
                     self.landmarks[ident].position = position

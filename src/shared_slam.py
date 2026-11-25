@@ -504,7 +504,6 @@ class SharedSlam:
         self.current_left_gray = self.current_right_gray = None
         self.stereo_depth_verification = {}
         self.stereo_map_depth_verification = {}
-        self.map = MapState(metric=stereo is not None)
         # Low-contrast road and surface texture can supply spatial support that
         # high-contrast repeated edges lack. Pose acceptance remains unchanged.
         contrast = self.config.stereo_feature_contrast_threshold if stereo is not None else 0.04
@@ -560,6 +559,8 @@ class SharedSlam:
             and self.config.stereo_map_depth_policy == "verified"
         )
         self._lazy_stereo_geometry = None
+        self.map = MapState(metric=stereo is not None,
+                            defer_bulk_landmark_positions=self._lazy_stereo_geometry_enabled)
         self._fast_stereo_sgbm = None
         if (
             self.stereo is not None

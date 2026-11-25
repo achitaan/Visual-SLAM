@@ -2546,6 +2546,7 @@ def local_bundle_adjustment(
                 held_right, held_dimension_mask, matrix, baseline, disparity_offset,
                 variable_scale[free_offsets] if len(free_offsets) else np.empty((0, 6)),
                 variable_scale[point_offset:point_limit].reshape(-1, 3),
+                use_native_projection=(use_analytic_jacobian and not snapshot_enabled and gauge_mode == "veto"),
             )
         image_pose_observability = observability_for(initial)
         if image_pose_observability["status"] != "observable":

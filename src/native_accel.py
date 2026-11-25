@@ -417,6 +417,12 @@ def extract_sift_grid_avx512(
 def _get_ba_lib() -> ctypes.CDLL | None:
     lib = _load_library("fast_ba")
     if lib is not None and not getattr(lib, "_configured", False):
+        if hasattr(lib, "project_rank3_camera_rows"):
+            lib.project_rank3_camera_rows.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p,
+            ]
+            lib.project_rank3_camera_rows.restype = ctypes.c_int32
         lib.solve_schur_local_bundle_cpp.argtypes = [
             ctypes.c_int32,  # n_cams
             ctypes.c_int32,  # n_free
@@ -494,6 +500,31 @@ def _get_ba_lib() -> ctypes.CDLL | None:
         lib.refine_bidirectional_stereo_lm_f64.restype = ctypes.c_int32
         lib._configured = True
     return lib
+
+
+def project_rank3_camera_rows(
+    point_rows: np.ndarray,
+    camera_rows: np.ndarray,
+    camera_slots: np.ndarray,
+    pose_columns: int,
+) -> np.ndarray | None:
+    """Eliminate well-conditioned point blocks or defer to the reference SVD."""
+    lib = _get_ba_lib()
+    if lib is None or not hasattr(lib, "project_rank3_camera_rows") or camera_slots.ndim != 2:
+        return None
+    batch, rows = camera_slots.shape
+    if (not batch or not 4 <= rows <= 64 or not 0 < pose_columns <= 60
+            or pose_columns % 6 or point_rows.shape != (batch, rows, 3)
+            or camera_rows.shape != (batch, rows, 6)):
+        return None
+    points = np.ascontiguousarray(point_rows, dtype=np.float64)
+    cameras = np.ascontiguousarray(camera_rows, dtype=np.float64)
+    slots = np.ascontiguousarray(camera_slots, dtype=np.int32)
+    projected = np.empty((batch, rows - 3, pose_columns), dtype=np.float64)
+    status = lib.project_rank3_camera_rows(points.ctypes.data, cameras.ctypes.data,
+                                           slots.ctypes.data, batch, rows, pose_columns,
+                                           projected.ctypes.data)
+    return projected if status == 1 else None
 
 
 def solve_schur_local_bundle_cpp(

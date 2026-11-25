@@ -236,6 +236,93 @@ inline void proj_jac_cam(
 
 extern "C" {
 
+// Apply orthogonal Householder reflectors to camera rows without forming full U.
+int32_t project_rank3_camera_rows(const double* point_rows, const double* camera_rows,
+    const int32_t* camera_slots, int32_t batch, int32_t rows, int32_t columns, double* output) {
+    if (!point_rows || !camera_rows || !camera_slots || !output || batch <= 0
+            || rows <= 3 || rows > 64 || columns <= 0 || columns > 60 || columns % 6 != 0) {
+        return 0;
+    }
+    const std::size_t camera_count = static_cast<std::size_t>(rows) * columns;
+    const std::size_t output_count = static_cast<std::size_t>(rows - 3) * columns;
+    std::vector<double> b(static_cast<std::size_t>(rows) * 3);
+    std::vector<double> a(camera_count);
+    std::vector<double> dot(columns);
+    double tau[3];
+    const auto b_at = [&](int row, int column) -> double& { return b[3 * row + column]; };
+
+    for (int point = 0; point < batch; ++point) {
+        std::copy_n(point_rows, b.size(), b.data());
+        point_rows += b.size();
+        for (int col = 0; col < 3; ++col) {
+            double squared_norm = 0.0;
+            for (int row = col; row < rows; ++row) {
+                const double value = b_at(row, col);
+                squared_norm += value * value;
+            }
+            if (!(squared_norm > 0.) || !std::isfinite(squared_norm)) return 0;
+            const double alpha = b_at(col, col);
+            const double beta = -std::copysign(std::sqrt(squared_norm), alpha);
+            const double pivot = alpha - beta;
+            if (!std::isfinite(pivot)) return 0;
+            tau[col] = (beta - alpha) / beta;
+            b_at(col, col) = beta;
+            for (int row = col + 1; row < rows; ++row) b_at(row, col) /= pivot;
+            for (int trailing = col + 1; trailing < 3; ++trailing) {
+                double inner = b_at(col, trailing);
+                for (int row = col + 1; row < rows; ++row) inner += b_at(row, col) * b_at(row, trailing);
+                const double update = tau[col] * inner;
+                b_at(col, trailing) -= update;
+                for (int row = col + 1; row < rows; ++row) b_at(row, trailing) -= b_at(row, col) * update;
+            }
+        }
+        double scale = 0.;
+        for (int row = 0; row < 3; ++row)
+            for (int col = row; col < 3; ++col) scale = std::max(scale, std::abs(b_at(row, col)));
+        if (!(scale > 0.) || !std::isfinite(scale)) return 0;
+        double norm_sq = 0.;
+        for (int row = 0; row < 3; ++row) {
+            for (int col = row; col < 3; ++col) {
+                const double value = b_at(row, col) / scale;
+                norm_sq += value * value;
+            }
+        }
+        const double determinant = std::abs((b_at(0, 0) / scale) * (b_at(1, 1) / scale) * (b_at(2, 2) / scale));
+        // 2 |det R| / ||R||_F^3 is a lower bound on sigma_min / sigma_max.
+        // Use the reference SVD when this bound is too small to certify rank.
+        if (!(2.0 * determinant > 1e-6 * norm_sq * std::sqrt(norm_sq))) return 0;
+
+        std::fill(a.begin(), a.end(), 0.);
+        for (int row = 0; row < rows; ++row) {
+            const int slot = *camera_slots++;
+            if (slot >= 0) {
+                const std::size_t first = static_cast<std::size_t>(slot) * 6;
+                if (first + 6 > static_cast<std::size_t>(columns)) return 0;
+                std::copy_n(camera_rows, 6, a.data() + static_cast<std::size_t>(row) * columns + first);
+            }
+            camera_rows += 6;
+        }
+        for (int col = 0; col < 3; ++col) {
+            const double* diagonal = a.data() + static_cast<std::size_t>(col) * columns;
+            std::copy_n(diagonal, columns, dot.data());
+            for (int row = col + 1; row < rows; ++row) {
+                const double coefficient = b_at(row, col);
+                const double* from = a.data() + static_cast<std::size_t>(row) * columns;
+                for (int component = 0; component < columns; ++component) dot[component] += coefficient * from[component];
+            }
+            for (int row = col + 1; row < rows; ++row) {
+                const double coefficient = b_at(row, col) * tau[col];
+                double* into = a.data() + static_cast<std::size_t>(row) * columns;
+                for (int component = 0; component < columns; ++component) into[component] -= coefficient * dot[component];
+            }
+        }
+        std::copy_n(a.data() + 3 * columns, output_count, output);
+        output += output_count;
+    }
+    return 1;
+}
+
+
 // Exact C++ Schur-complement Huber-IRLS Levenberg-Marquardt local BA solver.
 // Modifies `x_free_poses` [n_free * 6] and `x_points` [n_pt * 3] in place.
 int32_t solve_schur_local_bundle_cpp(

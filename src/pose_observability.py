@@ -115,7 +115,7 @@ def original_image_pose_observability(
     selected_right_u, selected_component_mask, excluded_fixed_points,
     excluded_camera_indices, excluded_pixels, excluded_right_u,
     excluded_component_mask, matrix, baseline, disparity_offset,
-    pose_scales, point_scales,
+    pose_scales, point_scales, *, use_native_projection=False,
 ):
     """Rank the original image objective after eliminating selected points.
 
@@ -135,6 +135,18 @@ def original_image_pose_observability(
                 "elapsed_s": float(time.perf_counter() - started)}
 
     started = time.perf_counter()
+    native_used = False
+
+    def reference():
+        return original_image_pose_observability(
+            camera_poses, free_camera_indices, free_camera_rotvecs, selected_points,
+            selected_camera_indices, selected_point_indices, selected_pixels,
+            selected_right_u, selected_component_mask, excluded_fixed_points,
+            excluded_camera_indices, excluded_pixels, excluded_right_u,
+            excluded_component_mask, matrix, baseline, disparity_offset,
+            pose_scales, point_scales,
+        )
+
     try:
         cameras = np.asarray(camera_poses, dtype=np.float64)
         free_idx = np.asarray(free_camera_indices, dtype=np.intp).reshape(-1)
@@ -179,6 +191,8 @@ def original_image_pose_observability(
             return invalid("duplicate_free_camera_index")
 
         from analytic_ba import right_jacobian_batch, _projection_jacobian_wrt_cam
+        if use_native_projection:
+            from native_accel import project_rank3_camera_rows
 
         cam_to_slot = np.full(len(cameras), -1, dtype=np.int32)
         if nfree:
@@ -289,6 +303,16 @@ def original_image_pose_observability(
                                         A_mat[lr, 6 * s_lr:6 * s_lr + 6] = Jpose_rows[r_ids[lr]]
                                 reduced.append(U_d[di, :, pr:].T @ A_mat)
                     else:
+                        sl_2d = slots_of_row[row_idx_2d]
+                        if use_native_projection:
+                            projected = project_rank3_camera_rows(
+                                B_batch, Jpose_rows[row_idx_2d], sl_2d, npose,
+                            )
+                            if projected is not None:
+                                native_used = True
+                                rank_histogram["3"] = rank_histogram.get("3", 0) + g
+                                reduced.append(projected.reshape(-1, npose))
+                                continue
                         U_batch, svals, _ = np.linalg.svd(B_batch, full_matrices=True)  # U: [g, m, m]
                         tols = eps * max(m_rows, 3) * svals[:, 0:1]
                         pranks = np.count_nonzero(svals > tols, axis=1)
@@ -298,7 +322,6 @@ def original_image_pose_observability(
 
                         # Build batched A_batch [g, m_rows, npose]
                         A_batch = np.zeros((g, m_rows, npose), dtype=np.float64)
-                        sl_2d = slots_of_row[row_idx_2d]  # [g, m_rows]
                         fg, fm = np.nonzero(sl_2d >= 0)
                         if len(fg):
                             sl_vals = sl_2d[fg, fm]
@@ -340,12 +363,16 @@ def original_image_pose_observability(
 
         C = (np.vstack(reduced) if reduced else np.empty((0, npose), dtype=np.float64))
         if not np.isfinite(C).all():
-            return invalid("nonfinite_reduced_pose_jacobian")
+            return reference() if native_used else invalid("nonfinite_reduced_pose_jacobian")
         singular_values = np.linalg.svd(C, compute_uv=False) if C.size else np.empty(0)
         smax = float(singular_values[0]) if len(singular_values) else 0.0
         tolerance = eps * max(C.shape) * smax if C.size else 0.0
         rank = int(np.count_nonzero(singular_values > tolerance))
         nullity = int(npose - rank)
+        # A different orthogonal basis can shift the last bits of the spectrum.
+        # Leave weak or rank-deficient cases to the original reduction.
+        if native_used and (nullity or singular_values[-1] <= 256 * tolerance):
+            return reference()
         return {
             "status": "observable" if nullity == 0 else "unobservable",
             "reason": None if nullity == 0 else "rank_deficient_image_pose_graph",
@@ -360,4 +387,6 @@ def original_image_pose_observability(
             "elapsed_s": float(time.perf_counter() - started),
         }
     except (ValueError, TypeError, IndexError, np.linalg.LinAlgError, OverflowError) as error:
+        if native_used:
+            return reference()
         return invalid(str(error) or type(error).__name__)

@@ -1081,6 +1081,42 @@ class SharedSlam:
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
             return None
 
+    def _insert_verified_stereo_landmarks(self, frame, pose, map_points, map_right_u,
+                                          groups, group_ids, blocked_groups):
+        first_rows = np.fromiter((members[0] for members in groups), dtype=np.intp, count=len(groups))
+        representative = first_rows[group_ids]
+        aliases = np.bincount(group_ids, minlength=len(groups)) > 1
+        valid = (frame.landmark_ids < 0) & np.isfinite(map_points).all(axis=1) & np.isfinite(map_right_u)
+        with np.errstate(invalid="ignore", over="ignore"):
+            point = map_points[representative]
+            right = map_right_u[representative]
+            valid &= (np.abs(map_points - point) <= 1e-6 + 1e-6 * np.abs(point)).all(axis=1)
+            valid &= np.abs(map_right_u - right) <= 1e-6 + 1e-6 * np.abs(right)
+            keep = np.ones(len(groups), dtype=bool)
+            keep[group_ids[~valid]] = False
+            if blocked_groups:
+                keep[list(blocked_groups)] = False
+            rows = first_rows[keep]
+            if not len(rows):
+                return
+            rotation, translation = pose[:3, :3], pose[:3, 3]
+            world = map_points @ rotation.T + translation
+            # The per-point projection for orientation aliases retains its scalar rounding.
+            for row in first_rows[keep & aliases]:
+                world[row] = rotation @ map_points[row] + translation
+
+        # The original singleton batch stores float32 pixels. Alias observations
+        # inserted individually keep their supplied dtype and share the float32 identity.
+        preserve_dtype = aliases[keep] if frame.pixels.dtype == np.float64 else None
+        new_ids = self.map.add_landmarks_batch(
+            world[rows], frame.descriptors[rows], frame.id, frame.pixels[rows], map_right_u[rows],
+            frame.octaves[rows], preserve_pixel_dtype=preserve_dtype,
+        )
+        by_group = np.empty(len(groups), dtype=np.intp)
+        by_group[keep] = new_ids
+        added = keep[group_ids]
+        frame.landmark_ids[added] = by_group[group_ids[added]]
+
     def _keyframe(self, index, pose, pixels, desc, points, right_u, associations,
                   frontend_seed_payload=None):
         frontend_seed_payload = self._consume_frontend_seed_payload(
@@ -1305,145 +1341,154 @@ class SharedSlam:
                 lid, ident, OwnedObservation(observed_pixel.copy(), measured_right)
             )
         if self.stereo is not None:
-            _R_kf = pose[:3, :3]
-            _t_kf = pose[:3, 3]
-            with np.errstate(invalid="ignore", over="ignore"):
-                _world_map = map_points @ _R_kf.T + _t_kf
-            _lm_ids_arr = frame.landmark_ids
-            _n_oct = len(kf_octaves)
-            _add_lm = self.map.add_landmark
-            _add_lm_batch = self.map.add_landmarks_batch
-            _valid_single = (
-                (_lm_ids_arr < 0)
-                & np.isfinite(map_points).all(axis=1)
-                & np.isfinite(map_right_u)
-            ).tolist()
-            _batch_f0: list[int] = []
-            _batch_aliases: list[list[int]] = []
-
-            def _flush_batch():
-                if not _batch_f0:
-                    return
-                idx_arr = np.asarray(_batch_f0, dtype=np.intp)
-                if _n_oct >= len(pixels):
-                    octs = kf_octaves[idx_arr]
-                else:
-                    octs = [int(kf_octaves[f]) if f < _n_oct else 0 for f in _batch_f0]
-                lids = _add_lm_batch(
-                    _world_map[idx_arr],
-                    desc[idx_arr],
-                    ident,
-                    pixels[idx_arr],
-                    map_right_u[idx_arr],
-                    octs,
-                    is_far=False,
+            seed_fallback = (self.config.stereo_map_frontend_seed_fallback
+                             and frontend_seed_points is not None and frontend_seed_right_u is not None)
+            if (self.performance.cpu_optimizations and map_depth_verified and not seed_fallback
+                    and map_points.dtype == map_right_u.dtype == np.float64
+                    and pixels.dtype in (np.dtype(np.float32), np.dtype(np.float64))):
+                self._insert_verified_stereo_landmarks(
+                    frame, pose, map_points, map_right_u, groups, group_ids, blocked_groups,
                 )
-                _lm_ids_arr[idx_arr] = lids
-                for members in _batch_aliases:
-                    _lm_ids_arr[members[1:]] = _lm_ids_arr[members[0]]
-                _batch_f0.clear()
-                _batch_aliases.clear()
+            else:
+                _R_kf = pose[:3, :3]
+                _t_kf = pose[:3, 3]
+                with np.errstate(invalid="ignore", over="ignore"):
+                    _world_map = map_points @ _R_kf.T + _t_kf
+                _lm_ids_arr = frame.landmark_ids
+                _n_oct = len(kf_octaves)
+                _add_lm = self.map.add_landmark
+                _add_lm_batch = self.map.add_landmarks_batch
+                _valid_single = (
+                    (_lm_ids_arr < 0)
+                    & np.isfinite(map_points).all(axis=1)
+                    & np.isfinite(map_right_u)
+                ).tolist()
+                _batch_f0: list[int] = []
+                _batch_aliases: list[list[int]] = []
 
-            for group_id, members in enumerate(groups):
-                if group_id in blocked_groups:
-                    continue
-                if len(members) == 1:
-                    f0 = members[0]
-                    if _valid_single[f0]:
-                        _batch_f0.append(f0)
-                        continue
-                    if _lm_ids_arr[f0] >= 0:
-                        continue
-                    values = map_points[f0:f0 + 1]
-                    rights = map_right_u[f0:f0 + 1]
-                    seed_values = values
-                    seed_right = None
-                    verified_group = False
-                else:
-                    if any(_lm_ids_arr[feature] >= 0 for feature in members):
-                        continue
-                    values = map_points[members]
-                    rights = map_right_u[members]
-                    finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
-                    if finite.all():
-                        v0 = values[0]
-                        r0 = rights[0]
-                        verified_group = bool(
-                            np.all(np.abs(values - v0) <= 1e-6 + 1e-6 * np.abs(v0))
-                            and np.all(np.abs(rights - r0) <= 1e-6 + 1e-6 * abs(float(r0)))
-                        )
+                def _flush_batch():
+                    if not _batch_f0:
+                        return
+                    idx_arr = np.asarray(_batch_f0, dtype=np.intp)
+                    if _n_oct >= len(pixels):
+                        octs = kf_octaves[idx_arr]
                     else:
-                        verified_group = False
-                    seed_values = values
-                    seed_right = float(rights[0]) if verified_group else None
-                if not verified_group:
-                    # Only an all-NaN provider abstention may use the fresh
-                    # current-frame extraction as a point seed. Partial/Inf
-                    # output and alias disagreement remain fail-closed.
-                    if not (
-                        map_depth_verified
-                        and self.config.stereo_map_frontend_seed_fallback
-                        and frontend_seed_points is not None
-                        and frontend_seed_right_u is not None
-                    ):
+                        octs = [int(kf_octaves[f]) if f < _n_oct else 0 for f in _batch_f0]
+                    lids = _add_lm_batch(
+                        _world_map[idx_arr],
+                        desc[idx_arr],
+                        ident,
+                        pixels[idx_arr],
+                        map_right_u[idx_arr],
+                        octs,
+                        is_far=False,
+                    )
+                    _lm_ids_arr[idx_arr] = lids
+                    for members in _batch_aliases:
+                        _lm_ids_arr[members[1:]] = _lm_ids_arr[members[0]]
+                    _batch_f0.clear()
+                    _batch_aliases.clear()
+
+                for group_id, members in enumerate(groups):
+                    if group_id in blocked_groups:
                         continue
                     if len(members) == 1:
                         f0 = members[0]
-                        if not (np.isnan(values[0]).all() and np.isnan(rights[0])):
+                        if _valid_single[f0]:
+                            _batch_f0.append(f0)
                             continue
-                        sv0 = frontend_seed_points[f0]
-                        sr0 = frontend_seed_right_u[f0]
-                        sx, sy, sz = float(sv0[0]), float(sv0[1]), float(sv0[2])
-                        if not (
-                            _isfinite(sx) and _isfinite(sy) and _isfinite(sz)
-                            and _isfinite(float(sr0))
-                            and 0.1 < sz < 100.0
-                        ):
+                        if _lm_ids_arr[f0] >= 0:
                             continue
-                        seed_values = frontend_seed_points[f0:f0 + 1]
+                        values = map_points[f0:f0 + 1]
+                        rights = map_right_u[f0:f0 + 1]
+                        seed_values = values
+                        seed_right = None
+                        verified_group = False
                     else:
-                        if not (np.isnan(values).all() and np.isnan(rights).all()):
+                        if any(_lm_ids_arr[feature] >= 0 for feature in members):
                             continue
-                        seed_values = frontend_seed_points[members]
-                        seed_rights = frontend_seed_right_u[members]
-                        if (
-                            seed_values.shape != values.shape
-                            or seed_rights.shape != rights.shape
-                            or not np.isfinite(seed_values).all()
-                            or not np.isfinite(seed_rights).all()
-                            or np.any(seed_values[:, 2] <= 0.1)
-                            or np.any(seed_values[:, 2] >= 100.0)
-                            or not np.allclose(seed_values, seed_values[0],
-                                               rtol=1e-6, atol=1e-6)
-                            or not np.allclose(seed_rights, seed_rights[0],
-                                               rtol=1e-6, atol=1e-6)
+                        values = map_points[members]
+                        rights = map_right_u[members]
+                        finite = np.isfinite(values).all(axis=1) & np.isfinite(rights)
+                        if finite.all():
+                            v0 = values[0]
+                            r0 = rights[0]
+                            verified_group = bool(
+                                np.all(np.abs(values - v0) <= 1e-6 + 1e-6 * np.abs(v0))
+                                and np.all(np.abs(rights - r0) <= 1e-6 + 1e-6 * abs(float(r0)))
+                            )
+                        else:
+                            verified_group = False
+                        seed_values = values
+                        seed_right = float(rights[0]) if verified_group else None
+                    if not verified_group:
+                        # Only an all-NaN provider abstention may use the fresh
+                        # current-frame extraction as a point seed. Partial/Inf
+                        # output and alias disagreement remain fail-closed.
+                        if not (
+                            map_depth_verified
+                            and self.config.stereo_map_frontend_seed_fallback
+                            and frontend_seed_points is not None
+                            and frontend_seed_right_u is not None
                         ):
                             continue
-                feature = members[0]
-                world = _R_kf @ seed_values[0] + _t_kf
-                if verified_group and pixels.dtype == np.float32:
-                    # Keep the original per-point projection for orientation
-                    # aliases, then insert them in the same order as singletons.
-                    _world_map[feature] = world
-                    _batch_f0.append(feature)
-                    _batch_aliases.append(members)
-                    continue
+                        if len(members) == 1:
+                            f0 = members[0]
+                            if not (np.isnan(values[0]).all() and np.isnan(rights[0])):
+                                continue
+                            sv0 = frontend_seed_points[f0]
+                            sr0 = frontend_seed_right_u[f0]
+                            sx, sy, sz = float(sv0[0]), float(sv0[1]), float(sv0[2])
+                            if not (
+                                _isfinite(sx) and _isfinite(sy) and _isfinite(sz)
+                                and _isfinite(float(sr0))
+                                and 0.1 < sz < 100.0
+                            ):
+                                continue
+                            seed_values = frontend_seed_points[f0:f0 + 1]
+                        else:
+                            if not (np.isnan(values).all() and np.isnan(rights).all()):
+                                continue
+                            seed_values = frontend_seed_points[members]
+                            seed_rights = frontend_seed_right_u[members]
+                            if (
+                                seed_values.shape != values.shape
+                                or seed_rights.shape != rights.shape
+                                or not np.isfinite(seed_values).all()
+                                or not np.isfinite(seed_rights).all()
+                                or np.any(seed_values[:, 2] <= 0.1)
+                                or np.any(seed_values[:, 2] >= 100.0)
+                                or not np.allclose(seed_values, seed_values[0],
+                                                   rtol=1e-6, atol=1e-6)
+                                or not np.allclose(seed_rights, seed_rights[0],
+                                                   rtol=1e-6, atol=1e-6)
+                            ):
+                                continue
+                    feature = members[0]
+                    world = _R_kf @ seed_values[0] + _t_kf
+                    if verified_group and pixels.dtype == np.float32:
+                        # Keep the original per-point projection for orientation
+                        # aliases, then insert them in the same order as singletons.
+                        _world_map[feature] = world
+                        _batch_f0.append(feature)
+                        _batch_aliases.append(members)
+                        continue
+                    _flush_batch()
+                    lm_oct = int(kf_octaves[feature]) if feature < _n_oct else 0
+                    lid = _add_lm(
+                        world,
+                        desc[feature],
+                        ident,
+                        {
+                            ident: OwnedObservation(
+                                pixels[feature], seed_right
+                            )
+                        },
+                        octave=lm_oct,
+                        is_far=False,
+                    )
+                    _lm_ids_arr[members] = lid
                 _flush_batch()
-                lm_oct = int(kf_octaves[feature]) if feature < _n_oct else 0
-                lid = _add_lm(
-                    world,
-                    desc[feature],
-                    ident,
-                    {
-                        ident: OwnedObservation(
-                            pixels[feature], seed_right
-                        )
-                    },
-                    octave=lm_oct,
-                    is_far=False,
-                )
-                _lm_ids_arr[members] = lid
-            _flush_batch()
             if getattr(self.config, "use_projective_tracking", False) and ident > 0:
                 from local_map_tracker import fuse_neighbor_landmarks
 

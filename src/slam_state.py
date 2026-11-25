@@ -198,8 +198,13 @@ class MapState:
         octaves: list[int] | np.ndarray,
         *,
         is_far: bool = False,
+        preserve_pixel_dtype: np.ndarray | None = None,
     ) -> list[int]:
-        """Bulk-insert verified single-observation landmarks with bit-exact ID order."""
+        """Insert verified single-observation landmarks in row order.
+
+        Selected rows can retain their supplied pixel dtype. Their index still
+        uses the usual float32 pixel identity.
+        """
         n = len(positions)
         if n == 0:
             return []
@@ -211,6 +216,9 @@ class MapState:
         px_finite = np.isfinite(px_arr).all(axis=1).tolist()
         px_bytes = px_arr.tobytes()
         px_list = px_arr.tolist()
+        preserve_dtype = (None if preserve_pixel_dtype is None
+                          else np.asarray(preserve_pixel_dtype, dtype=bool).reshape(n).tolist())
+        raw_pixels = None if preserve_dtype is None else np.asarray(pixels).reshape(n, 2)
         ru_list = np.asarray(right_us, dtype=np.float64).tolist()
         oct_list = octaves.tolist() if isinstance(octaves, np.ndarray) else list(octaves)
 
@@ -227,7 +235,10 @@ class MapState:
 
         for k in range(n):
             ident = start_id + k
-            if px_finite[k]:
+            if preserve_dtype is not None and preserve_dtype[k]:
+                obs = OwnedObservation(raw_pixels[k], ru_list[k])
+                pid_i32_list[k] = obs._pixel_id_i32
+            elif px_finite[k]:
                 buf = px_bytes[k * 8 : (k + 1) * 8]
                 pid = _UNPACK_2I(buf)
                 pid_i32_list[k] = pid

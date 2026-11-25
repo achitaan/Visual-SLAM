@@ -2301,7 +2301,10 @@ class SharedSlam:
                         }
                     cands = {int(lid): (pixels[fidx], int(fidx)) for lid, fidx in proj_map.items()}
             if not used_projective:
-                descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
+                if not relocalize and candidate_ids is None:
+                    descriptors, descriptor_landmark_ids = self._map_tracking_descriptor_bank(landmarks)
+                else:
+                    descriptors, descriptor_landmark_ids = self._landmark_descriptor_bank(landmarks)
                 pairs = self._match(descriptors, desc)
                 if arbitration is not None:
                     arbitration['excluded_landmarks'].update(
@@ -3447,6 +3450,12 @@ class SharedSlam:
         return kept
 
     def _invalidate_kf_descriptor_cache(self, kf_id=None):
+        tracked = getattr(self, "_tracking_descriptor_rows", None)
+        if tracked is not None and tracked.map is self.map:
+            if kf_id is None:
+                tracked.clear()
+            else:
+                tracked.keyframe_changed(kf_id)
         cache = getattr(self, "_kf_landmark_row_cache", None)
         gen = getattr(self, "_kf_landmark_row_gen", None)
         lm_cache = getattr(self, "_lm_desc_cache", None)
@@ -3466,6 +3475,21 @@ class SharedSlam:
             cache.pop(kf_id, None)
         if gen is not None:
             gen[kf_id] = gen.get(kf_id, 0) + 1
+
+    def _map_tracking_descriptor_bank(self, landmarks):
+        if (len(landmarks) < 64 or not getattr(self, "_lazy_stereo_geometry_enabled", False)
+                or self.matcher.requested != "cuda" or not self.config.use_incremental_map_index
+                or len(self.map.index) != len(self.map.landmarks)):
+            return self._landmark_descriptor_bank(landmarks)
+        tracked = getattr(self, "_tracking_descriptor_rows", None)
+        if tracked is None or tracked.map is not self.map:
+            from tracking_descriptor_rows import TrackingDescriptorRows
+
+            tracked = self._tracking_descriptor_rows = TrackingDescriptorRows(
+                self.map, SharedSlam._landmark_descriptor_bank, SharedSlam._invalidate_kf_descriptor_cache,
+            )
+            self.map.index._tracking_descriptor_rows = tracked
+        return tracked.bank(landmarks)
 
     def _landmark_descriptor_bank(self, landmarks):
         """Use anchor/latest linked SIFT rows without retaining a dense map copy."""

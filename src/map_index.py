@@ -40,6 +40,7 @@ class IncrementalMapIndex:
         self._num_obs = np.zeros(cap, dtype=np.int32)
         self._is_conflicted = np.zeros(cap, dtype=bool)
         self._id_to_slot: dict[int, int] = {}
+        self._tracking_descriptor_rows = None
         self._deferred_position_lock = deferred_position_lock
         self._position_epoch = 0
         self._position_stamps = (
@@ -217,6 +218,8 @@ class IncrementalMapIndex:
         id_to_slot = self._id_to_slot
         slot = id_to_slot.get(lm_id)
         is_new = slot is None
+        if not is_new and self._tracking_descriptor_rows is not None:
+            self._tracking_descriptor_rows.discard_landmark(lm_id)
         if is_new:
             if self._size >= self._capacity:
                 self._grow()
@@ -414,6 +417,8 @@ class IncrementalMapIndex:
             self._num_obs[slot] = len(lm_kfs)
             if kf_id > self._max_obs_kf[slot]:
                 self._max_obs_kf[slot] = kf_id
+                if self._tracking_descriptor_rows is not None:
+                    self._tracking_descriptor_rows.invalidate_landmark(lm_id)
         self._found_counts[lm_id] = self._found_counts.get(lm_id, 0) + 1
         pid_i32 = getattr(actual_obs, "_pixel_id_i32", None)
         if pid_i32 is not None and getattr(actual_obs, "_identity_owned", False):
@@ -450,12 +455,16 @@ class IncrementalMapIndex:
         slot = self._id_to_slot.get(lm_id)
         if slot is not None:
             if not lm_kfs:
+                if self._max_obs_kf[slot] != -1 and self._tracking_descriptor_rows is not None:
+                    self._tracking_descriptor_rows.invalidate_landmark(lm_id)
                 self._num_obs[slot] = 0
                 self._max_obs_kf[slot] = -1
             else:
                 self._num_obs[slot] = len(lm_kfs)
                 if kf_id == self._max_obs_kf[slot]:
                     self._max_obs_kf[slot] = max(lm_kfs)
+                    if self._tracking_descriptor_rows is not None:
+                        self._tracking_descriptor_rows.invalidate_landmark(lm_id)
 
         lm_keys = self._landmark_pixel_keys.get(lm_id)
         if lm_keys:
@@ -505,6 +514,8 @@ class IncrementalMapIndex:
 
     def on_landmark_removed(self, landmark_id: int) -> None:
         lm_id = int(landmark_id)
+        if self._tracking_descriptor_rows is not None:
+            self._tracking_descriptor_rows.discard_landmark(lm_id)
         cached_slots = self._anchor_correction_slots
         if cached_slots:
             cached_slots.pop(self._landmark_anchor.get(lm_id), None)
@@ -820,6 +831,8 @@ class IncrementalMapIndex:
 
     def rebuild_from_map(self, map_state: Any) -> None:
         """Synchronize index completely from a MapState (e.g., after external edits)."""
+        if self._tracking_descriptor_rows is not None:
+            self._tracking_descriptor_rows.clear()
         self._anchor_correction_slots.clear()
         bound = self._position_landmarks
         if bound is not None:

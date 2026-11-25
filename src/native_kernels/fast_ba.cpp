@@ -1,3 +1,4 @@
+#include "portable_export.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -238,7 +239,7 @@ extern "C" {
 
 // Exact C++ Schur-complement Huber-IRLS Levenberg-Marquardt local BA solver.
 // Modifies `x_free_poses` [n_free * 6] and `x_points` [n_pt * 3] in place.
-int32_t solve_schur_local_bundle_cpp(
+VSLAM_EXPORT int32_t solve_schur_local_bundle_cpp(
     int32_t n_cams,
     int32_t n_free,
     int32_t n_pt,
@@ -762,7 +763,7 @@ static inline void mat3_mul(const double A[9], const double B[9], double C[9]) {
     }
 }
 
-int32_t refine_stereo_pose_lm_f64(
+VSLAM_EXPORT int32_t refine_stereo_pose_lm_f64(
     double* R_cw,                  // [9] in/out
     double* t_cw,                  // [3] in/out
     const double* pts_w,           // [n * 3]
@@ -942,7 +943,7 @@ int32_t refine_stereo_pose_lm_f64(
     return 1;
 }
 
-int32_t refine_bidirectional_stereo_lm_f64(
+VSLAM_EXPORT int32_t refine_bidirectional_stereo_lm_f64(
     double* R_io,                  // [9] in/out (T_s_t rotation)
     double* t_io,                  // [3] in/out (T_s_t translation)
     const double* src_pts,         // [n1 * 3]

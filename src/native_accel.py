@@ -25,13 +25,21 @@ def native_enabled() -> bool:
     )
 
 
+def _library_candidates(name: str) -> tuple[Path, ...]:
+    if os.name == "nt":
+        return (_KERNEL_DIR / f"{name}.dll", _KERNEL_DIR / f"lib{name}.dll")
+    if os.uname().sysname == "Darwin" if hasattr(os, "uname") else False:
+        return (_KERNEL_DIR / f"lib{name}.dylib", _KERNEL_DIR / f"lib{name}.so")
+    return (_KERNEL_DIR / f"lib{name}.so",)
+
+
 def _load_library(name: str) -> ctypes.CDLL | None:
     if not native_enabled():
         return None
     if name in _LOADED:
         return _LOADED[name]
-    lib_path = _KERNEL_DIR / f"lib{name}.so"
-    if not lib_path.is_file():
+    lib_path = next((p for p in _library_candidates(name) if p.is_file()), None)
+    if lib_path is None:
         _LOADED[name] = None
         return None
     try:

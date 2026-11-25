@@ -133,3 +133,11 @@ h1 { font-size:27px; font-weight:650; letter-spacing:-.9px; margin:0 0 8px; }
 @media(max-width:1230px) { .workspace { padding:24px; } .sessionBar { flex-wrap:wrap; gap:12px; } .metricStrip { grid-template-columns:repeat(3,1fr); } .headerContext { flex-direction:column; align-items:flex-end; } .statValue { font-size:23px; } }
 @media(max-width:900px) { .appShell { grid-template-columns:64px minmax(0,1fr); } .sidebar { padding:22px 5px; } .workspace { padding:22px 17px; } .visualGrid,.analysisGrid,.benchmarkDetail { grid-template-columns:1fr; } .benchmarkStats { grid-template-columns:repeat(2,1fr); } .mapSummary { flex-wrap:wrap; gap:14px; } .mapNote { width:100%; margin:0; } .workspaceHeader { align-items:flex-start; } .workspaceHeader p { max-width:250px; line-height:1.6; } .trajectoryPanel canvas { max-height:270px; } .benchmarkBanner { align-items:flex-start; flex-direction:column; gap:14px; } .chartLegend { gap:8px; } }
 @media(max-width:600px) { .workspaceHeader { flex-direction:column; gap:15px; } .headerContext { flex-direction:row; align-items:center; } .metricStrip { grid-template-columns:repeat(2,1fr); gap:8px; } .statCard { padding:14px; } .toolbar { gap:5px; } .button { padding:8px; } .sessionIdentity { flex-wrap:wrap; } h1 { font-size:24px; } .workspaceFooter { flex-direction:column; line-height:1.6; } .navItem span { font-size:8px; } .panelHeading { padding:16px; } .cameraStage { min-height:155px; aspect-ratio:auto; } .cameraStage.hasImage { aspect-ratio:3.3; min-height:0; } .frameFooter { margin:12px 16px; } }
+.topModeSwitch { margin-right:0; }
+.topModeSwitch button { padding:7px 12px; font-size:10px; }
+.realtimeControls { flex-wrap:wrap; gap:12px; }
+.sourceSwitcher { padding:10px 17px; background:#fafbfd; }
+.inlineField { display:inline-flex; align-items:center; gap:6px; font-size:10px; color:#718094; }
+.textInput { border:1px solid #e2e8ee; border-radius:5px; padding:6px 9px; font-size:11px; color:#304357; background:#fff; min-height:32px; width:175px; }
+.textInput.shortInput { width:68px; }
+

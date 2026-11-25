@@ -336,6 +336,7 @@ _MAPPING_ENHANCEMENT_DEFAULTS: dict[str, object] = {
     "use_adaptive_keyframe_parallax": False,
     "use_half_res_stereo": False,
     "max_live_loop_keyframes": 300,
+    "async_local_ba": False,
 }
 
 for _enh_key, _enh_default in _MAPPING_ENHANCEMENT_DEFAULTS.items():
@@ -541,6 +542,19 @@ class SharedSlam:
         self.verified_stereo_motion = None
         self.motion_prediction_source = "held_pose"
         self.current_disparity = None
+        self._frame_timestamps_s: list[float | None] = []
+        self._current_timestamp_s: float | None = None
+        self._current_dt_s: float = 0.1
+        self._prev_dt_s: float = 0.1
+        self._current_dt_ratio: float = 1.0
+        self.tracking_state: str = "INIT"
+        self._consecutive_lost_frames: int = 0
+        self._async_ba_snapshot_seq: int = 0
+        self._local_mapping_worker = None
+        if getattr(self.config, "async_local_ba", False) and self.config.bundle_enabled:
+            from realtime.local_mapping_worker import LocalMappingWorker
+
+            self._local_mapping_worker = LocalMappingWorker()
 
     def _match(self, first, second):
         self.profile.count('descriptor_pairs', len(first) * len(second))
@@ -1486,9 +1500,138 @@ class SharedSlam:
         self.map.revision += 1
         return ident
 
+    @staticmethod
+    def _scale_se3_increment(delta: np.ndarray, scale: float) -> np.ndarray:
+        """Scale an SE(3) relative transform by ``scale`` via exact SE(3) log/exp."""
+        if scale == 1.0:
+            return delta
+        R = np.asarray(delta[:3, :3], dtype=np.float64)
+        t = np.asarray(delta[:3, 3], dtype=np.float64)
+        rotvec = cv.Rodrigues(R)[0].reshape(3)
+        theta = float(np.linalg.norm(rotvec))
+        if theta < 1e-8:
+            out = np.eye(4, dtype=np.float64)
+            w_s = rotvec * scale
+            out[:3, :3] = cv.Rodrigues(w_s)[0]
+            out[:3, 3] = t * scale
+            return out
+        wx, wy, wz = rotvec
+        W = np.array([[0.0, -wz, wy], [wz, 0.0, -wx], [-wy, wx, 0.0]], dtype=np.float64)
+        W2 = W @ W
+        theta2 = theta * theta
+        # Left Jacobian V(w) of SO(3): t = V(w) @ v
+        V = (
+            np.eye(3, dtype=np.float64)
+            + ((1.0 - np.cos(theta)) / theta2) * W
+            + ((theta - np.sin(theta)) / (theta2 * theta)) * W2
+        )
+        v = np.linalg.solve(V, t)
+        w_s = rotvec * scale
+        theta_s = float(np.linalg.norm(w_s))
+        out = np.eye(4, dtype=np.float64)
+        out[:3, :3] = cv.Rodrigues(w_s)[0]
+        if theta_s < 1e-8:
+            out[:3, 3] = v * scale
+        else:
+            sx, sy, sz = w_s
+            Ws = np.array([[0.0, -sz, sy], [sz, 0.0, -sx], [-sy, sx, 0.0]], dtype=np.float64)
+            Ws2 = Ws @ Ws
+            ts2 = theta_s * theta_s
+            Vs = (
+                np.eye(3, dtype=np.float64)
+                + ((1.0 - np.cos(theta_s)) / ts2) * Ws
+                + ((theta_s - np.sin(theta_s)) / (ts2 * theta_s)) * Ws2
+            )
+            out[:3, 3] = Vs @ (v * scale)
+        return out
+
+    def _last_step_dt_s(self) -> float:
+        """Return Δt between the last two recorded frames, defaulting to 0.1 s (10 Hz)."""
+        ts = getattr(self, "_frame_timestamps_s", None)
+        if ts and len(ts) >= 2 and ts[-1] is not None and ts[-2] is not None:
+            dt = float(ts[-1] - ts[-2])
+            if np.isfinite(dt) and dt > 1e-5:
+                return dt
+        return 0.1
+
+    def _update_frame_timing(self, timestamp_s: float | None) -> None:
+        if timestamp_s is None:
+            self._current_timestamp_s = None
+            self._current_dt_s = 0.1
+            self._prev_dt_s = 0.1
+            self._current_dt_ratio = 1.0
+            return
+        ts_curr = float(timestamp_s)
+        if not np.isfinite(ts_curr):
+            raise ValueError("Frame timestamp_s must be finite")
+        self._current_timestamp_s = ts_curr
+        ts = self._frame_timestamps_s
+        if ts and ts[-1] is not None:
+            raw_dt = ts_curr - float(ts[-1])
+            dt_s = raw_dt if np.isfinite(raw_dt) and raw_dt > 1e-5 else 0.1
+        else:
+            dt_s = 0.1
+        if len(ts) >= 2 and ts[-1] is not None and ts[-2] is not None:
+            raw_prev = float(ts[-1]) - float(ts[-2])
+            prev_dt_s = raw_prev if np.isfinite(raw_prev) and raw_prev > 1e-5 else dt_s
+        else:
+            prev_dt_s = dt_s
+        self._current_dt_s = float(dt_s)
+        self._prev_dt_s = float(prev_dt_s)
+        self._current_dt_ratio = float(np.clip(dt_s / prev_dt_s, 0.25, 3.0))
+
+    def _poll_async_local_ba(self) -> bool:
+        """Atomically apply any completed LocalBACorrection on the tracking thread."""
+        worker = getattr(self, "_local_mapping_worker", None)
+        if worker is None:
+            return False
+        # Do not bump pose_revision while a loop job is in flight or a verified loop is pending.
+        if getattr(self.loop_worker, "pending_loops", None):
+            if getattr(self.loop_worker, "future", None) is None:
+                self.loop_worker.schedule(self.map)
+            return False
+        if getattr(self.loop_worker, "future", None) is not None:
+            return False
+        correction = worker.poll_correction()
+        if correction is None:
+            return False
+        from realtime.local_mapping_worker import apply_local_ba_correction
+
+        applied = apply_local_ba_correction(
+            self.map,
+            correction,
+            kf_landmark_row_cache=getattr(self, "_kf_landmark_row_cache", None),
+        )
+        self.bundle_reports.append(
+            {
+                "frame": int(correction.frame_index),
+                **correction.report,
+                "async_applied": bool(applied),
+                "async_ba_elapsed_ms": float(correction.elapsed_ms),
+            }
+        )
+        return applied
+
+    def _update_tracking_state(self, status: str, tracking_ok: bool) -> str:
+        """Advance live tracking state machine: INIT -> TRACKING -> LOST -> RELOCALIZING -> TRACKING."""
+        if not self.map.keyframes:
+            self.tracking_state = "INIT"
+            self._consecutive_lost_frames = 0
+        elif tracking_ok:
+            self.tracking_state = "TRACKING"
+            self._consecutive_lost_frames = 0
+        else:
+            self._consecutive_lost_frames += 1
+            if self._consecutive_lost_frames == 1 and self.tracking_state == "TRACKING":
+                self.tracking_state = "LOST"
+            else:
+                self.tracking_state = "RELOCALIZING"
+        return self.tracking_state
+
     def _motion_prediction(self):
         predicted = self.map.poses[-1].copy()
         self.motion_prediction_source = "held_pose"
+        dt_ratio = float(getattr(self, "_current_dt_ratio", 1.0))
         # A held output is not a zero-velocity measurement. Keep a short-lived
         # independently verified stereo increment for matching after brief loss.
         if self.stereo is not None and self.verified_stereo_motion is not None:
@@ -1500,15 +1643,20 @@ class SharedSlam:
                 gap = count-accepted[-1]
                 if gap <= 3:
                     self.motion_prediction_source = "verified_stereo_increment"
-                    return self.map.poses[accepted[-1]] @ np.linalg.matrix_power(increment, gap)
+                    if dt_ratio == 1.0 and self._current_timestamp_s is None:
+                        return self.map.poses[accepted[-1]] @ np.linalg.matrix_power(increment, gap)
+                    step_scale = float(np.clip(gap * dt_ratio, 0.25, 3.0))
+                    return self.map.poses[accepted[-1]] @ self._scale_se3_increment(increment, step_scale)
         if (
             len(self.map.poses) >= 2
             and self.map.statuses[-1] in ("tracking", "relocalized")
             and self.map.statuses[-2] == "tracking"
         ):
-            predicted = (
-                predicted @ np.linalg.inv(self.map.poses[-2]) @ self.map.poses[-1]
-            )
+            delta = np.linalg.inv(self.map.poses[-2]) @ self.map.poses[-1]
+            if dt_ratio == 1.0:
+                predicted = predicted @ delta
+            else:
+                predicted = predicted @ self._scale_se3_increment(delta, dt_ratio)
             self.motion_prediction_source = "consecutive_accepted_poses"
         return predicted
 
@@ -2612,6 +2760,8 @@ class SharedSlam:
 
     def _relocalize(self, pixels, desc, size, points=None):
         # Retrieval proposes views; only image-to-landmark PnP can recover tracking.
+        if desc is None or len(desc) == 0 or not self.map.keyframes:
+            return None, {}
         eligible = list(self.map.keyframes)
         if self.performance.retrieval == 'current':
             self.retrieval.update(self.map.keyframes)
@@ -2634,7 +2784,10 @@ class SharedSlam:
             reverse=True,
         )
         result, stats = self._recover_ranked(pixels, desc, size, points, ranked)
-        if result is None and self.retrieval_index is not None and len(candidate_ids) < len(eligible):
+        if result is None and len(candidate_ids) < len(eligible) and (
+            self.retrieval_index is not None
+            or (self.tracking_state in ("LOST", "RELOCALIZING") and len(eligible) <= 120)
+        ):
             cached_ids = set(candidate_ids)
             ranked = sorted(ranked + [(self._physical_match_support(self.map.keyframes[i], pixels, desc), i)
                                       for i in eligible if i not in cached_ids], reverse=True)
@@ -7097,15 +7250,23 @@ class SharedSlam:
             }
         return provider
 
-    def process(self, index, image=None, right=None, *, extracted=None):
+    def process(self, index, image=None, right=None, *, extracted=None, timestamp_s=None):
         # A frontend seed may be consumed only by the keyframe created during
         # this process call. Never let an early return or exception carry it to
         # a later frame.
         self._active_frontend_seed_payload = None
         try:
-            return self._process_frame(index, image, right, extracted=extracted)
+            return self._process_frame(
+                index, image, right, extracted=extracted, timestamp_s=timestamp_s
+            )
         finally:
             self._active_frontend_seed_payload = None
+
+    def process_frame(self, index, image=None, right=None, *, extracted=None, timestamp_s=None):
+        """Alias for ``process()`` supporting optional ``timestamp_s``."""
+        return self.process(
+            index, image, right, extracted=extracted, timestamp_s=timestamp_s
+        )
 
     def should_prefetch_full_extraction(self, next_index: int) -> bool:
         """Predict whether ``next_index`` is likely to require full SIFT+SGBM extraction.
@@ -7133,7 +7294,8 @@ class SharedSlam:
             p_curr = self.map.poses[-1]
             p_prev = self.map.poses[-2]
             step_m = float(np.linalg.norm(p_curr[:3, 3] - p_prev[:3, 3]))
-            if step_m > 1.7:
+            dt_s = max(self._last_step_dt_s(), 1e-4)
+            if (step_m / dt_s) > 17.0:
                 self._last_eager_prefetch_index = idx
                 return True
             if getattr(self.config, "use_adaptive_keyframe_parallax", False):
@@ -7197,7 +7359,8 @@ class SharedSlam:
         seed = self._motion_prediction()
         prev_pose = self.map.poses[-1]
         step_trans_m = float(np.linalg.norm((np.linalg.inv(prev_pose) @ seed)[:3, 3]))
-        if step_trans_m > 1.7:
+        dt_s = max(float(getattr(self, "_current_dt_s", 0.1)), 1e-4)
+        if (step_trans_m / dt_s) > 17.0:
             return None
         projected, depth = project(world_all, seed, self.K)
         flow_visible = (
@@ -7369,6 +7532,8 @@ class SharedSlam:
             self.previous_gray = next_prev_gray
             self.previous_lk_pyramid = None
         self.map.record(pose, "tracking", last_kf_id)
+        self._frame_timestamps_s.append(self._current_timestamp_s)
+        tracking_state = self._update_tracking_state("tracking", True)
         # Cull high-miss landmarks identically to the full path.
         dropped = self.map.high_miss_landmarks(5)
         if dropped:
@@ -7404,6 +7569,7 @@ class SharedSlam:
             "tracking_ok": True,
             "tracked_landmarks": len(inlier_id_set),
             "state": "tracking",
+            "tracking_state": tracking_state,
             "motion_prediction_source": self.motion_prediction_source,
             "map_revision": self.map.revision,
             "translation_scale": "metric" if self.map.metric else "arbitrary",
@@ -7411,7 +7577,7 @@ class SharedSlam:
         }
         return pose, info
 
-    def _process_frame(self, index, image=None, right=None, *, extracted=None):
+    def _process_frame(self, index, image=None, right=None, *, extracted=None, timestamp_s=None):
         if index != len(self.map.poses):
             raise ValueError(
                 "Frames must arrive in consecutive order, starting at zero"
@@ -7419,7 +7585,9 @@ class SharedSlam:
         self._process_frame_token = int(index)
         self._cached_lk_flow = None
         self._descriptor_association_retry_snapshot = None
+        self._update_frame_timing(timestamp_s)
         self.loop_worker.poll(self.map)
+        self._poll_async_local_ba()
         if extracted is not None and getattr(extracted, "lazy_extractor", None) is not None:
             fast_res = self._try_lk_only_non_keyframe(index, extracted)
             if fast_res is not None:
@@ -8347,6 +8515,7 @@ class SharedSlam:
             if getattr(self.config, "stereo_source_history_bundle", False):
                 self._previous_tracks_frame = int(index)
         self.map.record(pose, status, anchor)
+        self._frame_timestamps_s.append(self._current_timestamp_s)
         if trace_capture:
             self._tracking_trace_selected(index, "accepted_pre_ba", pose,
                 status, associations, pixels, right_u, arbitration_report, info)
@@ -8647,18 +8816,50 @@ class SharedSlam:
                         bundle_kwargs["selected_keyframes"] = covis_window
                         bundle_kwargs["max_landmarks"] = 350
                         bundle_kwargs["cull_outliers_chi2"] = True
-                    self.loop_worker.poll(
-                        self.map,
-                        wait=bool(getattr(self.loop_worker, "pending_loops", None)),
+                    use_async_ba = (
+                        self._local_mapping_worker is not None
+                        and not diagnostic_capture
+                        and not self.config.stereo_owned_image_bundle
+                        and not getattr(self.config, "stereo_source_history_bundle", False)
+                        and not getattr(self.config, "stereo_retained_source_observations", False)
+                        and not getattr(self.config, "stereo_bundle_holdout_guard", False)
                     )
-                    report = local_bundle_adjustment(
-                        self.map,
-                        self.K,
-                        self.stereo.baseline if self.stereo is not None else 0.0,
-                        **bundle_kwargs,
-                    )
-                    bundle_called = True
-                    if diagnostic_capture:
+                    if use_async_ba:
+                        from realtime.local_mapping_worker import LocalBASnapshot
+
+                        self.loop_worker.poll(self.map)
+                        self._async_ba_snapshot_seq += 1
+                        snapshot = LocalBASnapshot.capture(
+                            self.map,
+                            snapshot_id=self._async_ba_snapshot_seq,
+                            frame_index=int(index),
+                            anchor_kf_id=int(anchor),
+                            K=self.K,
+                            baseline=self.stereo.baseline if self.stereo is not None else 0.0,
+                            bundle_kwargs=bundle_kwargs,
+                        )
+                        if snapshot is not None:
+                            self._local_mapping_worker.submit(snapshot)
+                            report = {
+                                "applied": False,
+                                "async_submitted": True,
+                                "snapshot_id": int(snapshot.snapshot_id),
+                            }
+                        else:
+                            report = {"applied": False, "reason": "async_snapshot_skipped"}
+                    else:
+                        self.loop_worker.poll(
+                            self.map,
+                            wait=bool(getattr(self.loop_worker, "pending_loops", None)),
+                        )
+                        report = local_bundle_adjustment(
+                            self.map,
+                            self.K,
+                            self.stereo.baseline if self.stereo is not None else 0.0,
+                            **bundle_kwargs,
+                        )
+                        bundle_called = True
+                    if diagnostic_capture and bundle_called:
                         try:
                             finished = {
                                 "schema": "local_bundle_finished_v1",
@@ -8719,7 +8920,8 @@ class SharedSlam:
                                 item for item in self.bundle_diagnostic_errors
                                 if item.get("frame") == int(index)
                             ]
-            self.bundle_reports.append({"frame": index, **report})
+            if not report.get("async_submitted", False):
+                self.bundle_reports.append({"frame": index, **report})
             pose = self.map.poses[-1].copy()
             self.loop_worker.schedule(self.map)
         elif diagnostic_capture:
@@ -8796,8 +8998,10 @@ class SharedSlam:
         if removed:
             self.map.revision += 1
             self.map.geometry_revision += 1
+        tracking_state = self._update_tracking_state(status, bool(info["tracking_ok"]))
         info.update(
             state=status,
+            tracking_state=tracking_state,
             motion_prediction_source=self.motion_prediction_source,
             map_revision=self.map.revision,
             translation_scale="metric" if self.map.metric else "arbitrary",
@@ -8833,6 +9037,13 @@ class SharedSlam:
         return pose, info
 
     def close(self, finish=True):
+        worker = getattr(self, "_local_mapping_worker", None)
+        if worker is not None:
+            if finish:
+                worker.wait_idle(timeout=5.0)
+                self._poll_async_local_ba()
+            worker.close(wait=False)
+            self._local_mapping_worker = None
         self.loop_worker.close(self.map, finish=finish)
 
     def map_state(self):

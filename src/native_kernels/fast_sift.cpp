@@ -1,8 +1,12 @@
+#include "portable_export.h"
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -15,6 +19,13 @@ constexpr int32_t DOG_SHIFT = 9;          // Q9 fixed point for int16 dogpyr (1/
 constexpr float INV_Q = 1.0f / 128.0f;
 constexpr float INV_DOG_Q = 1.0f / 512.0f;
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__)
+#define VSLAM_SIFT_AVX512 1
+#else
+#define VSLAM_SIFT_AVX512 0
+#endif
+
+#if VSLAM_SIFT_AVX512
 // Fast accurate AVX-512 atan2 in degrees [0, 360), max error < 0.05 deg.
 inline __m512 fast_atan2_deg_avx512(__m512 y, __m512 x) {
     const __m512 sign_mask = _mm512_set1_ps(-0.0f);
@@ -43,6 +54,14 @@ inline __m512 fast_atan2_deg_avx512(__m512 y, __m512 x) {
     deg = _mm512_mask_sub_ps(deg, ge360, deg, _mm512_set1_ps(360.0f));
     return deg;
 }
+#else
+inline float fast_atan2_deg_scalar(float y, float x) {
+    float deg = std::atan2(y, x) * RAD2DEG;
+    if (deg < 0.0f) deg += 360.0f;
+    if (deg >= 360.0f) deg -= 360.0f;
+    return deg;
+}
+#endif
 
 void make_gaussian_kernel(float sigma, float half_w[25], int32_t& rad) {
     rad = static_cast<int32_t>(std::ceil(2.6f * sigma));
@@ -77,10 +96,11 @@ void make_gaussian_kernel_q15(float sigma, int16_t hw_q15[25], int32_t& rad) {
 // Exact int32 vpmaddwd Q22 accumulation -> Q9 DoG directly before rounding!
 // =========================================================================
 
-void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
-                            int16_t* __restrict dst, int16_t* __restrict row_tmp) {
+void upsample_2x_i16_avx512(const uint8_t* VSLAM_RESTRICT src, int32_t h, int32_t w,
+                            int16_t* VSLAM_RESTRICT dst, int16_t* VSLAM_RESTRICT row_tmp) {
     const int32_t dh = h * 2;
     const int32_t dw = w * 2;
+#if VSLAM_SIFT_AVX512
     const __m512i v96 = _mm512_set1_epi16(96);  // 0.75 * 128
     const __m512i v32 = _mm512_set1_epi16(32);  // 0.25 * 128
     alignas(64) static constexpr int16_t IL_LO[32] = {
@@ -91,6 +111,7 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         24, 56, 25, 57, 26, 58, 27, 59, 28, 60, 29, 61, 30, 62, 31, 63};
     const __m512i il_lo = _mm512_load_si512(IL_LO);
     const __m512i il_hi = _mm512_load_si512(IL_HI);
+#endif
 
     for (int32_t y = 0; y < h; ++y) {
         const uint8_t* sr = src + static_cast<size_t>(y) * w;
@@ -98,6 +119,7 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         tr[0] = static_cast<int16_t>(sr[0] << Q_SHIFT);
         tr[1] = static_cast<int16_t>(96 * sr[0] + 32 * sr[std::min(1, w - 1)]);
         int32_t x = 1;
+#if VSLAM_SIFT_AVX512
         for (; x + 32 < w; x += 32) {
             const __m512i vc = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x)));
             const __m512i vl = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x - 1)));
@@ -108,6 +130,7 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
             _mm512_storeu_si512(tr + 2 * x,      _mm512_permutex2var_epi16(ev, il_lo, od));
             _mm512_storeu_si512(tr + 2 * x + 32, _mm512_permutex2var_epi16(ev, il_hi, od));
         }
+#endif
         for (; x < w - 1; ++x) {
             const int32_t c = sr[x];
             tr[2 * x]     = static_cast<int16_t>(96 * c + 32 * sr[x - 1]);
@@ -119,8 +142,13 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         }
     }
 
-    const __m512i w31 = _mm512_set1_epi32((1 << 16) | 3);  // pairs: (3, 1)
+#if VSLAM_SIFT_AVX512
+    const __m512i w31 = _mm512_set1_epi32((1 << 16) | 3);
     const __m512i v_rnd2 = _mm512_set1_epi32(2);
+#elif defined(__AVX2__)
+    const __m256i w31 = _mm256_set1_epi32((1 << 16) | 3);
+    const __m256i v_rnd2 = _mm256_set1_epi32(2);
+#endif
     for (int32_t dy = 0; dy < dh; ++dy) {
         const int32_t sy = dy >> 1;
         const int32_t sy_other = (dy & 1) ? std::min(sy + 1, h - 1) : std::max(sy - 1, 0);
@@ -128,6 +156,7 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
         const int16_t* r_oth  = row_tmp + static_cast<size_t>(sy_other) * dw;
         int16_t* dr = dst + static_cast<size_t>(dy) * dw;
         int32_t x = 0;
+#if VSLAM_SIFT_AVX512
         for (; x + 31 < dw; x += 32) {
             __m512i m = _mm512_loadu_si512(r_main + x);
             __m512i o = _mm512_loadu_si512(r_oth + x);
@@ -135,13 +164,22 @@ void upsample_2x_i16_avx512(const uint8_t* __restrict src, int32_t h, int32_t w,
             __m512i hi = _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(_mm512_unpackhi_epi16(m, o), w31), v_rnd2), 2);
             _mm512_storeu_si512(dr + x, _mm512_packs_epi32(lo, hi));
         }
+#elif defined(__AVX2__)
+        for (; x + 15 < dw; x += 16) {
+            __m256i m = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r_main + x));
+            __m256i o = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r_oth + x));
+            __m256i lo = _mm256_srai_epi32(_mm256_add_epi32(_mm256_madd_epi16(_mm256_unpacklo_epi16(m, o), w31), v_rnd2), 2);
+            __m256i hi = _mm256_srai_epi32(_mm256_add_epi32(_mm256_madd_epi16(_mm256_unpackhi_epi16(m, o), w31), v_rnd2), 2);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dr + x), _mm256_packs_epi32(lo, hi));
+        }
+#endif
         for (; x < dw; ++x) dr[x] = static_cast<int16_t>((3 * r_main[x] + r_oth[x] + 2) >> 2);
     }
 }
 
 template <int32_t RAD>
-inline void blur_row_h_i16_fixed_avx512(const int16_t* __restrict srow, int16_t* __restrict trow,
-                                        int32_t w, const int16_t* __restrict hw) {
+inline void blur_row_h_i16_fixed_avx512(const int16_t* VSLAM_RESTRICT srow, int16_t* VSLAM_RESTRICT trow,
+                                        int32_t w, const int16_t* VSLAM_RESTRICT hw) {
     const int32_t x_left_end = std::min(RAD, w);
     for (int32_t x = 0; x < x_left_end; ++x) {
         int32_t acc = static_cast<int32_t>(hw[0]) * srow[x];
@@ -153,18 +191,18 @@ inline void blur_row_h_i16_fixed_avx512(const int16_t* __restrict srow, int16_t*
         trow[x] = static_cast<int16_t>((acc + 16384) >> 15);
     }
 
+    int32_t x = RAD;
+    const int32_t x_mid_end = w - RAD;
+#if VSLAM_SIFT_AVX512
     __m512i vw[RAD + 1];
     for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_epi16(hw[k]);
     const __m512i v_zero = _mm512_setzero_si512();
     const __m512i v_half = _mm512_set1_epi32(16384);
 
-    int32_t x = RAD;
-    const int32_t x_mid_end = w - RAD;
     for (; x + 31 < x_mid_end; x += 32) {
         const __m512i c0 = _mm512_loadu_si512(srow + x);
         __m512i a_lo = _mm512_add_epi32(v_half, _mm512_madd_epi16(_mm512_unpacklo_epi16(c0, v_zero), vw[0]));
         __m512i a_hi = _mm512_add_epi32(v_half, _mm512_madd_epi16(_mm512_unpackhi_epi16(c0, v_zero), vw[0]));
-        #pragma GCC unroll 12
         for (int32_t k = 1; k <= RAD; ++k) {
             const __m512i vl = _mm512_loadu_si512(srow + x - k);
             const __m512i vr = _mm512_loadu_si512(srow + x + k);
@@ -173,6 +211,28 @@ inline void blur_row_h_i16_fixed_avx512(const int16_t* __restrict srow, int16_t*
         }
         _mm512_storeu_si512(trow + x, _mm512_packs_epi32(_mm512_srai_epi32(a_lo, 15), _mm512_srai_epi32(a_hi, 15)));
     }
+#elif defined(__AVX2__)
+    __m256i vw[RAD + 1];
+    for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm256_set1_epi16(hw[k]);
+    const __m256i v_zero = _mm256_setzero_si256();
+    const __m256i v_half = _mm256_set1_epi32(16384);
+
+    for (; x + 15 < x_mid_end; x += 16) {
+        const __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(srow + x));
+        __m256i a_lo = _mm256_add_epi32(v_half, _mm256_madd_epi16(_mm256_unpacklo_epi16(c0, v_zero), vw[0]));
+        __m256i a_hi = _mm256_add_epi32(v_half, _mm256_madd_epi16(_mm256_unpackhi_epi16(c0, v_zero), vw[0]));
+        for (int32_t k = 1; k <= RAD; ++k) {
+            const __m256i vl = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(srow + x - k));
+            const __m256i vr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(srow + x + k));
+            a_lo = _mm256_add_epi32(a_lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(vl, vr), vw[k]));
+            a_hi = _mm256_add_epi32(a_hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(vl, vr), vw[k]));
+        }
+        _mm256_storeu_si256(
+            reinterpret_cast<__m256i*>(trow + x),
+            _mm256_packs_epi32(_mm256_srai_epi32(a_lo, 15), _mm256_srai_epi32(a_hi, 15))
+        );
+    }
+#endif
     for (; x < x_mid_end; ++x) {
         int32_t acc = static_cast<int32_t>(hw[0]) * srow[x];
         for (int32_t k = 1; k <= RAD; ++k) acc += static_cast<int32_t>(hw[k]) * (static_cast<int32_t>(srow[x - k]) + srow[x + k]);
@@ -191,13 +251,13 @@ inline void blur_row_h_i16_fixed_avx512(const int16_t* __restrict srow, int16_t*
 
 template <int32_t RAD, bool WRITE_G, bool WRITE_DOG>
 void gaussian_blur_ring_i16_fixed_avx512(
-    const int16_t* __restrict src,
-    int16_t* __restrict dst,
-    int16_t* __restrict dog_dst,
-    int16_t* __restrict ring_buf,
+    const int16_t* VSLAM_RESTRICT src,
+    int16_t* VSLAM_RESTRICT dst,
+    int16_t* VSLAM_RESTRICT dog_dst,
+    int16_t* VSLAM_RESTRICT ring_buf,
     int32_t h,
     int32_t w,
-    const int16_t* __restrict hw
+    const int16_t* VSLAM_RESTRICT hw
 ) {
     constexpr int32_t RING_SZ = 2 * RAD + 2;
     auto ring_ptr = [&](int32_t ry) -> int16_t* {
@@ -212,11 +272,19 @@ void gaussian_blur_ring_i16_fixed_avx512(
         h_done = ry;
     }
 
+#if VSLAM_SIFT_AVX512
     __m512i vw[RAD + 1];
     for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm512_set1_epi16(hw[k]);
     const __m512i v_zero = _mm512_setzero_si512();
     const __m512i v_half = _mm512_set1_epi32(16384);
-    const __m512i v_dhalf = _mm512_set1_epi32(4096);  // 0.5 << 13 for Q22 -> Q9 rounding
+    const __m512i v_dhalf = _mm512_set1_epi32(4096);
+#elif defined(__AVX2__)
+    __m256i vw[RAD + 1];
+    for (int32_t k = 0; k <= RAD; ++k) vw[k] = _mm256_set1_epi16(hw[k]);
+    const __m256i v_zero = _mm256_setzero_si256();
+    const __m256i v_half = _mm256_set1_epi32(16384);
+    const __m256i v_dhalf = _mm256_set1_epi32(4096);
+#endif
 
     for (int32_t y = 0; y < h; ++y) {
         const int32_t need_ry = std::min(y + RAD, h - 1);
@@ -228,7 +296,6 @@ void gaussian_blur_ring_i16_fixed_avx512(
         const int16_t* r0 = ring_ptr(y);
         const int16_t* r_up[RAD + 1];
         const int16_t* r_dn[RAD + 1];
-        #pragma GCC unroll 12
         for (int32_t k = 1; k <= RAD; ++k) {
             r_up[k] = ring_ptr(y - k);
             r_dn[k] = ring_ptr(y + k);
@@ -239,11 +306,11 @@ void gaussian_blur_ring_i16_fixed_avx512(
         int16_t* dogrow = WRITE_DOG ? (dog_dst + row_off) : nullptr;
 
         int32_t x = 0;
+#if VSLAM_SIFT_AVX512
         for (; x + 31 < w; x += 32) {
             const __m512i c0 = _mm512_loadu_si512(r0 + x);
             __m512i a_lo = _mm512_madd_epi16(_mm512_unpacklo_epi16(c0, v_zero), vw[0]);
             __m512i a_hi = _mm512_madd_epi16(_mm512_unpackhi_epi16(c0, v_zero), vw[0]);
-            #pragma GCC unroll 12
             for (int32_t k = 1; k <= RAD; ++k) {
                 const __m512i vu = _mm512_loadu_si512(r_up[k] + x);
                 const __m512i vd = _mm512_loadu_si512(r_dn[k] + x);
@@ -257,7 +324,6 @@ void gaussian_blur_ring_i16_fixed_avx512(
                 _mm512_storeu_si512(drow + x, res);
             }
             if constexpr (WRITE_DOG) {
-                // Compute Q9 DoG directly from Q22 accumulator: (a - (s << 15) + 4096) >> 13
                 const __m512i sv = _mm512_loadu_si512(srow + x);
                 const __m512i s_lo = _mm512_slli_epi32(_mm512_unpacklo_epi16(sv, v_zero), 15);
                 const __m512i s_hi = _mm512_slli_epi32(_mm512_unpackhi_epi16(sv, v_zero), 15);
@@ -266,6 +332,33 @@ void gaussian_blur_ring_i16_fixed_avx512(
                 _mm512_storeu_si512(dogrow + x, _mm512_packs_epi32(d_lo, d_hi));
             }
         }
+#elif defined(__AVX2__)
+        for (; x + 15 < w; x += 16) {
+            const __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + x));
+            __m256i a_lo = _mm256_madd_epi16(_mm256_unpacklo_epi16(c0, v_zero), vw[0]);
+            __m256i a_hi = _mm256_madd_epi16(_mm256_unpackhi_epi16(c0, v_zero), vw[0]);
+            for (int32_t k = 1; k <= RAD; ++k) {
+                const __m256i vu = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r_up[k] + x));
+                const __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r_dn[k] + x));
+                a_lo = _mm256_add_epi32(a_lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(vu, vd), vw[k]));
+                a_hi = _mm256_add_epi32(a_hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(vu, vd), vw[k]));
+            }
+            if constexpr (WRITE_G) {
+                const __m256i res = _mm256_packs_epi32(
+                    _mm256_srai_epi32(_mm256_add_epi32(a_lo, v_half), 15),
+                    _mm256_srai_epi32(_mm256_add_epi32(a_hi, v_half), 15));
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(drow + x), res);
+            }
+            if constexpr (WRITE_DOG) {
+                const __m256i sv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(srow + x));
+                const __m256i s_lo = _mm256_slli_epi32(_mm256_unpacklo_epi16(sv, v_zero), 15);
+                const __m256i s_hi = _mm256_slli_epi32(_mm256_unpackhi_epi16(sv, v_zero), 15);
+                const __m256i d_lo = _mm256_srai_epi32(_mm256_add_epi32(_mm256_sub_epi32(a_lo, s_lo), v_dhalf), 13);
+                const __m256i d_hi = _mm256_srai_epi32(_mm256_add_epi32(_mm256_sub_epi32(a_hi, s_hi), v_dhalf), 13);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dogrow + x), _mm256_packs_epi32(d_lo, d_hi));
+            }
+        }
+#endif
         for (; x < w; ++x) {
             int32_t acc = static_cast<int32_t>(hw[0]) * r0[x];
             for (int32_t k = 1; k <= RAD; ++k) acc += static_cast<int32_t>(hw[k]) * (static_cast<int32_t>(r_up[k][x]) + r_dn[k][x]);
@@ -279,10 +372,10 @@ void gaussian_blur_ring_i16_fixed_avx512(
 }
 
 void gaussian_blur_ring_i16_avx512(
-    const int16_t* __restrict src,
-    int16_t* __restrict dst,
-    int16_t* __restrict dog_dst,
-    int16_t* __restrict ring_buf,
+    const int16_t* VSLAM_RESTRICT src,
+    int16_t* VSLAM_RESTRICT dst,
+    int16_t* VSLAM_RESTRICT dog_dst,
+    int16_t* VSLAM_RESTRICT ring_buf,
     int32_t h,
     int32_t w,
     float sigma
@@ -311,22 +404,26 @@ void gaussian_blur_ring_i16_avx512(
     else if (dog_dst != nullptr) dispatch(std::false_type{}, std::true_type{});
 }
 
-void downsample_2x_i16(const int16_t* __restrict src, int32_t sh, int32_t sw,
-                       int16_t* __restrict dst, int32_t dh, int32_t dw) {
+void downsample_2x_i16(const int16_t* VSLAM_RESTRICT src, int32_t sh, int32_t sw,
+                       int16_t* VSLAM_RESTRICT dst, int32_t dh, int32_t dw) {
     (void)sh;
+#if VSLAM_SIFT_AVX512
     alignas(64) static constexpr int16_t EVEN_IDX[32] = {
         0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
         32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62};
     const __m512i even_idx = _mm512_load_si512(EVEN_IDX);
+#endif
     for (int32_t y = 0; y < dh; ++y) {
         const int16_t* sr = src + static_cast<size_t>(y * 2) * sw;
         int16_t* dr = dst + static_cast<size_t>(y) * dw;
         int32_t x = 0;
+#if VSLAM_SIFT_AVX512
         for (; x + 31 < dw; x += 32) {
             __m512i a = _mm512_loadu_si512(sr + 2 * x);
             __m512i b = _mm512_loadu_si512(sr + 2 * x + 32);
             _mm512_storeu_si512(dr + x, _mm512_permutex2var_epi16(a, even_idx, b));
         }
+#endif
         for (; x < dw; ++x) dr[x] = sr[x * 2];
     }
 }
@@ -430,6 +527,7 @@ struct OriGridLUT {
 const DescGridLUT g_desc_lut;
 const OriGridLUT g_ori_lut;
 
+#if VSLAM_SIFT_AVX512
 // Gather 16 float values from either float32 or int16 Gaussian layer (buffers padded +4 elements).
 template <typename T>
 inline __m512 gather16_to_f32(__m512i off, const T* base);
@@ -445,10 +543,11 @@ inline __m512 gather16_to_f32<int16_t>(__m512i off, const int16_t* base) {
     __m512i sext = _mm512_srai_epi32(_mm512_slli_epi32(raw, 16), 16);
     return _mm512_cvtepi32_ps(sext);
 }
+#endif
 
 template <typename T>
 float calc_orientation_hist_grid_avx512(
-    const T* __restrict gimg,
+    const T* VSLAM_RESTRICT gimg,
     int32_t h,
     int32_t w,
     float ptx,
@@ -459,6 +558,7 @@ float calc_orientation_hist_grid_avx512(
     float temphist[40];
     std::memset(temphist, 0, sizeof(temphist));
 
+#if VSLAM_SIFT_AVX512
     const __m512 v_ptx = _mm512_set1_ps(ptx);
     const __m512 v_pty = _mm512_set1_ps(pty);
     const __m512 v_sig = _mm512_set1_ps(ori_sig);
@@ -508,6 +608,24 @@ float calc_orientation_hist_grid_avx512(
         _mm512_store_ps(w_buf, wt);
         for (int32_t lane = 0; lane < 16; ++lane) temphist[bin_buf[lane] + 2] += w_buf[lane];
     }
+#else
+    for (int32_t k = 0; k < OriGridLUT::N; ++k) {
+        const float gw = g_ori_lut.gauss[k];
+        if (gw == 0.0f) continue;
+        const int32_t ix = static_cast<int32_t>(std::nearbyint(g_ori_lut.du[k] * ori_sig + ptx));
+        const int32_t iy = static_cast<int32_t>(std::nearbyint(g_ori_lut.dv[k] * ori_sig + pty));
+        if (ix < 1 || ix > w - 2 || iy < 1 || iy > h - 2) continue;
+        const int32_t off = iy * w + ix;
+        const float gx = static_cast<float>(gimg[off + 1]) - static_cast<float>(gimg[off - 1]);
+        const float gy = static_cast<float>(gimg[off - w]) - static_cast<float>(gimg[off + w]);
+        const float mag = std::sqrt(gx * gx + gy * gy);
+        const float ori = fast_atan2_deg_scalar(gy, gx);
+        int32_t bin = static_cast<int32_t>(std::nearbyint(ori * (36.0f / 360.0f)));
+        if (bin >= 36) bin -= 36;
+        if (bin < 0) bin += 36;
+        temphist[bin + 2] += mag * gw;
+    }
+#endif
 
     temphist[0] = temphist[36];
     temphist[1] = temphist[37];
@@ -527,14 +645,14 @@ float calc_orientation_hist_grid_avx512(
 
 template <typename T>
 void calc_sift_descriptor_grid_avx512(
-    const T* __restrict gimg,
+    const T* VSLAM_RESTRICT gimg,
     int32_t h,
     int32_t w,
     float ptx,
     float pty,
     float ori_deg,
     float scl,
-    float* __restrict dst_desc
+    float* VSLAM_RESTRICT dst_desc
 ) {
     constexpr int32_t d = 4;
     constexpr int32_t n = 8;
@@ -542,6 +660,10 @@ void calc_sift_descriptor_grid_avx512(
     const float cos_s = std::cos(ori_deg * DEG2RAD) * hist_width;
     const float sin_s = std::sin(ori_deg * DEG2RAD) * hist_width;
 
+    float hist[(d + 2) * (d + 2) * (n + 2)];
+    std::memset(hist, 0, sizeof(hist));
+
+#if VSLAM_SIFT_AVX512
     const __m512 v_ptx = _mm512_set1_ps(ptx);
     const __m512 v_pty = _mm512_set1_ps(pty);
     const __m512 v_cos = _mm512_set1_ps(cos_s);
@@ -553,9 +675,6 @@ void calc_sift_descriptor_grid_avx512(
     const __m512i v_w_m2 = _mm512_set1_epi32(w - 2);
     const __m512i v_h_m2 = _mm512_set1_epi32(h - 2);
     const __m512i v_w = _mm512_set1_epi32(w);
-
-    float hist[(d + 2) * (d + 2) * (n + 2)];
-    std::memset(hist, 0, sizeof(hist));
 
     alignas(64) float buf_mag[16];
     alignas(64) float buf_dob[16];
@@ -623,6 +742,44 @@ void calc_sift_descriptor_grid_avx512(
             hist[p11] += m11 * o0w; hist[p11 + 1] += m11 * o1w;
         }
     }
+#else
+    const float bpd = static_cast<float>(n) / 360.0f;
+    for (int32_t sk = 0; sk < DescGridLUT::N; ++sk) {
+        const float vu = g_desc_lut.u[sk];
+        const float vv = g_desc_lut.v[sk];
+        const float sx = ptx + (vu * cos_s - vv * sin_s);
+        const float sy = pty + (vu * sin_s + vv * cos_s);
+        const int32_t ix = static_cast<int32_t>(std::nearbyint(sx));
+        const int32_t iy = static_cast<int32_t>(std::nearbyint(sy));
+        if (ix < 1 || ix > w - 2 || iy < 1 || iy > h - 2) continue;
+        const int32_t off = iy * w + ix;
+        const float gx = static_cast<float>(gimg[off + 1]) - static_cast<float>(gimg[off - 1]);
+        const float gy = static_cast<float>(gimg[off - w]) - static_cast<float>(gimg[off + w]);
+        const float m = std::sqrt(gx * gx + gy * gy);
+        if (m == 0.0f) continue;
+        const float ori = fast_atan2_deg_scalar(gy, gx);
+        const float ob = (ori - ori_deg) * bpd;
+        const float ob_fl = std::floor(ob);
+        const float o1w = ob - ob_fl;
+        const float o0w = 1.0f - o1w;
+        const int32_t bin0 = static_cast<int32_t>(ob_fl) & 7;
+
+        const float m00 = m * g_desc_lut.w00[sk];
+        const float m01 = m * g_desc_lut.w01[sk];
+        const float m10 = m * g_desc_lut.w10[sk];
+        const float m11 = m * g_desc_lut.w11[sk];
+
+        const int32_t p00 = g_desc_lut.idx00[sk] + bin0;
+        const int32_t p01 = g_desc_lut.idx01[sk] + bin0;
+        const int32_t p10 = g_desc_lut.idx10[sk] + bin0;
+        const int32_t p11 = g_desc_lut.idx11[sk] + bin0;
+
+        hist[p00] += m00 * o0w; hist[p00 + 1] += m00 * o1w;
+        hist[p01] += m01 * o0w; hist[p01 + 1] += m01 * o1w;
+        hist[p10] += m10 * o0w; hist[p10 + 1] += m10 * o1w;
+        hist[p11] += m11 * o0w; hist[p11 + 1] += m11 * o1w;
+    }
+#endif
 
     alignas(64) float raw[128];
     for (int32_t i = 0; i < d; ++i) {
@@ -635,6 +792,7 @@ void calc_sift_descriptor_grid_avx512(
         }
     }
 
+#if VSLAM_SIFT_AVX512
     __m512 acc0 = _mm512_setzero_ps();
     for (int32_t k = 0; k < 128; k += 16) {
         __m512 v = _mm512_load_ps(raw + k);
@@ -656,6 +814,23 @@ void calc_sift_descriptor_grid_avx512(
         v = _mm512_min_ps(v_255, _mm512_max_ps(v_zero, v));
         _mm512_storeu_ps(dst_desc + k, v);
     }
+#else
+    float nrm0 = 0.0f;
+    for (int32_t k = 0; k < 128; ++k) nrm0 += raw[k] * raw[k];
+    const float thr = std::sqrt(nrm0) * 0.2f;
+    float nrm1 = 0.0f;
+    for (int32_t k = 0; k < 128; ++k) {
+        if (raw[k] > thr) raw[k] = thr;
+        nrm1 += raw[k] * raw[k];
+    }
+    const float scl_out = 512.0f / std::max(std::sqrt(nrm1), 1e-6f);
+    for (int32_t k = 0; k < 128; ++k) {
+        float v = std::nearbyint(raw[k] * scl_out);
+        if (v < 0.0f) v = 0.0f;
+        else if (v > 255.0f) v = 255.0f;
+        dst_desc[k] = v;
+    }
+#endif
 }
 
 struct SiftWorkspace {
@@ -702,7 +877,7 @@ thread_local SiftWorkspace g_ws;
 
 extern "C" {
 
-int32_t extract_sift_grid_avx512(
+VSLAM_EXPORT int32_t extract_sift_grid_avx512(
     const uint8_t* gray,
     int32_t h,
     int32_t w,
@@ -741,18 +916,21 @@ int32_t extract_sift_grid_avx512(
         sig[i] = static_cast<float>(std::sqrt(sig_total * sig_total - sig_prev * sig_prev));
     }
 
-    // Preserve exact Lowe/OpenCV 0.5x pre-threshold in Q5 fixed point (e.g. 0.85 * 32 = 27)
-    // instead of flooring to 0 when contrast_threshold=0.02.
     const float final_thresh = (contrast_threshold / nOctaveLayers) * 255.0f;
     const float pre_thresh = 0.5f * final_thresh;
     const int16_t pre_thresh_i16 = static_cast<int16_t>(std::floor(pre_thresh * static_cast<float>(1 << DOG_SHIFT)));
+#if VSLAM_SIFT_AVX512
     const __m512i v_pt16 = _mm512_set1_epi16(pre_thresh_i16);
     const __m512i v_z16 = _mm512_setzero_si512();
+#elif defined(__AVX2__)
+    const __m256i v_pt16 = _mm256_set1_epi16(pre_thresh_i16);
+    const __m256i v_z16 = _mm256_setzero_si256();
+#endif
 
     std::vector<RawExtremum> raw_ext;
     raw_ext.reserve(8192);
 
-    // 1+2. Unified Q7 gpyr + Q9 dogpyr 32-wide AVX-512BW pyramid and extrema scan
+    // 1+2. Unified Q7 gpyr + Q9 dogpyr SIMD pyramid and extrema scan
     for (int32_t o = 0; o < n_octaves; ++o) {
         const int32_t oh = g_ws.oct_h[o];
         const int32_t ow = g_ws.oct_w[o];
@@ -770,10 +948,17 @@ int32_t extract_sift_grid_avx512(
             } else {
                 const size_t npix = static_cast<size_t>(oh) * ow;
                 size_t idx = 0;
+#if VSLAM_SIFT_AVX512
                 for (; idx + 31 < npix; idx += 32) {
                     __m512i v = _mm512_cvtepu8_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(gray + idx)));
                     _mm512_storeu_si512(g_ws.base_raw_i16.data() + idx, _mm512_slli_epi16(v, Q_SHIFT));
                 }
+#elif defined(__AVX2__)
+                for (; idx + 15 < npix; idx += 16) {
+                    __m256i v = _mm256_cvtepu8_epi16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(gray + idx)));
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(g_ws.base_raw_i16.data() + idx), _mm256_slli_epi16(v, Q_SHIFT));
+                }
+#endif
                 for (; idx < npix; ++idx) g_ws.base_raw_i16[idx] = static_cast<int16_t>(gray[idx] << Q_SHIFT);
                 const float sig_diff = std::sqrt(std::max(sigma * sigma - 0.25f, 0.01f));
                 gaussian_blur_ring_i16_avx512(g_ws.base_raw_i16.data(), g_ws.gpyr_i16[0][0].data(), nullptr,
@@ -795,6 +980,107 @@ int32_t extract_sift_grid_avx512(
 
         if (oh <= 2 * img_border || ow <= 2 * img_border) continue;
 
+        auto refine_candidate = [&](int32_t i, int32_t r, int32_t cx,
+                                    const int16_t* prev_img, const int16_t* curr_img, const int16_t* next_img) {
+            const int16_t val = curr_img[static_cast<size_t>(r) * ow + cx];
+            bool ext = true;
+            if (val > 0) {
+                for (int32_t dl = -1; dl <= 1 && ext; ++dl) {
+                    const int16_t* img_l = (dl == -1) ? prev_img : (dl == 0 ? curr_img : next_img);
+                    for (int32_t dr = -1; dr <= 1; ++dr) {
+                        const int16_t* rr = img_l + static_cast<size_t>(r + dr) * ow + cx;
+                        if (val < rr[-1] || val < rr[0] || val < rr[1]) { ext = false; break; }
+                    }
+                }
+            } else {
+                for (int32_t dl = -1; dl <= 1 && ext; ++dl) {
+                    const int16_t* img_l = (dl == -1) ? prev_img : (dl == 0 ? curr_img : next_img);
+                    for (int32_t dr = -1; dr <= 1; ++dr) {
+                        const int16_t* rr = img_l + static_cast<size_t>(r + dr) * ow + cx;
+                        if (val > rr[-1] || val > rr[0] || val > rr[1]) { ext = false; break; }
+                    }
+                }
+            }
+            if (!ext) return;
+
+            int32_t ri = r, ci = cx, li = i;
+            float xc = 0.0f, xr = 0.0f, xi = 0.0f;
+            bool converged = false;
+            for (int32_t step = 0; step < 5; ++step) {
+                const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
+                const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
+                const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
+                const size_t idx = static_cast<size_t>(ri) * ow + ci;
+                const float v0 = static_cast<float>(dc[idx]);
+                const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
+                const float dy = 0.5f * (dc[idx + ow] - dc[idx - ow]);
+                const float ds = 0.5f * (dn[idx] - dp[idx]);
+                const float dxx = dc[idx + 1] + dc[idx - 1] - 2.0f * v0;
+                const float dyy = dc[idx + ow] + dc[idx - ow] - 2.0f * v0;
+                const float dss = dn[idx] + dp[idx] - 2.0f * v0;
+                const float dxy = 0.25f * (dc[idx + ow + 1] - dc[idx + ow - 1] - dc[idx - ow + 1] + dc[idx - ow - 1]);
+                const float dxs = 0.25f * (dn[idx + 1] - dn[idx - 1] - dp[idx + 1] + dp[idx - 1]);
+                const float dys = 0.25f * (dn[idx + ow] - dn[idx - ow] - dp[idx + ow] + dp[idx - ow]);
+                const float H[3][3] = {{dxx, dxy, dxs}, {dxy, dyy, dys}, {dxs, dys, dss}};
+                const float b[3] = {-dx, -dy, -ds};
+                float sol[3];
+                if (!solve3x3(H, b, sol)) break;
+                xc = sol[0]; xr = sol[1]; xi = sol[2];
+                if (std::abs(xc) < 0.5f && std::abs(xr) < 0.5f && std::abs(xi) < 0.5f) {
+                    converged = true;
+                    break;
+                }
+                if (std::abs(xc) > 1e5f || std::abs(xr) > 1e5f || std::abs(xi) > 1e5f) break;
+                ci += static_cast<int32_t>(std::round(xc));
+                ri += static_cast<int32_t>(std::round(xr));
+                li += static_cast<int32_t>(std::round(xi));
+                if (li < 1 || li > nOctaveLayers || ci < img_border || ci >= ow - img_border ||
+                    ri < img_border || ri >= oh - img_border) {
+                    break;
+                }
+            }
+            if (!converged) return;
+
+            const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
+            const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
+            const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
+            const size_t idx = static_cast<size_t>(ri) * ow + ci;
+            const float v0 = static_cast<float>(dc[idx]);
+            const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
+            const float dy = 0.5f * (dc[idx + ow] - dc[idx - ow]);
+            const float ds = 0.5f * (dn[idx] - dp[idx]);
+            const float contr = (v0 + 0.5f * (dx * xc + dy * xr + ds * xi)) * INV_DOG_Q;
+            if (std::abs(contr) < final_thresh) return;
+
+            const float dxx = dc[idx + 1] + dc[idx - 1] - 2.0f * v0;
+            const float dyy = dc[idx + ow] + dc[idx - ow] - 2.0f * v0;
+            const float dxy = 0.25f * (dc[idx + ow + 1] - dc[idx + ow - 1] - dc[idx - ow + 1] + dc[idx - ow - 1]);
+            const float tr = dxx + dyy;
+            const float det = dxx * dyy - dxy * dxy;
+            if (det <= 0.0f || tr * tr * edgeThreshold >= (edgeThreshold + 1.0f) * (edgeThreshold + 1.0f) * det) {
+                return;
+            }
+
+            const float ptx_img = (static_cast<float>(ci) + xc) * oct_scale;
+            const float pty_img = (static_cast<float>(ri) + xr) * oct_scale;
+            if (ptx_img < 0.0f || ptx_img >= static_cast<float>(w) ||
+                pty_img < 0.0f || pty_img >= static_cast<float>(h)) {
+                return;
+            }
+
+            RawExtremum ex;
+            ex.x = ptx_img;
+            ex.y = pty_img;
+            ex.response = std::abs(contr) / 255.0f;
+            ex.scl_octv = sigma * std::pow(2.0f, (static_cast<float>(li) + xi) / nOctaveLayers);
+            ex.ri = ri;
+            ex.ci = ci;
+            ex.octave_idx = actual_oct;
+            ex.layer = li;
+            ex.pyr_o = o;
+            raw_ext.push_back(ex);
+        };
+
         for (int32_t i = 1; i <= nOctaveLayers; ++i) {
             const int16_t* prev_img = g_ws.dogpyr_i16[o][i - 1].data();
             const int16_t* curr_img = g_ws.dogpyr_i16[o][i].data();
@@ -809,6 +1095,7 @@ int32_t extract_sift_grid_avx512(
                 const int16_t* n_row = next_img + row_off;
 
                 int32_t c = img_border;
+#if VSLAM_SIFT_AVX512
                 for (; c + 31 < ow - img_border; c += 32) {
                     const __m512i vc = _mm512_loadu_si512(rc + c);
                     const __m512i av = _mm512_abs_epi16(vc);
@@ -838,108 +1125,60 @@ int32_t extract_sift_grid_avx512(
 
                     uint32_t bits = static_cast<uint32_t>(cand);
                     while (bits) {
-                        const int32_t lane = __builtin_ctz(bits);
+                        const int32_t lane = vslam_ctz32(bits);
                         bits &= bits - 1;
-                        const int32_t cx = c + lane;
-                        const int16_t val = rc[cx];
-
-                        bool ext = true;
-                        if (val > 0) {
-                            for (int32_t dl = -1; dl <= 1 && ext; ++dl) {
-                                const int16_t* img_l = (dl == -1) ? prev_img : (dl == 0 ? curr_img : next_img);
-                                for (int32_t dr = -1; dr <= 1; ++dr) {
-                                    const int16_t* rr = img_l + static_cast<size_t>(r + dr) * ow + cx;
-                                    if (val < rr[-1] || val < rr[0] || val < rr[1]) { ext = false; break; }
-                                }
-                            }
-                        } else {
-                            for (int32_t dl = -1; dl <= 1 && ext; ++dl) {
-                                const int16_t* img_l = (dl == -1) ? prev_img : (dl == 0 ? curr_img : next_img);
-                                for (int32_t dr = -1; dr <= 1; ++dr) {
-                                    const int16_t* rr = img_l + static_cast<size_t>(r + dr) * ow + cx;
-                                    if (val > rr[-1] || val > rr[0] || val > rr[1]) { ext = false; break; }
-                                }
-                            }
-                        }
-                        if (!ext) continue;
-
-                        int32_t ri = r, ci = cx, li = i;
-                        float xc = 0.0f, xr = 0.0f, xi = 0.0f;
-                        bool converged = false;
-                        for (int32_t step = 0; step < 5; ++step) {
-                            const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
-                            const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
-                            const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
-                            const size_t idx = static_cast<size_t>(ri) * ow + ci;
-                            const float v0 = static_cast<float>(dc[idx]);
-                            const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
-                            const float dy = 0.5f * (dc[idx + ow] - dc[idx - ow]);
-                            const float ds = 0.5f * (dn[idx] - dp[idx]);
-                            const float dxx = dc[idx + 1] + dc[idx - 1] - 2.0f * v0;
-                            const float dyy = dc[idx + ow] + dc[idx - ow] - 2.0f * v0;
-                            const float dss = dn[idx] + dp[idx] - 2.0f * v0;
-                            const float dxy = 0.25f * (dc[idx + ow + 1] - dc[idx + ow - 1] - dc[idx - ow + 1] + dc[idx - ow - 1]);
-                            const float dxs = 0.25f * (dn[idx + 1] - dn[idx - 1] - dp[idx + 1] + dp[idx - 1]);
-                            const float dys = 0.25f * (dn[idx + ow] - dn[idx - ow] - dp[idx + ow] + dp[idx - ow]);
-                            const float H[3][3] = {{dxx, dxy, dxs}, {dxy, dyy, dys}, {dxs, dys, dss}};
-                            const float b[3] = {-dx, -dy, -ds};
-                            float sol[3];
-                            if (!solve3x3(H, b, sol)) break;
-                            xc = sol[0]; xr = sol[1]; xi = sol[2];
-                            if (std::abs(xc) < 0.5f && std::abs(xr) < 0.5f && std::abs(xi) < 0.5f) {
-                                converged = true;
-                                break;
-                            }
-                            if (std::abs(xc) > 1e5f || std::abs(xr) > 1e5f || std::abs(xi) > 1e5f) break;
-                            ci += static_cast<int32_t>(std::round(xc));
-                            ri += static_cast<int32_t>(std::round(xr));
-                            li += static_cast<int32_t>(std::round(xi));
-                            if (li < 1 || li > nOctaveLayers || ci < img_border || ci >= ow - img_border ||
-                                ri < img_border || ri >= oh - img_border) {
-                                break;
-                            }
-                        }
-                        if (!converged) continue;
-
-                        const int16_t* dp = g_ws.dogpyr_i16[o][li - 1].data();
-                        const int16_t* dc = g_ws.dogpyr_i16[o][li].data();
-                        const int16_t* dn = g_ws.dogpyr_i16[o][li + 1].data();
-                        const size_t idx = static_cast<size_t>(ri) * ow + ci;
-                        const float v0 = static_cast<float>(dc[idx]);
-                        const float dx = 0.5f * (dc[idx + 1] - dc[idx - 1]);
-                        const float dy = 0.5f * (dc[idx + ow] - dc[idx - ow]);
-                        const float ds = 0.5f * (dn[idx] - dp[idx]);
-                        const float contr = (v0 + 0.5f * (dx * xc + dy * xr + ds * xi)) * INV_DOG_Q;
-                        if (std::abs(contr) < final_thresh) continue;
-
-                        const float dxx = dc[idx + 1] + dc[idx - 1] - 2.0f * v0;
-                        const float dyy = dc[idx + ow] + dc[idx - ow] - 2.0f * v0;
-                        const float dxy = 0.25f * (dc[idx + ow + 1] - dc[idx + ow - 1] - dc[idx - ow + 1] + dc[idx - ow - 1]);
-                        const float tr = dxx + dyy;
-                        const float det = dxx * dyy - dxy * dxy;
-                        if (det <= 0.0f || tr * tr * edgeThreshold >= (edgeThreshold + 1.0f) * (edgeThreshold + 1.0f) * det) {
-                            continue;
-                        }
-
-                        const float ptx_img = (static_cast<float>(ci) + xc) * oct_scale;
-                        const float pty_img = (static_cast<float>(ri) + xr) * oct_scale;
-                        if (ptx_img < 0.0f || ptx_img >= static_cast<float>(w) ||
-                            pty_img < 0.0f || pty_img >= static_cast<float>(h)) {
-                            continue;
-                        }
-
-                        RawExtremum ex;
-                        ex.x = ptx_img;
-                        ex.y = pty_img;
-                        ex.response = std::abs(contr) / 255.0f;
-                        ex.scl_octv = sigma * std::pow(2.0f, (static_cast<float>(li) + xi) / nOctaveLayers);
-                        ex.ri = ri;
-                        ex.ci = ci;
-                        ex.octave_idx = actual_oct;
-                        ex.layer = li;
-                        ex.pyr_o = o;
-                        raw_ext.push_back(ex);
+                        refine_candidate(i, r, c + lane, prev_img, curr_img, next_img);
                     }
+                }
+#elif defined(__AVX2__)
+                for (; c + 15 < ow - img_border; c += 16) {
+                    const __m256i vc = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rc + c));
+                    const __m256i av = _mm256_abs_epi16(vc);
+                    const __m256i cand_v = _mm256_cmpgt_epi16(av, v_pt16);
+                    if (_mm256_testz_si256(cand_v, cand_v)) continue;
+
+                    const __m256i vl = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rc + c - 1));
+                    const __m256i vr = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rc + c + 1));
+                    const __m256i vu = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rp + c));
+                    const __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rn + c));
+                    const __m256i vs_p = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_row + c));
+                    const __m256i vs_n = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(n_row + c));
+
+                    const __m256i nmax = _mm256_max_epi16(
+                        _mm256_max_epi16(_mm256_max_epi16(vl, vr), _mm256_max_epi16(vu, vd)),
+                        _mm256_max_epi16(vs_p, vs_n)
+                    );
+                    const __m256i nmin = _mm256_min_epi16(
+                        _mm256_min_epi16(_mm256_min_epi16(vl, vr), _mm256_min_epi16(vu, vd)),
+                        _mm256_min_epi16(vs_p, vs_n)
+                    );
+                    const __m256i is_pos = _mm256_cmpgt_epi16(vc, v_z16);
+                    // vc >= nmax  <=> !(nmax > vc)
+                    const __m256i ok_max = _mm256_andnot_si256(_mm256_cmpgt_epi16(nmax, vc), is_pos);
+                    // vc <= nmin  <=> !(vc > nmin)
+                    const __m256i is_neg = _mm256_cmpgt_epi16(v_z16, vc);
+                    const __m256i ok_min = _mm256_andnot_si256(_mm256_cmpgt_epi16(vc, nmin), is_neg);
+                    const __m256i ok_v = _mm256_and_si256(cand_v, _mm256_or_si256(ok_max, ok_min));
+                    uint32_t bmask = static_cast<uint32_t>(_mm256_movemask_epi8(ok_v)) & 0x55555555u;
+                    while (bmask) {
+                        const int32_t lane = vslam_ctz32(bmask) >> 1;
+                        bmask &= bmask - 1;
+                        refine_candidate(i, r, c + lane, prev_img, curr_img, next_img);
+                    }
+                }
+#endif
+                for (; c < ow - img_border; ++c) {
+                    const int16_t val = rc[c];
+                    const int16_t aval = (val < 0) ? static_cast<int16_t>(-val) : val;
+                    if (aval <= pre_thresh_i16) continue;
+                    if (val > 0) {
+                        if (val < rc[c - 1] || val < rc[c + 1] || val < rp[c] || val < rn[c] ||
+                            val < p_row[c] || val < n_row[c]) continue;
+                    } else {
+                        if (val > rc[c - 1] || val > rc[c + 1] || val > rp[c] || val > rn[c] ||
+                            val > p_row[c] || val > n_row[c]) continue;
+                    }
+                    refine_candidate(i, r, c, prev_img, curr_img, next_img);
                 }
             }
         }

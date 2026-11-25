@@ -1,4 +1,7 @@
+#include "portable_export.h"
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
+#endif
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -6,6 +9,8 @@
 #include <vector>
 
 namespace {
+
+#if defined(__AVX512F__) && defined(__AVX512VNNI__)
 
 inline int32_t hsum_epi32(__m512i v) {
     return _mm512_reduce_add_epi32(v);
@@ -22,15 +27,12 @@ inline void update_b_top2_16(
 ) {
     __mmask16 lt1 = _mm512_cmp_epi32_mask(d, bd1, _MM_CMPINT_LT);
     __mmask16 lt2 = _mm512_cmp_epi32_mask(d, bd2, _MM_CMPINT_LT);
-    // Where d < bd1: bd2 = bd1, bd1 = d, bbest = row_v
-    // Where !(d < bd1) && (d < bd2): bd2 = d
     __m512i new_bd2 = _mm512_mask_mov_epi32(bd2, lt2, d);
     bd2 = _mm512_mask_mov_epi32(new_bd2, lt1, bd1);
     bd1 = _mm512_mask_mov_epi32(bd1, lt1, d);
     bbest = _mm512_mask_mov_epi32(bbest, lt1, row_v);
 }
 
-// Reduce a 16-lane vector of distances (for indices j0..j0+15) into scalar top-2 (d1, d2, best).
 inline void reduce_f_top2_16(
     __m512i d,
     int32_t j0,
@@ -38,7 +40,6 @@ inline void reduce_f_top2_16(
     int32_t& d2,
     int32_t& best
 ) {
-    // Fast skip: if min of all 16 lanes >= d2, none can enter top-2!
     int32_t block_min = _mm512_reduce_min_epi32(d);
     if (block_min >= d2) {
         return;
@@ -57,15 +58,11 @@ inline void reduce_f_top2_16(
     }
 }
 
-// High-throughput packed-16 AVX-512 VNNI kernel with zero horizontal reductions.
-// B is packed into blocks of 16 rows: b_pack[jb * 32 * 16 + k * 16 + lane] holds
-// 4 consecutive int8 bytes (dims 4k..4k+3) of row (jb*16 + lane).
-// Each vpdpbusd computes 16 (i, j..j+15) 4-byte dot-product accumulations in parallel!
 void match_u8_128_vnni_packed16(
-    const uint32_t* a_u32,   // [m, 32] (each uint32 = 4 uint8 dims)
-    const int32_t* b_pack,   // [n_blocks, 32, 16] (each int32 = 4 int8 dims)
+    const uint32_t* a_u32,
+    const int32_t* b_pack,
     const int32_t* ca,
-    const int32_t* nb_pad,   // [n_pad] padded with INF
+    const int32_t* nb_pad,
     int32_t m,
     int32_t n,
     int32_t n_pad,
@@ -88,7 +85,7 @@ void match_u8_128_vnni_packed16(
     const __m512i v_neg1 = _mm512_set1_epi32(-1);
 
     auto process_row_vec = [&](int32_t row, __m512i acc, __m512i v_nb, int32_t j0,
-                               __mmask16 valid_j, __m512i& bd1, __m512i& bd2, __m512i& bbest) __attribute__((always_inline)) {
+                               __mmask16 valid_j, __m512i& bd1, __m512i& bd2, __m512i& bbest) {
         __m512i d = _mm512_sub_epi32(
             _mm512_add_epi32(_mm512_set1_epi32(ca[row]), v_nb),
             _mm512_slli_epi32(acc, 1)
@@ -100,7 +97,6 @@ void match_u8_128_vnni_packed16(
         update_b_top2_16(d, _mm512_set1_epi32(row), bd1, bd2, bbest);
     };
 
-    // Process 32 columns of B (2 blocks of 16) x 6 rows of A in 12 ZMM registers (zero spills!)
     int32_t jb = 0;
     for (; jb + 1 < n_blocks; jb += 2) {
         const int32_t j0 = jb * 16;
@@ -217,11 +213,63 @@ void match_u8_128_vnni_packed16(
     }
 }
 
+#elif defined(__AVX2__)
+
+inline int32_t hsum256_epi32(__m256i v) {
+    __m128i lo = _mm256_castsi256_si128(v);
+    __m128i hi = _mm256_extracti128_si256(v, 1);
+    __m128i s = _mm_add_epi32(lo, hi);
+    __m128i s2 = _mm_shuffle_epi32(s, _MM_SHUFFLE(1, 0, 3, 2));
+    s = _mm_add_epi32(s, s2);
+    __m128i s3 = _mm_shuffle_epi32(s, _MM_SHUFFLE(0, 1, 0, 1));
+    s = _mm_add_epi32(s, s3);
+    return _mm_cvtsi128_si32(s);
+}
+
+inline float hsum256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 s = _mm_add_ps(lo, hi);
+    __m128 shuf = _mm_movehdup_ps(s);
+    __m128 sums = _mm_add_ps(s, shuf);
+    shuf = _mm_movehl_ps(shuf, sums);
+    sums = _mm_add_ss(sums, shuf);
+    return _mm_cvtss_f32(sums);
+}
+
+inline int32_t dot_i16_128_avx2(const int16_t* a, const int16_t* b) {
+    __m256i acc0 = _mm256_madd_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 0)),
+                                     _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 0)));
+    __m256i acc1 = _mm256_madd_epi16(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 16)),
+                                     _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 16)));
+    acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 32)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 32))));
+    acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 48)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 48))));
+    acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 64)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 64))));
+    acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 80)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 80))));
+    acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 96)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 96))));
+    acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + 112)),
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + 112))));
+    return hsum256_epi32(_mm256_add_epi32(acc0, acc1));
+}
+
+#endif
+
 }  // namespace
 
 extern "C" {
 
-int32_t match_sift_mutual_f32(
+VSLAM_EXPORT int32_t match_sift_mutual_f32(
     const float* a_f32,
     int32_t m,
     const float* b_f32,
@@ -234,6 +282,8 @@ int32_t match_sift_mutual_f32(
     int32_t* out_ambig_b,
     int32_t* out_ambig_b_cnt
 ) {
+    (void)out_ambig_a;
+    (void)out_ambig_b;
     if (m < 2 || n < 2) {
         *out_count = 0;
         *out_ambig_a_cnt = 0;
@@ -241,16 +291,20 @@ int32_t match_sift_mutual_f32(
         return 1;
     }
 
+    std::vector<int32_t> best_f(m, -1), d1_f(m, std::numeric_limits<int32_t>::max()), d2_f(m, std::numeric_limits<int32_t>::max());
+    std::vector<int32_t> best_b(n, -1), d1_b(n, std::numeric_limits<int32_t>::max()), d2_b(n, std::numeric_limits<int32_t>::max());
+
+#if defined(__AVX512F__) && defined(__AVX512VNNI__)
     const int32_t n_pad = ((n + 15) / 16) * 16;
     const int32_t n_blocks = n_pad / 16;
 
     std::vector<uint8_t> a_u8(static_cast<size_t>(m) * 128);
     std::vector<int32_t> ca(m);
     std::vector<int32_t> nb_pad(n_pad, 0);
-    // 64-byte aligned packed B buffer
-    int32_t* b_pack = nullptr;
-    if (posix_memalign(reinterpret_cast<void**>(&b_pack), 64,
-                       static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t)) != 0) {
+    int32_t* b_pack = static_cast<int32_t*>(
+        vslam_aligned_alloc(64, static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t))
+    );
+    if (!b_pack) {
         return 0;
     }
     std::memset(b_pack, 0, static_cast<size_t>(n_blocks) * 32 * 16 * sizeof(int32_t));
@@ -259,7 +313,6 @@ int32_t match_sift_mutual_f32(
     const __m512 v_255 = _mm512_set1_ps(255.0f);
     const __m512i v_128 = _mm512_set1_epi32(128);
 
-    // Convert A -> uint8 + ca[i]
     for (int32_t i = 0; i < m; ++i) {
         const float* row = a_f32 + static_cast<size_t>(i) * 128;
         uint8_t* dst = a_u8.data() + static_cast<size_t>(i) * 128;
@@ -274,7 +327,7 @@ int32_t match_sift_mutual_f32(
             __m512 vr = _mm512_cvtepi32_ps(vi);
             __mmask16 bad_frac = _mm512_cmp_ps_mask(vf, vr, _CMP_NEQ_OQ);
             if (bad_lo | bad_hi | bad_nan | bad_frac) {
-                free(b_pack);
+                vslam_aligned_free(b_pack);
                 return 0;
             }
             sum_v = _mm512_add_epi32(sum_v, vi);
@@ -284,7 +337,6 @@ int32_t match_sift_mutual_f32(
         ca[i] = hsum_epi32(sq_v) - 256 * hsum_epi32(sum_v);
     }
 
-    // Convert B -> shifted int8 directly into packed-16 layout + nb_pad[j]
     alignas(64) int8_t tmp_b[128];
     for (int32_t j = 0; j < n; ++j) {
         const float* row = b_f32 + static_cast<size_t>(j) * 128;
@@ -298,7 +350,7 @@ int32_t match_sift_mutual_f32(
             __m512 vr = _mm512_cvtepi32_ps(vi);
             __mmask16 bad_frac = _mm512_cmp_ps_mask(vf, vr, _CMP_NEQ_OQ);
             if (bad_lo | bad_hi | bad_nan | bad_frac) {
-                free(b_pack);
+                vslam_aligned_free(b_pack);
                 return 0;
             }
             sq_v = _mm512_add_epi32(sq_v, _mm512_mullo_epi32(vi, vi));
@@ -315,8 +367,6 @@ int32_t match_sift_mutual_f32(
         }
     }
 
-    std::vector<int32_t> best_f(m), d1_f(m), d2_f(m);
-    std::vector<int32_t> best_b(n), d1_b(n), d2_b(n);
     match_u8_128_vnni_packed16(
         reinterpret_cast<const uint32_t*>(a_u8.data()),
         b_pack,
@@ -332,16 +382,84 @@ int32_t match_sift_mutual_f32(
         d1_b.data(),
         d2_b.data()
     );
-    free(b_pack);
+    vslam_aligned_free(b_pack);
+#else
+    // Portable AVX2 / scalar exact int16 L2^2 path (bit-identical to cv::BFMatcher NORM_L2)
+    std::vector<int16_t> a_i16(static_cast<size_t>(m) * 128);
+    std::vector<int16_t> b_i16(static_cast<size_t>(n) * 128);
+    std::vector<int32_t> na(m);
+    std::vector<int32_t> nb(n);
+
+    auto convert_rows = [](const float* src, int32_t rows, int16_t* dst, int32_t* norms) -> bool {
+        for (int32_t i = 0; i < rows; ++i) {
+            const float* row = src + static_cast<size_t>(i) * 128;
+            int16_t* out = dst + static_cast<size_t>(i) * 128;
+            int32_t sq = 0;
+            for (int32_t k = 0; k < 128; ++k) {
+                const float v = row[k];
+                if (!std::isfinite(v) || v < 0.0f || v > 255.0f) {
+                    return false;
+                }
+                const int32_t iv = static_cast<int32_t>(v);
+                if (static_cast<float>(iv) != v) {
+                    return false;
+                }
+                out[k] = static_cast<int16_t>(iv);
+                sq += iv * iv;
+            }
+            norms[i] = sq;
+        }
+        return true;
+    };
+
+    if (!convert_rows(a_f32, m, a_i16.data(), na.data()) ||
+        !convert_rows(b_f32, n, b_i16.data(), nb.data())) {
+        return 0;
+    }
+
+    for (int32_t i = 0; i < m; ++i) {
+        const int16_t* pa = a_i16.data() + static_cast<size_t>(i) * 128;
+        const int32_t na_i = na[i];
+        int32_t d1 = std::numeric_limits<int32_t>::max();
+        int32_t d2 = std::numeric_limits<int32_t>::max();
+        int32_t best = -1;
+        for (int32_t j = 0; j < n; ++j) {
+            const int16_t* pb = b_i16.data() + static_cast<size_t>(j) * 128;
+#if defined(__AVX2__)
+            const int32_t dot = dot_i16_128_avx2(pa, pb);
+#else
+            int32_t dot = 0;
+            for (int32_t k = 0; k < 128; ++k) {
+                dot += static_cast<int32_t>(pa[k]) * static_cast<int32_t>(pb[k]);
+            }
+#endif
+            const int32_t d = na_i + nb[j] - 2 * dot;
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+                best = j;
+            } else if (d < d2) {
+                d2 = d;
+            }
+            if (d < d1_b[j]) {
+                d2_b[j] = d1_b[j];
+                d1_b[j] = d;
+                best_b[j] = i;
+            } else if (d < d2_b[j]) {
+                d2_b[j] = d;
+            }
+        }
+        d1_f[i] = d1;
+        d2_f[i] = d2;
+        best_f[i] = best;
+    }
+#endif
 
     int32_t amb_a = 0;
     int32_t amb_b = 0;
     std::vector<uint8_t> ok_f(m, 0);
     std::vector<uint8_t> ok_b(n, 0);
 
-    // Every integer squared L2 distance for 128-D [0..255] descriptors is at most
-    // 128 * 255^2 = 8,323,200 < 2^24 = 16,777,216, so float(d) is bit-exact and
-    // sqrtf(float(d)) matches OpenCV cv.BFMatcher(NORM_L2)'s float32 distance identically.
     for (int32_t i = 0; i < m; ++i) {
         if (d1_f[i] < d2_f[i]) {
             const double s1 = static_cast<double>(std::sqrt(static_cast<float>(d1_f[i])));
@@ -378,21 +496,21 @@ int32_t match_sift_mutual_f32(
     return 1;
 }
 
-int32_t match_projected_landmarks_f32(
-    const float* proj_uv,       // [n_lm, 2]
-    const float* lm_descs,      // [n_lm, 128]
-    const int16_t* lm_oct,      // [n_lm] or nullptr
+VSLAM_EXPORT int32_t match_projected_landmarks_f32(
+    const float* proj_uv,
+    const float* lm_descs,
+    const int16_t* lm_oct,
     int32_t n_lm,
-    const float* f_pixels,      // [n_feat, 2]
-    const float* f_descs,       // [n_feat, 128]
-    const int16_t* f_oct,       // [n_feat] or nullptr
+    const float* f_pixels,
+    const float* f_descs,
+    const int16_t* f_oct,
     int32_t n_feat,
     float radius_px,
     float ratio,
     int32_t max_octave_diff,
     float max_l2_distance,
     float max_single_l2_distance,
-    int32_t* out_pairs,         // [min(n_lm, n_feat), 2] -> (lm_idx, feat_idx)
+    int32_t* out_pairs,
     int32_t* out_count
 ) {
     *out_count = 0;
@@ -407,7 +525,6 @@ int32_t match_projected_landmarks_f32(
     const float max_single_sq = max_single_l2_distance * max_single_l2_distance;
     const bool use_oct = (lm_oct != nullptr && f_oct != nullptr && max_octave_diff >= 0);
 
-    // Compute spatial grid bounds over frame features
     int32_t min_gx = 2147483647, max_gx = -2147483647;
     int32_t min_gy = 2147483647, max_gy = -2147483647;
     std::vector<int32_t> fgx(n_feat), fgy(n_feat);
@@ -497,6 +614,7 @@ int32_t match_projected_landmarks_f32(
                         }
                     }
                     const float* fd = f_descs + static_cast<size_t>(f) * 128;
+#if defined(__AVX512F__)
                     __m512 acc0 = _mm512_setzero_ps();
                     __m512 acc1 = _mm512_setzero_ps();
                     for (int32_t k = 0; k < 128; k += 32) {
@@ -506,6 +624,23 @@ int32_t match_projected_landmarks_f32(
                         acc1 = _mm512_fmadd_ps(d1, d1, acc1);
                     }
                     const float d2 = _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1));
+#elif defined(__AVX2__)
+                    __m256 acc0 = _mm256_setzero_ps();
+                    __m256 acc1 = _mm256_setzero_ps();
+                    for (int32_t k = 0; k < 128; k += 16) {
+                        __m256 d0 = _mm256_sub_ps(_mm256_loadu_ps(lmd + k), _mm256_loadu_ps(fd + k));
+                        __m256 d1 = _mm256_sub_ps(_mm256_loadu_ps(lmd + k + 8), _mm256_loadu_ps(fd + k + 8));
+                        acc0 = _mm256_fmadd_ps(d0, d0, acc0);
+                        acc1 = _mm256_fmadd_ps(d1, d1, acc1);
+                    }
+                    const float d2 = hsum256_ps(_mm256_add_ps(acc0, acc1));
+#else
+                    float d2 = 0.0f;
+                    for (int32_t k = 0; k < 128; ++k) {
+                        const float diff = lmd[k] - fd[k];
+                        d2 += diff * diff;
+                    }
+#endif
                     ++cand_cnt;
                     if (d2 < best_d2) {
                         second_d2 = best_d2;

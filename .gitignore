@@ -29,4 +29,9 @@ trajectory.html
 dashboard/public/saved-visuals/
 dashboard/public/benchmark-graphs.html
 src/native_kernels/*.so
+src/native_kernels/*.dll
+src/native_kernels/*.dylib
+src/native_kernels/*.lib
+src/native_kernels/*.exp
+src/native_kernels/*.obj
 

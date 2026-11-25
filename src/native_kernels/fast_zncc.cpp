@@ -1,4 +1,7 @@
+#include "portable_export.h"
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -27,6 +30,7 @@ enum RejectReason : int32_t {
     REASON_ROUND_TRIP = 200,
 };
 
+#if defined(__AVX512F__)
 template <typename T>
 inline __m512 load16_f32(const T* ptr);
 
@@ -40,6 +44,21 @@ inline __m512 load16_f32<uint8_t>(const uint8_t* ptr) {
     return _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(
         _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr))));
 }
+#elif defined(__AVX2__)
+template <typename T>
+inline __m256 load8_f32(const T* ptr);
+
+template <>
+inline __m256 load8_f32<float>(const float* ptr) {
+    return _mm256_loadu_ps(ptr);
+}
+
+template <>
+inline __m256 load8_f32<uint8_t>(const uint8_t* ptr) {
+    return _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(
+        _mm_loadl_epi64(reinterpret_cast<const __m128i*>(ptr))));
+}
+#endif
 
 // Exact bilinear sampling with BORDER_REPLICATE matching cv::remap(INTER_LINEAR, BORDER_REPLICATE).
 template <typename T>
@@ -89,10 +108,17 @@ inline void sample_rect_fast(
     const float w10 = (1.0f - fx) * fy;
     const float w11 = fx * fy;
 
+#if defined(__AVX512F__)
     const __m512 vw00 = _mm512_set1_ps(w00);
     const __m512 vw01 = _mm512_set1_ps(w01);
     const __m512 vw10 = _mm512_set1_ps(w10);
     const __m512 vw11 = _mm512_set1_ps(w11);
+#elif defined(__AVX2__)
+    const __m256 vw00 = _mm256_set1_ps(w00);
+    const __m256 vw01 = _mm256_set1_ps(w01);
+    const __m256 vw10 = _mm256_set1_ps(w10);
+    const __m256 vw11 = _mm256_set1_ps(w11);
+#endif
 
     const bool x_interior = (ix0_base >= 0) && (ix0_base + out_w < w);
 
@@ -111,6 +137,7 @@ inline void sample_rect_fast(
             const T* p10 = r1 + ix0_base;
             const T* p11 = p10 + 1;
             int32_t dx = 0;
+#if defined(__AVX512F__)
             for (; dx + 15 < out_w; dx += 16) {
                 __m512 v = _mm512_mul_ps(vw00, load16_f32(p00 + dx));
                 v = _mm512_fmadd_ps(vw01, load16_f32(p01 + dx), v);
@@ -118,6 +145,15 @@ inline void sample_rect_fast(
                 v = _mm512_fmadd_ps(vw11, load16_f32(p11 + dx), v);
                 _mm512_storeu_ps(out_row + dx, v);
             }
+#elif defined(__AVX2__)
+            for (; dx + 7 < out_w; dx += 8) {
+                __m256 v = _mm256_mul_ps(vw00, load8_f32(p00 + dx));
+                v = _mm256_fmadd_ps(vw01, load8_f32(p01 + dx), v);
+                v = _mm256_fmadd_ps(vw10, load8_f32(p10 + dx), v);
+                v = _mm256_fmadd_ps(vw11, load8_f32(p11 + dx), v);
+                _mm256_storeu_ps(out_row + dx, v);
+            }
+#endif
             for (; dx < out_w; ++dx) {
                 out_row[dx] = w00 * static_cast<float>(p00[dx]) + w01 * static_cast<float>(p01[dx])
                             + w10 * static_cast<float>(p10[dx]) + w11 * static_cast<float>(p11[dx]);
@@ -216,9 +252,10 @@ int32_t zncc_search_one(
         pref_sq[c + 1] = pref_sq[c] + col_sq[c];
     }
 
-    // AVX-512 cross-correlation: num[s] = sum_{r,c} p_zm[r,c] * strip[r, c + s] for s=0..n_scores-1
+    // SIMD cross-correlation: num[s] = sum_{r,c} p_zm[r,c] * strip[r, c + s] for s=0..n_scores-1
     alignas(64) float num_f[256];
     int32_t s = 0;
+#if defined(__AVX512F__)
     for (; s + 15 < n_scores; s += 16) {
         __m512 acc = _mm512_setzero_ps();
         for (int32_t r = 0; r < patch_size; ++r) {
@@ -246,6 +283,42 @@ int32_t zncc_search_one(
         }
         _mm512_mask_storeu_ps(num_f + s, rem, acc);
     }
+#elif defined(__AVX2__)
+    for (; s + 7 < n_scores; s += 8) {
+        __m256 acc = _mm256_setzero_ps();
+        for (int32_t r = 0; r < patch_size; ++r) {
+            const float* prow = patch_buf + static_cast<size_t>(r) * patch_size;
+            const float* srow = strip_buf + static_cast<size_t>(r) * strip_w + s;
+            for (int32_t c = 0; c < patch_size; ++c) {
+                acc = _mm256_fmadd_ps(_mm256_set1_ps(prow[c]), _mm256_loadu_ps(srow + c), acc);
+            }
+        }
+        _mm256_storeu_ps(num_f + s, acc);
+    }
+    for (; s < n_scores; ++s) {
+        float acc = 0.0f;
+        for (int32_t r = 0; r < patch_size; ++r) {
+            const float* prow = patch_buf + static_cast<size_t>(r) * patch_size;
+            const float* srow = strip_buf + static_cast<size_t>(r) * strip_w + s;
+            for (int32_t c = 0; c < patch_size; ++c) {
+                acc += prow[c] * srow[c];
+            }
+        }
+        num_f[s] = acc;
+    }
+#else
+    for (; s < n_scores; ++s) {
+        float acc = 0.0f;
+        for (int32_t r = 0; r < patch_size; ++r) {
+            const float* prow = patch_buf + static_cast<size_t>(r) * patch_size;
+            const float* srow = strip_buf + static_cast<size_t>(r) * strip_w + s;
+            for (int32_t c = 0; c < patch_size; ++c) {
+                acc += prow[c] * srow[c];
+            }
+        }
+        num_f[s] = acc;
+    }
+#endif
 
     const double pos_base = strip_center - static_cast<double>(max_disp) * 0.5;
     int32_t best = -1;
@@ -424,7 +497,7 @@ int32_t verify_stereo_zncc_batch_impl(
 
 extern "C" {
 
-int32_t verify_stereo_zncc_batch_f32(
+VSLAM_EXPORT int32_t verify_stereo_zncc_batch_f32(
     const float* left_img,
     const float* right_img,
     int32_t h,
@@ -449,7 +522,7 @@ int32_t verify_stereo_zncc_batch_f32(
     );
 }
 
-int32_t verify_stereo_zncc_batch_u8(
+VSLAM_EXPORT int32_t verify_stereo_zncc_batch_u8(
     const uint8_t* left_img,
     const uint8_t* right_img,
     int32_t h,

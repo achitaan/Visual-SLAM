@@ -2,6 +2,7 @@
 // Uses Minimum-Degree (MD) node ordering + symbolic/numeric block-6x6 sparse Cholesky (LL^T).
 // Matches src/pose_graph.py:optimize_sparse_se3 objective, Jacobians, Huber loss, and LM update.
 
+#include "portable_export.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -508,7 +509,7 @@ double eval_graph(
 
 }  // namespace
 
-extern "C" int solve_sparse_se3_pgo(
+extern "C" VSLAM_EXPORT int solve_sparse_se3_pgo(
     int n_poses,
     double* poses,          // [n_poses, 4, 4] row-major, in/out
     int n_edges,

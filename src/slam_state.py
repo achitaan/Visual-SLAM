@@ -66,6 +66,64 @@ class MappingKeyframe:
     landmark_ids_version: int = 0
 
 
+def _valid_pose_batch(poses):
+    """Check trusted float64 pose batches with the scalar validator's tolerances."""
+    if (not np.isfinite(poses).all()
+            or np.any(np.abs(poses[:, 3, :3]) > 1e-5)
+            or np.any(np.abs(poses[:, 3, 3] - 1.0) > 2e-5)):
+        return False
+    a, b, c = poses[:, :3, :3].transpose(1, 2, 0)
+    a0, a1, a2 = a
+    b0, b1, b2 = b
+    c0, c1, c2 = c
+    with np.errstate(over="ignore", invalid="ignore"):
+        g00 = a0 * a0 + b0 * b0 + c0 * c0
+        g11 = a1 * a1 + b1 * b1 + c1 * c1
+        g22 = a2 * a2 + b2 * b2 + c2 * c2
+        g01 = a0 * a1 + b0 * b1 + c0 * c1
+        g02 = a0 * a2 + b0 * b2 + c0 * c2
+        g12 = a1 * a2 + b1 * b2 + c1 * c2
+        det = a0 * (b1 * c2 - b2 * c1) - a1 * (b0 * c2 - b2 * c0) + a2 * (b0 * c1 - b1 * c0)
+    return (np.all(np.abs(np.stack((g00, g11, g22, det)) - 1.0) <= 1e-3 + 1e-5)
+            and np.all(np.abs(np.stack((g01, g02, g12))) <= 1e-3))
+
+
+def _batch_metric_frame_corrections(poses, pose_anchors, frames_by_anchor,
+                                    moved_keyframes, corrections, corrected):
+    frame_ids = []
+    anchor_ids = []
+    anchor_slots = []
+    for anchor in moved_keyframes:
+        frames = [frame for frame in frames_by_anchor.get(anchor, ())
+                  if frame < len(poses) and pose_anchors[frame] == anchor]
+        if frames:
+            anchor_slots.extend([len(anchor_ids)] * len(frames))
+            anchor_ids.append(anchor)
+            frame_ids.extend(frames)
+    if len(frame_ids) < 64:
+        return None
+
+    old_rows = [poses[frame] for frame in frame_ids]
+    anchor_rows = [corrected[anchor] for anchor in anchor_ids]
+    if any(type(pose) is not np.ndarray or pose.shape != (4, 4) or pose.dtype != np.float64
+           for pose in (*old_rows, *anchor_rows)):
+        return None
+
+    old = np.stack(old_rows)
+    slots = np.asarray(anchor_slots, dtype=np.intp)
+    by_anchor = [corrections[anchor] for anchor in anchor_ids]
+    rotations = np.stack([rotation for rotation, _, _ in by_anchor])
+    scaled_rotations = np.stack([scale * rotation for rotation, scale, _ in by_anchor])
+    translations = np.stack([translation for _, _, translation in by_anchor])
+    updated = old.copy()
+    updated[:, :3, :3] = rotations[slots] @ old[:, :3, :3]
+    updated[:, :3, 3] = (scaled_rotations[slots] @ old[:, :3, 3, None])[..., 0] + translations[slots]
+    if not _valid_pose_batch(updated):
+        return None
+    relatives = np.linalg.inv(np.stack(anchor_rows))[slots] @ updated
+    return frame_ids, updated, relatives
+
+
 class MapState:
     def __init__(self, metric=False):
         self.metric = metric
@@ -459,25 +517,36 @@ class MapState:
                         positions[ident] = pos
             poses = list(self.poses)
             moved_frames = []
+            batched_relatives = None
             fba = getattr(self, "_frames_by_anchor", None)
             if (fba is not None and not intermediate
                     and len(moved_kfs) < len(self.keyframes)
                     and len(self.poses) == len(self.pose_anchors)):
-                for anchor in moved_kfs:
-                    f_list = fba.get(anchor)
-                    if not f_list:
-                        continue
-                    rotation, scale, translation = corrections[anchor]
-                    for frame in f_list:
-                        if frame >= len(poses) or self.pose_anchors[frame] != anchor:
+                batch = None
+                if self.metric and len(moved_kfs) >= 16 and len(self.relative_poses) == len(poses):
+                    batch = _batch_metric_frame_corrections(
+                        poses, self.pose_anchors, fba, moved_kfs, corrections, corrected,
+                    )
+                if batch is not None:
+                    moved_frames, updated, batched_relatives = batch
+                    for frame, row in zip(moved_frames, updated):
+                        poses[frame] = row.copy()
+                else:
+                    for anchor in moved_kfs:
+                        f_list = fba.get(anchor)
+                        if not f_list:
                             continue
-                        pose = poses[frame]
-                        updated = pose.copy()
-                        updated[:3, :3] = rotation @ pose[:3, :3]
-                        updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
-                        validate_pose(updated)
-                        poses[frame] = updated
-                        moved_frames.append(frame)
+                        rotation, scale, translation = corrections[anchor]
+                        for frame in f_list:
+                            if frame >= len(poses) or self.pose_anchors[frame] != anchor:
+                                continue
+                            pose = poses[frame]
+                            updated = pose.copy()
+                            updated[:3, :3] = rotation @ pose[:3, :3]
+                            updated[:3, 3] = scale * rotation @ pose[:3, 3] + translation
+                            validate_pose(updated)
+                            poses[frame] = updated
+                            moved_frames.append(frame)
             else:
                 for frame, (pose, anchor) in enumerate(zip(self.poses, self.pose_anchors)):
                     if frame in intermediate:
@@ -618,7 +687,10 @@ class MapState:
                 if not self.metric and self.keyframes[ident].depth_points is not None:
                     self.keyframes[ident].depth_points *= corrections[ident][1]
             self.poses = poses
-            if len(self.relative_poses) == len(poses):
+            if batched_relatives is not None:
+                for frame, relative in zip(moved_frames, batched_relatives):
+                    self.relative_poses[frame] = relative.copy()
+            elif len(self.relative_poses) == len(poses):
                 kf_inv_cache = {}
                 for frame in moved_frames:
                     a = self.pose_anchors[frame]

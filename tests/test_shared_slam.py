@@ -1,6 +1,7 @@
 import numpy as np
 import cv2 as cv
 import pytest
+import slam_state
 from slam_state import MapState, MappingKeyframe, Observation
 from shared_slam import SharedSlam, MappingConfig, StereoCamera
 from mapping_geometry import (
@@ -526,6 +527,47 @@ def test_atomic_corrections_and_stale_revision():
     assert np.allclose(state.landmarks[lid].position, [4, 0, 10])
     assert np.allclose(state.poses[0][:3, 3], [3, 0, 0])
     assert state.revision == 1
+
+
+def test_batch_metric_pose_corrections_match_scalar_path(monkeypatch):
+    rng = np.random.default_rng(184)
+    reference, candidate = MapState(metric=True), MapState(metric=True)
+    corrected, scales = {}, {}
+    for anchor in range(21):
+        key_pose = pose(float(anchor))
+        key_pose[:3, :3] = cv.Rodrigues(rng.normal(0.0, 0.06, 3))[0]
+        for state in (reference, candidate):
+            state.keyframes[anchor] = MappingKeyframe(
+                anchor, 4 * anchor, key_pose.copy(), np.empty((0, 2)),
+                np.empty((0, 128)), np.empty(0, dtype=int),
+            )
+        for frame in range(4):
+            frame_pose = key_pose @ pose(frame * 0.3)
+            reference.record(frame_pose, "tracking", anchor)
+            candidate.record(frame_pose, "tracking", anchor)
+        scales[anchor] = 1.0 if anchor == 0 else 1.0 + 0.0001 * anchor
+        updated = key_pose.copy()
+        if anchor:
+            updated[:3, :3] = cv.Rodrigues(rng.normal(0.0, 0.01, 3))[0] @ key_pose[:3, :3]
+            updated[:3, 3] += rng.normal(0.0, 0.04, 3)
+        corrected[anchor] = updated
+
+    batch = slam_state._batch_metric_frame_corrections
+    monkeypatch.setattr(slam_state, "_batch_metric_frame_corrections", lambda *_: None)
+    assert reference.apply_corrections(0, corrected, scales)
+
+    def check_batch(*args):
+        derived = batch(*args)
+        assert derived is not None and len(derived[0]) == 80
+        return derived
+
+    monkeypatch.setattr(slam_state, "_batch_metric_frame_corrections", check_batch)
+    assert candidate.apply_corrections(0, corrected, scales)
+    for attr in ("poses", "relative_poses"):
+        expected = np.asarray(getattr(reference, attr)).view(np.uint64)
+        actual = np.asarray(getattr(candidate, attr)).view(np.uint64)
+        np.testing.assert_array_equal(actual, expected)
+    assert candidate.revision == reference.revision == 1
 
 
 def test_pnp_rejects_outliers_and_negative_depth():

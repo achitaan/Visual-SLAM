@@ -561,8 +561,26 @@ def triangulate_far_stereo_landmarks(
     prev_octs = getattr(prev_kf, "octaves", None)
     curr_octs = getattr(curr_kf, "octaves", None)
 
+    # Screen clear depth and parallax failures in a batch. Keep the scalar
+    # geometry checks for retained points, including near each cutoff.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        depth1 = pts_w @ T_cw1[2, :3] + T_cw1[2, 3]
+        depth2 = pts_w @ T_cw2[2, :3] + T_cw2[2, 3]
+        point_magnitude = np.max(np.abs(pts_w), axis=1)
+        pad1 = 1e-12 * (1 + point_magnitude * np.abs(T_cw1[2, :3]).sum() + abs(T_cw1[2, 3]))
+        pad2 = 1e-12 * (1 + point_magnitude * np.abs(T_cw2[2, :3]).sum() + abs(T_cw2[2, 3]))
+        outside = ((depth1 < min_depth_m - pad1) | (depth1 > max_depth_m + pad1)
+                   | (depth2 < min_depth_m - pad2) | (depth2 > max_depth_m + pad2))
+        considered = np.flatnonzero(np.isfinite(pts_w).all(axis=1) & ~outside)
+        rays1, rays2 = pts_w[considered] - c1, pts_w[considered] - c2
+        scale = np.linalg.norm(rays1, axis=1) * np.linalg.norm(rays2, axis=1)
+        cosine = np.einsum("ij,ij->i", rays1, rays2) / scale
+        clearly_low_parallax = np.isfinite(scale) & (scale > 0.0) & (cosine > min_cos_parallax + 1e-12)
+        considered = considered[~clearly_low_parallax]
+
     results: list[TriangulatedLandmark] = []
-    for k, (i1, i2) in enumerate(pairs):
+    for k in considered.tolist():
+        i1, i2 = pairs[k]
         X = pts_w[k]
         if not np.isfinite(X).all():
             continue

@@ -545,15 +545,18 @@ class IncrementalMapIndex:
         ):
             return self._recent_kf_slots
         recent_kfs = sorted(self._kf_landmarks.keys(), reverse=True)[:window]
-        id_to_slot = self._id_to_slot
-        slot_set: set[int] = set()
-        for kf_id in recent_kfs:
-            for lm_id in self._kf_landmarks[kf_id]:
-                slot = id_to_slot.get(lm_id)
-                if slot is not None:
-                    slot_set.add(slot)
-        slots = np.fromiter(slot_set, dtype=np.int64, count=len(slot_set))
-        slots.sort()
+        memberships = sum(len(self._kf_landmarks[key]) for key in recent_kfs)
+        if recent_kfs and recent_kfs[-1] >= 0 and self._size <= 32 * memberships:
+            # A live slot carries the greatest keyframe ID of its observations.
+            slots = np.flatnonzero(self._max_obs_kf[:self._size] >= recent_kfs[-1]).astype(
+                np.int64, copy=False,
+            )
+        else:
+            # Keep the sparse lookup for very large maps and negative IDs,
+            # since the array uses -1 for missing observations.
+            slot_set = {self._id_to_slot[lid] for key in recent_kfs
+                        for lid in self._kf_landmarks[key] if lid in self._id_to_slot}
+            slots = np.asarray(sorted(slot_set), dtype=np.int64)
         self._recent_kf_cache_version = self._struct_version
         self._recent_kf_cache_window = window
         self._recent_kf_slots = slots

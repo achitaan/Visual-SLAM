@@ -8,6 +8,7 @@ from scipy.spatial.transform import Rotation
 import local_bundle as bundle
 from local_bundle import local_bundle_adjustment
 from mapping_geometry import project, right_pixel
+from owned_observation import OwnedObservation
 from slam_state import MapState, MappingKeyframe, Observation
 
 
@@ -424,3 +425,24 @@ def test_batched_bundle_outlier_checks_preserve_the_last_observation(metric):
     remaining = [list(landmark.observations) for landmark in state.landmarks.values()]
     assert remaining == ([[2], [1], [0]] if metric else [[1, 2], [1], [0]])
     assert state.index.landmarks_for_keyframes([0]) == {2}
+
+
+def test_indexed_bundle_cull_reads_full_precision_owned_pixels():
+    state = MapState()
+    state.keyframes = {i: SimpleNamespace(pose=np.eye(4)) for i in range(2)}
+    boundary = np.sqrt(9.21)
+    outside = OwnedObservation(np.array([boundary + 1e-9, 0.0]))
+    inside = OwnedObservation(np.array([0.0, 0.0], dtype=np.float32))
+    ident = state.add_landmark([0.0, 0.0, 1.0], np.ones(128), 0, {0: outside, 1: inside})
+    records = [(0, 0, outside), (0, 1, inside)]
+
+    count = bundle._cull_bundle_outliers(
+        state, [state.landmarks[ident]], records, np.eye(3), 0.0, 0.0,
+        indexed_rows=(np.array([0, 0]), np.array([0, 1]), [0, 1]),
+    )
+
+    # The unit-depth point projects to the origin. Its first residual is just
+    # above sqrt(9.21) in float64 and below the cutoff after float32 rounding.
+    assert count == 1
+    assert list(state.landmarks[ident].observations) == [1]
+    assert state.index.landmarks_for_keyframes([0]) == set()

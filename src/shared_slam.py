@@ -3349,7 +3349,9 @@ class SharedSlam:
         n_target = len(target_pixels)
         use_fast_key = (cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY)
         target_list = target_pixels.tolist() if use_fast_key else None
-        group_claims, candidate_groups, feature_claims = {}, {}, {}
+        rays, candidate_groups, first_feature_claim = {}, {}, {}
+        conflicts = set()
+        competing_features = {}
         for landmark_id, (pixel, feature) in candidates.items():
             # The LK measurement is the geometry observation. Its nearest SIFT
             # row is only an appearance association and may be shared by nearby
@@ -3362,24 +3364,23 @@ class SharedSlam:
             else:
                 key = cls._physical_pixel_key(np.asarray(pixel, np.float32).reshape(2))
             candidate_groups[lid] = key
-            g_set = group_claims.get(key)
-            if g_set is None:
-                group_claims[key] = {lid}
-            else:
-                g_set.add(lid)
+            if rays.setdefault(key, lid) != lid:
+                conflicts.add(key)
             if 0 <= feat < n_target:
                 if use_fast_key:
                     trow = target_list[feat]
                     detector_key = (trow[0], trow[1])
                 else:
                     detector_key = cls._physical_pixel_key(target_pixels[feat])
-                f_list = feature_claims.get(detector_key)
-                if f_list is None:
-                    feature_claims[detector_key] = [lid]
+                first = first_feature_claim.get(detector_key)
+                if first is None:
+                    first_feature_claim[detector_key] = lid
                 else:
-                    f_list.append(lid)
-        conflicts = {key for key, identifiers in group_claims.items()
-                     if len(identifiers) > 1}
+                    group = competing_features.get(detector_key)
+                    if group is None:
+                        competing_features[detector_key] = [first, lid]
+                    else:
+                        group.append(lid)
         if not conflicts:
             kept = {int(landmark_id): value for landmark_id, value in candidates.items()}
         else:
@@ -3388,9 +3389,7 @@ class SharedSlam:
         # Two different physical observations cannot both claim the same
         # detector identity. Preserve their actual coordinates as flow-only
         # rows; keep an exact-pixel claimant linked when it is unambiguous.
-        for detector_key, identifiers in feature_claims.items():
-            if len(identifiers) <= 1:
-                continue
+        for detector_key, identifiers in competing_features.items():
             identifiers = [landmark_id for landmark_id in identifiers if landmark_id in kept]
             keys = {candidate_groups[landmark_id] for landmark_id in identifiers}
             if len(keys) <= 1:

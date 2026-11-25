@@ -10,6 +10,9 @@ import numpy as np
 from slam_state import Observation
 
 _FLOAT32_DTYPE = np.dtype(np.float32)
+_FLOAT64_DTYPE = np.dtype(np.float64)
+_UNPACK_2F = struct.Struct("=2f").unpack
+_UNPACK_2D = struct.Struct("=2d").unpack
 _UNPACK_2I = struct.Struct("<ii").unpack
 
 
@@ -87,6 +90,17 @@ class OwnedObservation(Observation):
         self._legacy_pixel=None
 
     def __copy__(self):return type(self)(self.pixel,self.right_u)
+
+    def pixel_values(self):
+        """Read native floating coordinates at their stored precision."""
+        state = self._pixel_state
+        if state is not None and state[2] == (2,):
+            buffer, dtype, _ = state
+            if dtype == _FLOAT32_DTYPE:
+                return _UNPACK_2F(buffer)
+            if dtype == _FLOAT64_DTYPE:
+                return _UNPACK_2D(buffer)
+        return self.pixel
 
     def __deepcopy__(self,memo):
         result=type(self)(copy.deepcopy(self.pixel,memo),copy.deepcopy(self.right_u,memo))

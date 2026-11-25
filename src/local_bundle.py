@@ -6,6 +6,7 @@ from bundle_solver import least_squares
 from scipy.spatial.transform import Rotation
 from scipy.sparse import lil_matrix
 from mapping_geometry import project, right_pixel
+from owned_observation import OwnedObservation
 from pose_observability import original_image_pose_observability
 
 
@@ -175,19 +176,25 @@ def _validate_retained_registry_metadata(registry, revision, geometry_revision,
                 raise ValueError("malformed_retained_source_row")
 
 
-def _cull_bundle_outliers(state, landmarks, records, matrix, baseline, disparity_offset):
-    rows = []
-    for point_index, keyframe_id, observation in records:
-        landmark = state.landmarks.get(landmarks[point_index].id)
-        keyframe = state.keyframes.get(keyframe_id)
-        if (landmark is not None and keyframe is not None
-                and len(landmark.observations) > 1 and keyframe_id in landmark.observations):
-            rows.append((landmark, keyframe_id, observation, keyframe.pose))
-    if not rows:
-        return 0
-
-    poses = np.asarray([pose for _, _, _, pose in rows])
-    positions = np.asarray([landmark.position for landmark, _, _, _ in rows])
+def _cull_bundle_outliers(state, landmarks, records, matrix, baseline, disparity_offset,
+                         *, indexed_rows=None):
+    if indexed_rows is None:
+        rows = []
+        for point_index, keyframe_id, observation in records:
+            landmark = state.landmarks.get(landmarks[point_index].id)
+            keyframe = state.keyframes.get(keyframe_id)
+            if (landmark is not None and keyframe is not None
+                    and len(landmark.observations) > 1 and keyframe_id in landmark.observations):
+                rows.append((landmark, keyframe_id, observation, keyframe.pose))
+        if not rows:
+            return 0
+        poses = np.asarray([pose for _, _, _, pose in rows])
+        positions = np.asarray([landmark.position for landmark, _, _, _ in rows])
+    else:
+        point_rows, camera_rows, camera_ids = indexed_rows
+        rows = records
+        poses = np.asarray([state.keyframes[key].pose for key in camera_ids])[camera_rows]
+        positions = np.asarray([landmark.position for landmark in landmarks])[point_rows]
     delta = positions - poses[:, :3, 3]
     camera = (poses[:, :3, :3].swapaxes(1, 2) @ delta[..., None])[..., 0]
     outliers = camera[:, 2] <= 0.05
@@ -197,7 +204,10 @@ def _cull_bundle_outliers(state, landmarks, records, matrix, baseline, disparity
         projection = (matrix @ camera[..., None])[..., 0]
         uv = projection[:, :2] / np.maximum(projection[:, 2:], 1e-9)
         projected_observations = [rows[row][2] for row in project_rows]
-        measured = np.asarray([observation.pixel for observation in projected_observations], dtype=float)
+        measured = np.asarray([
+            observation.pixel_values() if type(observation) is OwnedObservation else observation.pixel
+            for observation in projected_observations
+        ], dtype=float)
         error = uv - measured
         error_sq = error[:, 0] * error[:, 0] + error[:, 1] * error[:, 1]
         rejected = error_sq > 9.21
@@ -217,7 +227,9 @@ def _cull_bundle_outliers(state, landmarks, records, matrix, baseline, disparity
     remove_observation = getattr(state, "remove_observation", None)
     # Apply in the original row order so a group of outliers keeps its last observation.
     for row in np.flatnonzero(outliers):
-        landmark, keyframe_id, _, _ = rows[row]
+        landmark, keyframe_id = rows[row][:2]
+        if indexed_rows is not None:
+            landmark = landmarks[landmark]
         if len(landmark.observations) > 1:
             removed = (landmark.observations.pop(keyframe_id, None)
                        if remove_observation is None else remove_observation(landmark.id, keyframe_id))
@@ -3329,8 +3341,18 @@ def local_bundle_adjustment(
         # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
         if cull_outliers_chi2:
+            # The solver row indices remain valid through a geometry-only commit.
+            # Read committed poses, points and pixel values during the cull.
+            indexed_rows = None
+            if (records and not snapshot_enabled and landmark_policy == "bounded_fixed"
+                    and index_version is not None and state.index is map_index
+                    and map_index._struct_version == index_version
+                    and all(state.landmarks.get(landmark.id) is landmark for landmark in landmarks)
+                    and all(key in state.keyframes for key in camera_ids)):
+                indexed_rows = (record_points, record_cameras, camera_ids)
             report["culled_outlier_observations"] = _cull_bundle_outliers(
                 state, landmarks, records, matrix, baseline, disparity_offset,
+                indexed_rows=indexed_rows,
             )
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)

@@ -40,10 +40,7 @@ def test_stereo_keyframe_preserves_orientation_rows_but_creates_one_lm_per_pixel
 
         keyframe = slam.map.keyframes[keyframe_id]
         assert len(slam.map.landmarks) == 3
-        assert keyframe.landmark_ids[0] == keyframe.landmark_ids[1] >= 0
-        assert keyframe.landmark_ids[2] >= 0
-        assert keyframe.landmark_ids[3] >= 0
-        assert keyframe.landmark_ids[2] != keyframe.landmark_ids[3]
+        assert keyframe.landmark_ids.tolist() == [0, 0, 1, 2]
         assert np.array_equal(keyframe.descriptors, descriptors)
         assert np.array_equal(keyframe.retrieval_descriptors, descriptors)
         for landmark in slam.map.landmarks.values():

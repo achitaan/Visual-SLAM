@@ -1100,13 +1100,8 @@ class SharedSlam:
         # otherwise preserve the flow observation as its own row below.
         tracked_pixels = {int(lid): np.asarray(pixel).reshape(2) for lid, pixel in tracks}
         groups, group_ids = self._physical_pixel_groups(pixels)
-        physical_group_lookup = {
-            self._physical_pixel_key(pixels[members[0]]): group_id
-            for group_id, members in enumerate(groups)
-            if np.isfinite(pixels[members[0]]).all()
-        }
-        group_for_feature = {int(feature): int(group_ids[feature])
-                             for feature in range(len(pixels))}
+        physical_group_lookup = self._finite_physical_group_lookup(pixels, groups)
+        group_for_feature = group_ids.tolist()
         linked_groups = {}
         for feature, lid in associations.items():
             linked_groups.setdefault(lid, set()).add(group_for_feature[feature])
@@ -1174,16 +1169,21 @@ class SharedSlam:
         # Propagate a single existing identity across every SIFT orientation
         # row at that exact pixel. Conflicting IDs are ambiguous: leave that
         # pixel group unlinked and do not create a replacement landmark.
-        groups, group_ids = self._physical_pixel_groups(pixels)
-        physical_group_lookup = {
-            self._physical_pixel_key(pixels[members[0]]): group_id
-            for group_id, members in enumerate(groups)
-            if np.isfinite(pixels[members[0]]).all()
-        }
+        if appended_pixels:
+            groups, group_ids = self._physical_pixel_groups(pixels)
+            physical_group_lookup = self._finite_physical_group_lookup(pixels, groups)
+            group_for_feature = group_ids.tolist()
+        landmarks = self.map.landmarks
         clean_associations = {}
         for group_id, members in enumerate(groups):
+            if len(members) == 1:
+                feature = members[0]
+                lid = associations.get(feature)
+                if lid in landmarks:
+                    clean_associations[feature] = lid
+                continue
             ids = {associations[feature] for feature in members
-                   if feature in associations and associations[feature] in self.map.landmarks}
+                   if feature in associations and associations[feature] in landmarks}
             if len(ids) > 1:
                 blocked_groups.add(group_id)
                 continue
@@ -1196,7 +1196,7 @@ class SharedSlam:
         # measurement can select its own pixel; otherwise drop the ambiguous ID.
         associated_groups = {}
         for feature, lid in clean_associations.items():
-            associated_groups.setdefault(lid, set()).add(int(group_ids[feature]))
+            associated_groups.setdefault(lid, set()).add(group_for_feature[feature])
         for lid, linked in list(associated_groups.items()):
             if len(linked) <= 1:
                 continue
@@ -1209,7 +1209,7 @@ class SharedSlam:
             if keep is None:
                 blocked_groups.update(linked)
             clean_associations = {feature: value for feature, value in clean_associations.items()
-                                  if value != lid or int(group_ids[feature]) == keep}
+                                  if value != lid or group_for_feature[feature] == keep}
 
         # Track aliases are represented once for subsequent LK and prediction.
         self.accepted_tracks = self._unique_physical_tracks(tracks)
@@ -1299,6 +1299,7 @@ class SharedSlam:
                 & np.isfinite(map_right_u)
             ).tolist()
             _batch_f0: list[int] = []
+            _batch_aliases: list[list[int]] = []
 
             def _flush_batch():
                 if not _batch_f0:
@@ -1318,7 +1319,10 @@ class SharedSlam:
                     is_far=False,
                 )
                 _lm_ids_arr[idx_arr] = lids
+                for members in _batch_aliases:
+                    _lm_ids_arr[members[1:]] = _lm_ids_arr[members[0]]
                 _batch_f0.clear()
+                _batch_aliases.clear()
 
             for group_id, members in enumerate(groups):
                 if group_id in blocked_groups:
@@ -1395,9 +1399,16 @@ class SharedSlam:
                                                rtol=1e-6, atol=1e-6)
                         ):
                             continue
-                _flush_batch()
                 feature = members[0]
                 world = _R_kf @ seed_values[0] + _t_kf
+                if verified_group and pixels.dtype == np.float32:
+                    # Keep the original per-point projection for orientation
+                    # aliases, then insert them in the same order as singletons.
+                    _world_map[feature] = world
+                    _batch_f0.append(feature)
+                    _batch_aliases.append(members)
+                    continue
+                _flush_batch()
                 lm_oct = int(kf_octaves[feature]) if feature < _n_oct else 0
                 lid = _add_lm(
                     world,
@@ -2781,6 +2792,16 @@ class SharedSlam:
             x, y = pixel.tolist()
             return (x, y)
         return tuple(np.asarray(pixel, np.float32).tolist())
+
+    @classmethod
+    def _finite_physical_group_lookup(cls, pixels, groups):
+        representatives = pixels[[members[0] for members in groups]]
+        finite_groups = np.flatnonzero(np.isfinite(representatives).all(axis=1))
+        if cls._physical_pixel_key is _ORIGINAL_PHYSICAL_PIXEL_KEY:
+            values = representatives[finite_groups].astype(np.float32, copy=False).tolist()
+            return {tuple(pixel): group for group, pixel in zip(finite_groups.tolist(), values)}
+        return {cls._physical_pixel_key(representatives[group]): group
+                for group in finite_groups.tolist()}
 
     @classmethod
     def _physical_pixel_groups(cls, pixels, *, need_groups=True):

@@ -388,3 +388,39 @@ def test_acceptance_and_independent_motion_guard_match_reference(monkeypatch, ch
         reports[1]["max_stereo_motion_rotation_error_deg"], abs=1e-10
     )
     _assert_snapshots_equal(*snapshots)
+
+
+@pytest.mark.parametrize("metric", [False, True])
+def test_batched_bundle_outlier_checks_preserve_the_last_observation(metric):
+    state = MapState(metric=metric)
+    for keyframe_id in range(3):
+        state.keyframes[keyframe_id] = MappingKeyframe(
+            keyframe_id, keyframe_id, np.eye(4), np.empty((0, 2)),
+            np.empty((0, 128)), np.empty(0, dtype=int),
+        )
+    by_landmark = [
+        ([2.0, 3.0, 1.0], {0: ([6.0, 3.0], None), 1: ([2.0, 3.0], 8.0),
+                             2: ([2.0, 3.0], 1.5)}),
+        ([0.1, 0.15, 0.05], {2: ([2.0, 3.0], None), 0: ([2.0, 3.0], None),
+                              1: ([2.0, 3.0], None)}),
+        ([12.0, 3.0, 1.0], {0: ([15.0, 3.0], None), 1: ([15.1, 3.0], None)}),
+    ]
+    records = []
+    for point, observations in by_landmark:
+        observations = {
+            key: Observation(np.asarray(pixel), right) for key, (pixel, right) in observations.items()
+        }
+        ident = state.add_landmark(point, np.ones(128), 0, observations)
+        records.extend((ident, camera, obs) for camera, obs in observations.items())
+
+    count = bundle._cull_bundle_outliers(
+        state, list(state.landmarks.values()), records, np.eye(3), 0.25, 0.25,
+    )
+
+    # With identity K and poses, (2,3,1) projects to (2,3) and right-u 1.5.
+    # The second point is at the depth cutoff and retains the last row visited.
+    # The third has left residuals of 3 and 3.1 px, straddling sqrt(9.21).
+    assert count == (5 if metric else 4)
+    remaining = [list(landmark.observations) for landmark in state.landmarks.values()]
+    assert remaining == ([[2], [1], [0]] if metric else [[1, 2], [1], [0]])
+    assert state.index.landmarks_for_keyframes([0]) == {2}

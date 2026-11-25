@@ -175,6 +175,56 @@ def _validate_retained_registry_metadata(registry, revision, geometry_revision,
                 raise ValueError("malformed_retained_source_row")
 
 
+def _cull_bundle_outliers(state, landmarks, records, matrix, baseline, disparity_offset):
+    rows = []
+    for point_index, keyframe_id, observation in records:
+        landmark = state.landmarks.get(landmarks[point_index].id)
+        keyframe = state.keyframes.get(keyframe_id)
+        if (landmark is not None and keyframe is not None
+                and len(landmark.observations) > 1 and keyframe_id in landmark.observations):
+            rows.append((landmark, keyframe_id, observation, keyframe.pose))
+    if not rows:
+        return 0
+
+    poses = np.asarray([pose for _, _, _, pose in rows])
+    positions = np.asarray([landmark.position for landmark, _, _, _ in rows])
+    delta = positions - poses[:, :3, 3]
+    camera = (poses[:, :3, :3].swapaxes(1, 2) @ delta[..., None])[..., 0]
+    outliers = camera[:, 2] <= 0.05
+    project_rows = np.flatnonzero(~outliers)
+    if len(project_rows):
+        camera = camera[project_rows]
+        projection = (matrix @ camera[..., None])[..., 0]
+        uv = projection[:, :2] / np.maximum(projection[:, 2:], 1e-9)
+        projected_observations = [rows[row][2] for row in project_rows]
+        measured = np.asarray([observation.pixel for observation in projected_observations], dtype=float)
+        error = uv - measured
+        error_sq = error[:, 0] * error[:, 0] + error[:, 1] * error[:, 1]
+        rejected = error_sq > 9.21
+        if state.metric:
+            rights = [observation.right_u for observation in projected_observations]
+            stereo = np.asarray([right is not None for right in rights], dtype=bool)
+            fx_b = float(matrix[0, 0]) * float(baseline)
+            expected = uv[stereo, 0] - fx_b / np.maximum(camera[stereo, 2], 1e-9)
+            expected -= float(disparity_offset)
+            right_error = expected - np.asarray(rights, dtype=float)[stereo]
+            left_sq = error_sq[stereo]
+            rejected[stereo] = ((left_sq + right_error * right_error > 11.34)
+                                | (left_sq > 12.25) | (np.abs(right_error) > 3.5))
+        outliers[project_rows] = rejected
+
+    culled = 0
+    remove_observation = getattr(state, "remove_observation", None)
+    # Apply in the original row order so a group of outliers keeps its last observation.
+    for row in np.flatnonzero(outliers):
+        landmark, keyframe_id, _, _ = rows[row]
+        if len(landmark.observations) > 1:
+            removed = (landmark.observations.pop(keyframe_id, None)
+                       if remove_observation is None else remove_observation(landmark.id, keyframe_id))
+            culled += int(removed is not None)
+    return culled
+
+
 def local_bundle_adjustment(
     state,
     matrix,
@@ -413,7 +463,7 @@ def local_bundle_adjustment(
             index_version = None
         # These references can be reused at commit while the observation index
         # retains its structure. Read positions under the commit lock as before.
-        single_view_candidates = [] if index_version is not None and not snapshot_enabled else None
+        single_view_candidates = {} if index_version is not None and not snapshot_enabled else None
         scored_landmarks = []
         multi_obs_pool = []
         for landmark in window_landmark_pool:
@@ -423,7 +473,7 @@ def local_bundle_adjustment(
                 if single_view_candidates is not None and count == 1:
                     anchor = landmark.anchor
                     if anchor in free_set and anchor in observations:
-                        single_view_candidates.append(landmark)
+                        single_view_candidates.setdefault(anchor, []).append(landmark)
                 continue
             multi_obs_pool.append(landmark)
             in_window = len(selected_set.intersection(observations))
@@ -3188,23 +3238,24 @@ def local_bundle_adjustment(
             }
             for ident, point_index in extra_index.items():
                 updates[ident] = points[point_index].copy()
-        if single_view is None:
-            if (single_view_candidates is not None and state.index is map_index
-                    and map_index._struct_version == index_version):
-                single_view = [
-                    (landmark.id, landmark.anchor, landmark.position)
-                    for landmark in single_view_candidates
-                ]
-            else:
+        by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
+        if (single_view is None and single_view_candidates is not None
+                and state.index is map_index and map_index._struct_version == index_version):
+            for anchor, candidates in single_view_candidates.items():
+                by_anchor[anchor] = ([landmark.id for landmark in candidates],
+                                     [landmark.position for landmark in candidates])
+            report["anchor_propagated_single_view_landmarks"] = sum(
+                len(ids) for ids, _ in by_anchor.values()
+            )
+        else:
+            if single_view is None:
                 single_view = [
                     (landmark.id, landmark.anchor, landmark.position)
                     for landmark in window_landmark_pool
                     if landmark.id not in optimized_ids and len(landmark.observations) == 1
                     and landmark.anchor in free_set and landmark.anchor in landmark.observations
                 ]
-            report["anchor_propagated_single_view_landmarks"] = len(single_view)
-        if single_view:
-            by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
+                report["anchor_propagated_single_view_landmarks"] = len(single_view)
             for ident, anchor, position in single_view:
                 if ident in optimized_single_ids:
                     continue
@@ -3214,22 +3265,22 @@ def local_bundle_adjustment(
                 else:
                     bucket[0].append(ident)
                     bucket[1].append(position)
-            for anchor, (id_list, pos_list) in by_anchor.items():
-                base_a = base[anchor]
-                pose_a = poses[anchor]
-                if len(id_list) >= 4:
-                    pts_arr = np.asarray(pos_list, dtype=np.float64)
-                    # Equivalent to pose_R @ (base_R.T @ (pos - base_t)) + pose_t
-                    rel_R = pose_a[:3, :3] @ base_a[:3, :3].T
-                    new_pts = (pts_arr - base_a[:3, 3]) @ rel_R.T + pose_a[:3, 3]
-                    updates.update(zip(id_list, new_pts))
-                else:
-                    base_RT = base_a[:3, :3].T
-                    base_t = base_a[:3, 3]
-                    pose_R = pose_a[:3, :3]
-                    pose_t = pose_a[:3, 3]
-                    for ident, position in zip(id_list, pos_list):
-                        updates[ident] = pose_R @ (base_RT @ (position - base_t)) + pose_t
+        for anchor, (id_list, pos_list) in by_anchor.items():
+            base_a = base[anchor]
+            pose_a = poses[anchor]
+            if len(id_list) >= 4:
+                pts_arr = np.asarray(pos_list, dtype=np.float64)
+                # Equivalent to pose_R @ (base_R.T @ (pos - base_t)) + pose_t
+                rel_R = pose_a[:3, :3] @ base_a[:3, :3].T
+                new_pts = (pts_arr - base_a[:3, 3]) @ rel_R.T + pose_a[:3, 3]
+                updates.update(zip(id_list, new_pts))
+            else:
+                base_RT = base_a[:3, :3].T
+                base_t = base_a[:3, 3]
+                pose_R = pose_a[:3, :3]
+                pose_t = pose_a[:3, 3]
+                for ident, position in zip(id_list, pos_list):
+                    updates[ident] = pose_R @ (base_RT @ (position - base_t)) + pose_t
         correction_arguments = {'propagate_landmarks': False, 'landmark_updates': updates}
         if intermediate_updates is not None:
             correction_arguments['frame_updates'] = intermediate_updates
@@ -3277,37 +3328,9 @@ def local_bundle_adjustment(
         # their measured camera coordinates rather than imposing a pose prior.
         report["applied"] = True
         if cull_outliers_chi2:
-            culled_obs = 0
-            fx_b = float(matrix[0, 0]) * float(baseline)
-            for idx_pt, kf_id, obs in records:
-                lm = state.landmarks.get(landmarks[idx_pt].id)
-                if lm is None or kf_id not in lm.observations or len(lm.observations) <= 1:
-                    continue
-                if kf_id not in state.keyframes:
-                    continue
-                kf_pose = state.keyframes[kf_id].pose
-                pc = kf_pose[:3, :3].T @ (lm.position - kf_pose[:3, 3])
-                is_outlier = pc[2] <= 0.05
-                if not is_outlier:
-                    h = matrix @ pc
-                    uv = h[:2] / max(float(h[2]), 1e-9)
-                    err_uv = uv - np.asarray(obs.pixel, dtype=float)
-                    err_sq = float(err_uv[0] * err_uv[0] + err_uv[1] * err_uv[1])
-                    if state.metric and obs.right_u is not None:
-                        u_r = float(uv[0]) - fx_b / max(float(pc[2]), 1e-9) - float(disparity_offset)
-                        err_r = u_r - float(obs.right_u)
-                        chi2 = err_sq + err_r * err_r
-                        is_outlier = (chi2 > 11.34) or (err_sq > 12.25) or (abs(err_r) > 3.5)
-                    else:
-                        is_outlier = (err_sq > 9.21)
-                if is_outlier and len(lm.observations) > 1:
-                    if hasattr(state, "remove_observation"):
-                        removed = state.remove_observation(lm.id, kf_id)
-                    else:
-                        removed = lm.observations.pop(kf_id, None)
-                    if removed is not None:
-                        culled_obs += 1
-            report["culled_outlier_observations"] = int(culled_obs)
+            report["culled_outlier_observations"] = _cull_bundle_outliers(
+                state, landmarks, records, matrix, baseline, disparity_offset,
+            )
         if training_bundle_summary is not None and owned_training_rows is not None:
             training_bundle_summary.update(status="accepted", reason=None)
             training_bundle_summary['committed_map_revision'] = int(state.revision)

@@ -272,9 +272,11 @@ class MapState:
                 self.keyframes
             ):
                 return False
-            scales = scales or {i: 1.0 for i in corrected}
+            unit_scales = not scales
             for ident, pose in corrected.items():
                 old_pose = self.keyframes[ident].pose
+                if unit_scales and pose is old_pose:
+                    continue
                 if pose is not old_pose and not (
                     isinstance(pose, np.ndarray)
                     and pose.dtype == np.float64
@@ -283,7 +285,7 @@ class MapState:
                     and np.array_equal(pose, old_pose)
                 ):
                     validate_pose(pose)
-                if (
+                if not unit_scales and (
                     ident not in scales
                     or not np.isfinite(scales[ident])
                     or scales[ident] <= 0
@@ -292,7 +294,7 @@ class MapState:
             if (
                 corrected[0] is not self.keyframes[0].pose
                 and not np.allclose(corrected[0], self.keyframes[0].pose, atol=1e-8)
-            ) or abs(scales[0] - 1) > 1e-8:
+            ) or (not unit_scales and abs(scales[0] - 1) > 1e-8):
                 raise ValueError("Origin must remain fixed")
             # Joint local solves may optimize an accepted intermediate camera.
             # Validate all overrides before changing any landmark or pose. A
@@ -321,7 +323,7 @@ class MapState:
             for ident, keyframe in self.keyframes.items():
                 old = keyframe.pose
                 new_pose = corrected[ident]
-                scale = scales[ident]
+                scale = 1.0 if unit_scales else scales[ident]
                 if scale == 1.0 and (new_pose is old or np.array_equal(new_pose, old)):
                     continue
                 moved_kfs.add(ident)
@@ -614,7 +616,7 @@ class MapState:
             for ident in moved_kfs:
                 self.keyframes[ident].pose = corrected[ident].copy()
                 if not self.metric and self.keyframes[ident].depth_points is not None:
-                    self.keyframes[ident].depth_points *= scales[ident]
+                    self.keyframes[ident].depth_points *= corrections[ident][1]
             self.poses = poses
             if len(self.relative_poses) == len(poses):
                 kf_inv_cache = {}

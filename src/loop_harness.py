@@ -32,6 +32,7 @@ from eval_kitti import _segment_weighted_mean
 from kitti import image_paths, load_poses_txt, save_poses_txt
 from metrics import evaluate_trajectory
 from performance import PerformanceConfig, SIFT_PYRAMID_BACKENDS
+from windows_affinity import WINDOWS_CORE_PLACEMENTS, WindowsCorePlacement
 from shared_slam import MAPPING_PRESET_NAMES, MappingConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -248,7 +249,10 @@ def build_airgapped_estimator_invocation(
     stereo_verification_backend: str = "cpu",
     optical_flow_backend: str = "cpu",
     sift_pyramid_backend: str = "cpu",
+    windows_core_placement: str = "default",
 ) -> tuple[list[str], dict[str, str], Path]:
+    if windows_core_placement not in WINDOWS_CORE_PLACEMENTS:
+        raise ValueError(f"Unknown Windows core placement: {windows_core_placement}")
     if matching_backend not in ("cpu", "cuda", "auto"):
         raise ValueError(f"Invalid matching_backend: {matching_backend!r} (expected cpu, cuda, or auto)")
     if frontend_backend not in ("cpu", "cuda"):
@@ -339,6 +343,8 @@ def build_airgapped_estimator_invocation(
         command.extend(["--optical-flow-backend", optical_flow_backend])
     if sift_pyramid_backend != "cpu":
         command.extend(["--sift-pyramid-backend", sift_pyramid_backend])
+    if windows_core_placement != "default":
+        command.extend(["--windows-core-placement", windows_core_placement])
     if not profile:
         command.append("--no-profile")
 
@@ -383,6 +389,7 @@ def run_airgapped_estimator_subprocess(
     stereo_verification_backend: str = "cpu",
     optical_flow_backend: str = "cpu",
     sift_pyramid_backend: str = "cpu",
+    windows_core_placement: str = "default",
 ) -> dict[str, Any]:
     seq_out_dir = Path(seq_out_dir).resolve(strict=False)
     seq_out_dir.mkdir(parents=True, exist_ok=True)
@@ -406,6 +413,7 @@ def run_airgapped_estimator_subprocess(
         stereo_verification_backend=stereo_verification_backend,
         optical_flow_backend=optical_flow_backend,
         sift_pyramid_backend=sift_pyramid_backend,
+        windows_core_placement=windows_core_placement,
     )
     log_path = seq_out_dir / "estimator.log"
     wait4_rss_mb = 0.0
@@ -582,6 +590,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
     parser.add_argument("--stereo-verification-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--optical-flow-backend", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--sift-pyramid-backend", choices=SIFT_PYRAMID_BACKENDS, default="cpu")
+    parser.add_argument("--windows-core-placement", choices=WINDOWS_CORE_PLACEMENTS, default="default")
     parser.add_argument("--no-profile", action="store_true")
     args = parser.parse_args(argv)
 
@@ -590,6 +599,8 @@ def _estimator_worker_main(argv: list[str]) -> int:
     from StereoVisualOdometry import StereoVisualOdometry
     from shared_slam import SharedSlam, StereoCamera
 
+    placement = WindowsCorePlacement(args.windows_core_placement)
+    split_placement = args.windows_core_placement == "split"
     gc.set_threshold(50000, 20, 200)
     np.random.seed(args.seed)
     cv.setRNGSeed(args.seed)
@@ -628,7 +639,10 @@ def _estimator_worker_main(argv: list[str]) -> int:
         )
 
     stereo_cam = StereoCamera(vo.stereo, vo.Q, vo.baseline)
-    slam = SharedSlam(vo.K1, stereo=stereo_cam, config=cfg, performance=perf)
+    slam = SharedSlam(
+        vo.K1, stereo=stereo_cam, config=cfg, performance=perf,
+        loop_thread_initializer=(lambda: placement.bind("loop")) if split_placement else None,
+    )
     if args.frontend_backend == "cuda" and slam.cuda_frontend is None:
         slam.close(finish=False)
         raise RuntimeError(f"CUDA frontend is unavailable: {slam.cuda_frontend_reason}")
@@ -654,8 +668,11 @@ def _estimator_worker_main(argv: list[str]) -> int:
             slam,
             buffer_size=max(1, int(args.pipeline_buffer)),
             lazy_extraction=True,
+            worker_initializer=(lambda: placement.bind("frontend")) if split_placement else None,
         )
 
+    if split_placement:
+        placement.bind("tracking")
     started = time.perf_counter()
     try:
         if pipeline is not None:
@@ -798,6 +815,7 @@ def _estimator_worker_main(argv: list[str]) -> int:
         "stereo_verification_backend": verifier_meta,
         "optical_flow_backend": flow_meta,
         "sift_pyramid_backend": sift_pyramid_meta,
+        "windows_core_placement": placement.report,
         "preset": args.preset,
         "config_overrides": overrides,
         "configuration": asdict(slam.config),
@@ -924,6 +942,8 @@ def evaluate_sequence_posthoc(
         result["optical_flow_backend"] = run_payload["optical_flow_backend"]
     if "sift_pyramid_backend" in run_payload:
         result["sift_pyramid_backend"] = run_payload["sift_pyramid_backend"]
+    if "windows_core_placement" in run_payload:
+        result["windows_core_placement"] = run_payload["windows_core_placement"]
     if "frame_latency_ms" in run_payload:
         result["frame_latency_ms"] = run_payload["frame_latency_ms"]
     if "loop_events" in run_payload:
@@ -1476,6 +1496,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--opencv-threads", type=int, default=1)
     parser.add_argument("--openblas-threads", type=int, default=1)
+    parser.add_argument(
+        "--windows-core-placement", choices=WINDOWS_CORE_PLACEMENTS, default="default",
+        help="Place estimator work on physical cores in the Windows worker process",
+    )
     parser.add_argument("--pipeline-extraction", action="store_true")
     parser.add_argument("--pipeline-buffer", type=int, default=1)
     parser.add_argument(
@@ -1637,6 +1661,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             stereo_verification_backend=args.stereo_verification_backend,
             optical_flow_backend=args.optical_flow_backend,
             sift_pyramid_backend=args.sift_pyramid_backend,
+            windows_core_placement=args.windows_core_placement,
         )
 
     # Phase 2: Post-Exit Evaluation (parent loads poses_root only AFTER estimator subprocesses exit)
@@ -1673,6 +1698,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
             "stereo_verification_backend",
             "optical_flow_backend",
             "sift_pyramid_backend",
+            "windows_core_placement",
             "frame_latency_ms",
             "loop_events",
             "online_first_metrics",
@@ -1716,6 +1742,7 @@ def execute_loop_harness(argv: list[str] | None = None) -> dict[str, Any]:
         "stereo_verification_backend_requested": args.stereo_verification_backend,
         "optical_flow_backend_requested": args.optical_flow_backend,
         "sift_pyramid_backend_requested": args.sift_pyramid_backend,
+        "windows_core_placement_requested": args.windows_core_placement,
         "hypothesis": args.hypothesis,
         "ground_truth_used_for_estimation": False,
         "evaluation_isolation": {

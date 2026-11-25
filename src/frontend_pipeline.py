@@ -498,6 +498,7 @@ class FrontendExtractionPipeline:
         buffer_size: int = 2,
         concurrent_stereo: bool = True,
         lazy_extraction: bool = False,
+        worker_initializer: Callable[[], None] | None = None,
     ) -> None:
         if buffer_size < 1:
             raise ValueError("buffer_size must be >= 1")
@@ -547,6 +548,7 @@ class FrontendExtractionPipeline:
         self._closed = False
         self._next_submit_index = 0
         self._next_get_index = 0
+        self._worker_initializer = worker_initializer
         self._thread = threading.Thread(
             target=self._worker_loop,
             name="frontend-extraction",
@@ -627,6 +629,8 @@ class FrontendExtractionPipeline:
 
     def _worker_loop(self) -> None:
         try:
+            if self._worker_initializer is not None:
+                self._worker_initializer()
             while not self._stop_event.is_set():
                 try:
                     item = self._in_q.get(timeout=0.05)

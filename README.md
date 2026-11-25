@@ -198,6 +198,16 @@ On full KITTI 00, the option reached 60.34 FPS versus 59.43 FPS and reduced
 live translation drift from 1.32% to 1.09%. Final aligned ATE moved from
 2.30 m to 2.36 m, with zero lost frames in both runs.
 
+On Windows, try `--windows-core-placement split` with the pipelined CUDA
+command. It assigns the tracking, extraction, and loop workers to separate
+physical cores in the benchmark worker. Check `windows_core_placement` in
+`run.json` for the applied thread masks and any placement error.
+
+On an i5-11400F with a GTX 1660 SUPER, split placement raised full KITTI 00
+throughput from 63.95 to 68.72 FPS with the compact SIFT and lazy stereo
+settings above. Both runs had zero tracking losses. Final aligned ATE went
+from 2.31 to 2.24 m, and live translation drift went from 1.10% to 1.18%.
+
 Start the dashboard in a second terminal:
 
 ```sh

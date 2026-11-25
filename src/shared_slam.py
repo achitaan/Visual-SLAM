@@ -385,7 +385,8 @@ MAPPING_PRESET_NAMES = ("improved_stereo", "verified_baseline", "legacy_default"
 
 class SharedSlam:
     def __init__(self, matrix, stereo=None, config=None, performance=None,
-                 bundle_diagnostic_writer=None, tracking_diagnostics_writer=None):
+                 bundle_diagnostic_writer=None, tracking_diagnostics_writer=None, *,
+                 loop_thread_initializer=None):
         self.performance = performance or PerformanceConfig()
         self.bundle_diagnostic_writer = bundle_diagnostic_writer
         self.bundle_diagnostic_errors = []
@@ -601,6 +602,7 @@ class SharedSlam:
             min_schedule_frame_gap=(
                 16 if self._lazy_stereo_geometry_enabled and self.config.loop_mode == "live" else 20
             ),
+            thread_initializer=loop_thread_initializer,
         )
         self.retrieval = KeyframeRetrieval()
         self.retrieval_index = KeyframeIndex() if self.performance.retrieval == 'indexed' else None

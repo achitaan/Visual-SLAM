@@ -196,6 +196,7 @@ class LiveLoopWorker:
         use_weighted_pgo=False,
         use_vlad_retrieval=False,
         min_schedule_frame_gap=20,
+        thread_initializer=None,
     ):
         if mode not in ("off", "live", "offline"):
             raise ValueError("Loop mode must be off, live or offline")
@@ -223,7 +224,7 @@ class LiveLoopWorker:
         self.matrix = matrix.copy()
         self.metric = metric
         self.executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="loop-optimization"
+            max_workers=1, thread_name_prefix="loop-optimization", initializer=thread_initializer,
         )
         self.future = None
         self.last_scheduled_keyframe = None

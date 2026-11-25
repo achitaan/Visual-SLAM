@@ -820,8 +820,30 @@ def _get_lk_lib() -> ctypes.CDLL | None:
             ctypes.c_float,
         ]
         lib.lk_track_pyramids_avx512.restype = ctypes.c_int32
+        if hasattr(lib, "nearest_lk_detector_rows"):
+            lib.nearest_lk_detector_rows.argtypes = [
+                ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p,
+            ]
+            lib.nearest_lk_detector_rows.restype = ctypes.c_int32
         lib._configured = True
     return lib
+
+
+def nearest_lk_detector_rows(detector_pixels: np.ndarray, track_pixels: np.ndarray) -> np.ndarray | None:
+    """Match LK rays to the nearest detector row within three pixels."""
+    lib = _get_lk_lib()
+    if lib is None or not hasattr(lib, "nearest_lk_detector_rows"):
+        return None
+    for pixels in (detector_pixels, track_pixels):
+        if (pixels.ndim != 2 or pixels.shape[1] != 2 or pixels.dtype != np.float32
+                or len(pixels) >= 1 << 30):
+            return None
+    detector = np.ascontiguousarray(detector_pixels)
+    tracks = np.ascontiguousarray(track_pixels)
+    rows = np.empty(len(tracks), np.int32)
+    ok = lib.nearest_lk_detector_rows(detector.ctypes.data, len(detector),
+                                      tracks.ctypes.data, len(tracks), rows.ctypes.data)
+    return rows if ok == 1 else None
 
 
 class LkPyramid:

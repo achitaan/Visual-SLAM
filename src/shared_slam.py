@@ -2362,24 +2362,14 @@ class SharedSlam:
                 and cached_lk[2] == id(self.current_gray)
                 and cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK
             ):
-                lk_map = cached_lk[3]
-                n_pt = len(previous_tracks)
-                hit_all = True
-                f_arr = np.empty((n_pt, 1, 2), dtype=np.float32)
-                ok_arr = np.empty((n_pt, 1), dtype=np.uint8)
-                rev_arr = np.empty((n_pt, 1, 2), dtype=np.float32)
-                bok_arr = np.empty((n_pt, 1), dtype=np.uint8)
-                for j, (lid, _) in enumerate(previous_tracks):
-                    entry = lk_map.get(lid)
-                    if entry is None:
-                        hit_all = False
-                        break
-                    f_arr[j, 0] = entry[0]
-                    ok_arr[j, 0] = entry[1]
-                    rev_arr[j, 0] = entry[2]
-                    bok_arr[j, 0] = entry[3]
-                if hit_all:
-                    flowed, ok, reversed_pixels, back_ok = f_arr, ok_arr, rev_arr, bok_arr
+                cached_tracks, forward, forward_ok, backward, backward_ok = cached_lk[3:]
+                row_for_landmark = {lid: row for row, (lid, _) in enumerate(cached_tracks)}
+                rows = [row_for_landmark.get(lid, -1) for lid, _ in previous_tracks]
+                if -1 not in rows:
+                    flowed = forward[rows].astype(np.float32, copy=False)
+                    ok = forward_ok[rows].astype(np.uint8, copy=False).reshape(-1, 1)
+                    reversed_pixels = backward[rows].astype(np.float32, copy=False)
+                    back_ok = backward_ok[rows].astype(np.uint8, copy=False).reshape(-1, 1)
                     used_fast_lk = True
             if not used_fast_lk and cv.calcOpticalFlowPyrLK is _ORIGINAL_CALC_OPTICAL_FLOW_PYR_LK:
                 try:
@@ -2439,7 +2429,14 @@ class SharedSlam:
                     landmarks_map = self.map.landmarks
                     n_pixels = len(pixels)
                     valid_j_list = valid_j.tolist()
-                    if n_pixels and valid_j_list:
+                    nearest_rows = None
+                    if n_pixels and self.performance.cpu_optimizations:
+                        from native_accel import nearest_lk_detector_rows
+
+                        rows = nearest_lk_detector_rows(pixels, flowed_pts[valid_j])
+                        if rows is not None:
+                            nearest_rows = rows.tolist()
+                    if n_pixels and nearest_rows is None:
                         px_order = np.argsort(pixels[:, 0], kind="mergesort")
                         px_sx = pixels[px_order, 0]
                         px_sy = pixels[px_order, 1]
@@ -2473,7 +2470,9 @@ class SharedSlam:
                                 flow_conflicts += 1
                                 continue
                         feature = -1
-                        if n_pixels:
+                        if nearest_rows is not None:
+                            feature = nearest_rows[idx_pos]
+                        elif n_pixels:
                             lo = lo_list[idx_pos]
                             hi = hi_list[idx_pos]
                             if hi > lo:
@@ -7406,16 +7405,10 @@ class SharedSlam:
 
         flowed_pts = flowed[:, 0]
         rev_pts = reversed_pixels[:, 0]
-        ok_flat = ok.ravel()
-        bok_flat = back_ok.ravel()
+        # Only fallback tracking consumes this cache. Gather the needed rows then.
         self._cached_lk_flow = (
-            int(index),
-            id(self.previous_gray),
-            id(self.current_gray),
-            {
-                prev_tracks[j][0]: (flowed_pts[j], ok_flat[j], rev_pts[j], bok_flat[j])
-                for j in range(len(prev_tracks))
-            },
+            int(index), id(self.previous_gray), id(self.current_gray), prev_tracks,
+            flowed, ok, reversed_pixels, back_ok,
         )
         fb_err = np.linalg.norm(rev_pts - old_pixels[:, 0], axis=1)
         lk_valid = (

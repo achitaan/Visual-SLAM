@@ -406,4 +406,51 @@ int32_t lk_track_pyramids_avx512(
     return 1;
 }
 
+int32_t nearest_lk_detector_rows(const float* detector_xy, int32_t detector_count,
+                                 const float* track_xy, int32_t track_count, int32_t* output) {
+    struct DetectorPixel {
+        float x, y;
+        int32_t row;
+    };
+    auto finite = [](float value) {
+        // Check the exponent directly because fast_lk is built with finite-math assumptions.
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return (bits & 0x7f800000u) != 0x7f800000u;
+    };
+    std::vector<DetectorPixel> ordered;
+    ordered.reserve(detector_count);
+    for (int32_t row = 0; row < detector_count; ++row) {
+        const float x = detector_xy[2 * row], y = detector_xy[2 * row + 1];
+        if (!finite(x) || !finite(y)) return 0;
+        ordered.push_back({x, y, row});
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const DetectorPixel& a, const DetectorPixel& b) {
+        return a.x < b.x || (a.x == b.x && a.row < b.row);
+    });
+    for (int32_t track = 0; track < track_count; ++track) {
+        const float x = track_xy[2 * track], y = track_xy[2 * track + 1];
+        if (!finite(x) || !finite(y)) return 0;
+        const float lo = x - 3.001f, hi = x + 3.001f;
+        auto candidate = std::lower_bound(ordered.begin(), ordered.end(), lo,
+            [](const DetectorPixel& pixel, float bound) { return pixel.x < bound; });
+        int32_t best_row = -1;
+        double best_distance = 9.000001;
+        for (; candidate != ordered.end() && candidate->x <= hi; ++candidate) {
+            const double dx = static_cast<double>(candidate->x) - x;
+            const double dy = static_cast<double>(candidate->y) - y;
+            // Round both products before adding to match the Python distance and tie rule.
+            const volatile double xx = dx * dx, yy = dy * dy;
+            const double distance = xx + yy;
+            if (distance <= 9.0 && (distance < best_distance ||
+                    (distance == best_distance && candidate->row < best_row))) {
+                best_distance = distance;
+                best_row = candidate->row;
+            }
+        }
+        output[track] = best_row;
+    }
+    return 1;
+}
+
 }  // extern "C"

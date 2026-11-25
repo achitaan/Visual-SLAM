@@ -241,6 +241,22 @@ def test_native_ba_exact_parity_vs_python_schur(monkeypatch):
     assert abs(cost_c - float(py_res.cost)) < 1e-9
 
 
+def test_native_lk_detector_rows_match_radius_and_tie_break():
+    lib = native_accel._get_lk_lib()
+    if lib is None or not hasattr(lib, "nearest_lk_detector_rows"):
+        pytest.skip("Native LK detector association is unavailable")
+
+    detector = np.array([[8, 4], [4, 4], [8, 4], [1, 1]], np.float32)
+    tracks = np.array([[6, 4], [11, 4], [11.001, 4], [1, 1], [-3, 1]], np.float32)
+    selected = native_accel.nearest_lk_detector_rows(detector.repeat(2, axis=0)[::2], tracks)
+    # Equal distances choose the first detector row. A point exactly 3 px away is valid.
+    np.testing.assert_array_equal(selected, [0, 0, -1, 3, -1])
+
+    detector[0, 0] = np.nan
+    assert native_accel.nearest_lk_detector_rows(detector, tracks) is None
+    assert native_accel.nearest_lk_detector_rows(detector.astype(np.float64), tracks) is None
+
+
 def test_native_lk_parity_vs_opencv():
     if native_accel._get_lk_lib() is None:
         pytest.skip("libfast_lk.so not built on this host")

@@ -229,8 +229,6 @@ def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, bas
                            size, min_inliers=15, disparity_offset=0.0,
                            use_analytic=False, weights_uv_uR=None):
     """Verify a left-image PnP hypothesis against current stereo observations."""
-    from scipy.optimize import least_squares
-
     pose, ids, _ = solution
     world, observed, right = points[ids], pixels[ids], measured_right[ids]
     available = np.isfinite(right)
@@ -246,7 +244,7 @@ def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, bas
         w_in = None if weights_uv_uR is None else np.asarray(weights_uv_uR, dtype=float)[ids]
         res_opt = refine_stereo_pose_analytic(
             pose, world, obs_3, w_in, comp_mask, matrix, baseline,
-            disparity_offset=disparity_offset, f_scale=2.0, max_iter=15,
+            disparity_offset=disparity_offset, f_scale=2.0, max_iter=15, estimate_only=True,
         )
         refined = res_opt.T_wc if (np.isfinite(res_opt.T_wc).all() and res_opt.final_cost < res_opt.initial_cost) else pose.copy()
         R_cw = refined[:3, :3].T
@@ -275,6 +273,8 @@ def refine_stereo_map_pose(solution, points, pixels, measured_right, matrix, bas
             return None, {**report, "pose_rejection_reason": "stereo_map_inconsistency"}
         return (refined, ids[valid], float(np.median(left_norm[valid]))), {
             **report, "stereo_verification": "current_right_reprojection"}
+
+    from scipy.optimize import least_squares
 
     inverse = np.linalg.inv(pose)
     initial = np.r_[cv.Rodrigues(inverse[:3, :3])[0].ravel(), inverse[:3, 3]]

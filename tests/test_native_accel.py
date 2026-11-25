@@ -99,6 +99,24 @@ def test_native_zncc_u8_and_f32_exact_parity(monkeypatch):
     assert float(np.max(np.abs(out_u8[both] - ref_u[both]))) < 1e-3
 
 
+@pytest.mark.parametrize("max_disparity", [15, 32, 63, 95, 96, 111, 144])
+def test_native_zncc_shift_block_boundaries(max_disparity):
+    if native_accel._get_zncc_lib() is None:
+        pytest.skip("Native ZNCC kernel is unavailable")
+    rng = np.random.default_rng(44317)
+    left = rng.integers(0, 256, size=(111, 399), dtype=np.uint8)
+    right = np.roll(left, -5, axis=1)
+    pixels = rng.uniform([20., 15.], [375., 96.], size=(160, 2))
+    config = stereo_depth.StereoSearchConfig(max_disparity=max_disparity)
+    measured, _ = native_accel.verify_stereo_zncc_avx512(
+        left, right, pixels, config, (.1, max_disparity - .1)
+    )
+    valid = np.isfinite(measured)
+    assert valid.sum() >= 120
+    # The manufactured image pair has a five-pixel horizontal shift.
+    np.testing.assert_allclose(pixels[valid, 0] - measured[valid], 5., atol=.35, rtol=0.)
+
+
 def test_native_sift_quality_and_format():
     if native_accel._get_sift_lib() is None:
         pytest.skip("libfast_sift.so not built on this host")

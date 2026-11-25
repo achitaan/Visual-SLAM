@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -137,6 +138,25 @@ inline void sample_rect_fast(
     }
 }
 
+template <size_t... Groups>
+inline void correlate_full_blocks(const float* patch, const float* strip,
+                                  int32_t patch_size, int32_t strip_width,
+                                  float* out, std::index_sequence<Groups...>) {
+    // Interleave independent disparity blocks while preserving each lane's FMA order.
+    __m512 sums[sizeof...(Groups)];
+    ((sums[Groups] = _mm512_setzero_ps()), ...);
+    for (int32_t row = 0; row < patch_size; ++row) {
+        const float* patch_row = patch + static_cast<size_t>(row) * patch_size;
+        const float* strip_row = strip + static_cast<size_t>(row) * strip_width;
+        for (int32_t col = 0; col < patch_size; ++col) {
+            const __m512 weight = _mm512_set1_ps(patch_row[col]);
+            ((sums[Groups] = _mm512_fmadd_ps(
+                weight, _mm512_loadu_ps(strip_row + col + 16 * Groups), sums[Groups])), ...);
+        }
+    }
+    (_mm512_store_ps(out + 16 * Groups, sums[Groups]), ...);
+}
+
 template <typename T>
 int32_t zncc_search_one(
     const T* src_img,
@@ -221,6 +241,18 @@ int32_t zncc_search_one(
     // AVX-512 cross-correlation: num[s] = sum_{r,c} p_zm[r,c] * strip[r, c + s] for s=0..n_scores-1
     alignas(64) float num_f[256];
     int32_t s = 0;
+    for (; s + 95 < n_scores; s += 96) {
+        correlate_full_blocks(patch_buf, strip_buf + s, patch_size, strip_w, num_f + s,
+                              std::make_index_sequence<6>{});
+    }
+    for (; s + 63 < n_scores; s += 64) {
+        correlate_full_blocks(patch_buf, strip_buf + s, patch_size, strip_w, num_f + s,
+                              std::make_index_sequence<4>{});
+    }
+    for (; s + 31 < n_scores; s += 32) {
+        correlate_full_blocks(patch_buf, strip_buf + s, patch_size, strip_w, num_f + s,
+                              std::make_index_sequence<2>{});
+    }
     for (; s + 15 < n_scores; s += 16) {
         __m512 acc = _mm512_setzero_ps();
         for (int32_t r = 0; r < patch_size; ++r) {

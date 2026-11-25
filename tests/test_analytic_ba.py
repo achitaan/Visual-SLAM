@@ -186,7 +186,10 @@ def test_build_local_bundle_jacobian_matches_finite_diff():
     assert max_err < 1e-6, f"local_bundle analytic Jacobian max_abs_err={max_err}"
 
 
-def test_refine_stereo_pose_analytic_recovers_pose_with_outliers_and_bearings():
+@pytest.mark.parametrize("disable_native", [False, True])
+def test_refine_stereo_pose_analytic_recovers_pose_with_outliers_and_bearings(monkeypatch, disable_native):
+    if disable_native:
+        monkeypatch.setenv("VISUAL_SLAM_DISABLE_NATIVE", "1")
     rng = np.random.default_rng(123)
     K = np.array([[718.856, 0.0, 607.1928], [0.0, 718.856, 185.2157], [0.0, 0.0, 1.0]])
     baseline = 0.54
@@ -225,6 +228,13 @@ def test_refine_stereo_pose_analytic_recovers_pose_with_outliers_and_bearings():
     res = refine_stereo_pose_analytic(
         T_wc_init, pts_w, obs, weights, comp_mask, K, baseline, disparity_offset=0.0, f_scale=1.5, max_iter=20
     )
+    estimate = refine_stereo_pose_analytic(
+        T_wc_init, pts_w, obs, weights, comp_mask, K, baseline, disparity_offset=0.0, f_scale=1.5,
+        max_iter=20, estimate_only=True,
+    )
+    # Both return modes solve the same manufactured stereo problem.
+    assert estimate.T_wc.tobytes() == res.T_wc.tobytes()
+    assert estimate.initial_cost == res.initial_cost and estimate.final_cost == res.final_cost
     assert res.converged
     assert res.final_cost < res.initial_cost * 0.10
     trans_err = float(np.linalg.norm(res.T_wc[:3, 3] - T_wc_true[:3, 3]))

@@ -20,6 +20,13 @@ class PoseRefineResult:
     hessian_6x6: np.ndarray
 
 
+@dataclass(frozen=True, slots=True)
+class PoseRefineEstimate:
+    T_wc: np.ndarray
+    initial_cost: float
+    final_cost: float
+
+
 def skew_batch(vecs: np.ndarray) -> np.ndarray:
     """Return [N, 3, 3] skew-symmetric matrices [v]_x for v of shape [N, 3]."""
     v = np.asarray(vecs, dtype=np.float64).reshape(-1, 3)
@@ -342,11 +349,14 @@ def refine_stereo_pose_analytic(
     disparity_offset: float = 0.0,
     f_scale: float = 1.5,
     max_iter: int = 15,
-) -> PoseRefineResult:
+    *,
+    estimate_only: bool = False,
+) -> PoseRefineResult | PoseRefineEstimate:
     """Fast vectorized IRLS Huber Levenberg-Marquardt 6-DoF stereo+bearing pose refinement.
 
     Supports heteroscedastic component weights (`weights_uv_uR`) and mixed stereo/far-bearing
     observations via `component_mask` (`[True, True, True]` for stereo, `[True, True, False]` for bearing).
+    Pass `estimate_only=True` when the caller computes its own inlier diagnostics.
     """
     T_init = np.asarray(T_wc_init, dtype=np.float64)
     if T_init.shape != (4, 4) or not np.isfinite(T_init).all():
@@ -357,6 +367,8 @@ def refine_stereo_pose_analytic(
     K_arr = np.asarray(K, dtype=np.float64)
     n = len(pts_w)
     if n == 0 or not np.any(mask):
+        if estimate_only:
+            return PoseRefineEstimate(T_init.copy(), 0.0, 0.0)
         return PoseRefineResult(
             T_wc=T_init.copy(),
             converged=False,
@@ -394,6 +406,8 @@ def refine_stereo_pose_analytic(
         T_wc_out = np.eye(4, dtype=np.float64)
         T_wc_out[:3, :3] = R_cw.T
         T_wc_out[:3, 3] = -R_cw.T @ t_cw
+        if estimate_only:
+            return PoseRefineEstimate(T_wc_out, float(initial_cost), float(cur_cost))
         pts_c = pts_w @ R_cw.T + t_cw
         z = pts_c[:, 2]
         valid = z > 1e-3
@@ -536,6 +550,8 @@ def refine_stereo_pose_analytic(
     T_wc_out = np.eye(4, dtype=np.float64)
     T_wc_out[:3, :3] = R_cw.T
     T_wc_out[:3, 3] = -R_cw.T @ t_cw
+    if estimate_only:
+        return PoseRefineEstimate(T_wc_out, float(initial_cost), float(cur_cost))
 
     left_err_norm = np.linalg.norm(res[:, :2] * weights[:, :2], axis=1)
     right_active = mask[:, 2]

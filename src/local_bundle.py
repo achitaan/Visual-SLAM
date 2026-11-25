@@ -400,28 +400,35 @@ def local_bundle_adjustment(
         fixed = set(selected[: 1 if state.metric else 2])
         free = [k for k in selected if k not in fixed]
         free_set = set(free)
-        if (use_map_index and hasattr(state, "index")
-                and len(state.index) == len(state.landmarks)):
+        map_index = getattr(state, "index", None) if use_map_index else None
+        if map_index is not None and len(map_index) == len(state.landmarks):
             window_landmark_pool = [
                 state.landmarks[lid]
-                for lid in state.index.landmarks_for_keyframes(selected)
+                for lid in map_index.landmarks_for_keyframes(selected)
                 if lid in state.landmarks
             ]
+            index_version = getattr(map_index, "_struct_version", None)
         else:
             window_landmark_pool = list(state.landmarks.values())
+            index_version = None
+        # These references can be reused at commit while the observation index
+        # retains its structure. Read positions under the commit lock as before.
+        single_view_candidates = [] if index_version is not None and not snapshot_enabled else None
         scored_landmarks = []
         multi_obs_pool = []
-        for l in window_landmark_pool:
-            obs = l.observations
-            if len(obs) < 2:
+        for landmark in window_landmark_pool:
+            observations = landmark.observations
+            count = len(observations)
+            if count < 2:
+                if single_view_candidates is not None and count == 1:
+                    anchor = landmark.anchor
+                    if anchor in free_set and anchor in observations:
+                        single_view_candidates.append(landmark)
                 continue
-            multi_obs_pool.append(l)
-            cnt = 0
-            for k in obs:
-                if k in selected_set:
-                    cnt += 1
-            if cnt >= 2:
-                scored_landmarks.append((cnt, max(obs), l))
+            multi_obs_pool.append(landmark)
+            in_window = len(selected_set.intersection(observations))
+            if in_window >= 2:
+                scored_landmarks.append((in_window, max(observations), landmark))
         scored_landmarks.sort(key=lambda item: (item[0], item[1]), reverse=True)
         landmarks = [item[2] for item in scored_landmarks]
         eligible_landmarks_pre_cap = len(landmarks) if snapshot_enabled else None
@@ -3182,12 +3189,19 @@ def local_bundle_adjustment(
             for ident, point_index in extra_index.items():
                 updates[ident] = points[point_index].copy()
         if single_view is None:
-            single_view = [
-                (landmark.id, landmark.anchor, landmark.position)
-                for landmark in window_landmark_pool
-                if landmark.id not in optimized_ids and len(landmark.observations) == 1
-                and landmark.anchor in free_set and landmark.anchor in landmark.observations
-            ]
+            if (single_view_candidates is not None and state.index is map_index
+                    and map_index._struct_version == index_version):
+                single_view = [
+                    (landmark.id, landmark.anchor, landmark.position)
+                    for landmark in single_view_candidates
+                ]
+            else:
+                single_view = [
+                    (landmark.id, landmark.anchor, landmark.position)
+                    for landmark in window_landmark_pool
+                    if landmark.id not in optimized_ids and len(landmark.observations) == 1
+                    and landmark.anchor in free_set and landmark.anchor in landmark.observations
+                ]
             report["anchor_propagated_single_view_landmarks"] = len(single_view)
         if single_view:
             by_anchor: dict[int, tuple[list[int], list[np.ndarray]]] = {}
@@ -3208,8 +3222,7 @@ def local_bundle_adjustment(
                     # Equivalent to pose_R @ (base_R.T @ (pos - base_t)) + pose_t
                     rel_R = pose_a[:3, :3] @ base_a[:3, :3].T
                     new_pts = (pts_arr - base_a[:3, 3]) @ rel_R.T + pose_a[:3, 3]
-                    for ident, row in zip(id_list, new_pts):
-                        updates[ident] = row
+                    updates.update(zip(id_list, new_pts))
                 else:
                     base_RT = base_a[:3, :3].T
                     base_t = base_a[:3, 3]

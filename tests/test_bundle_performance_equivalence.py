@@ -133,16 +133,16 @@ def test_solver_rows_match_independent_tuple_loop_projection_oracle(monkeypatch)
     # observations remain the independently generated positive-depth pixels.
     state.landmarks[13].position[2] = -1.0
     point_offset = 6 * len(free_camera_ids)
-    expected_initial = np.r_[
-        *[
+    expected_initial = np.concatenate([
+        *(
             np.r_[
                 Rotation.from_matrix(state.keyframes[ident].pose[:3, :3]).as_rotvec(),
                 state.keyframes[ident].pose[:3, 3],
             ]
             for ident in free_camera_ids
-        ],
+        ),
         np.asarray([state.landmarks[ident].position for ident in selected_ids]).ravel(),
-    ]
+    ])
 
     optimized_dimensions = [
         3 if observation.right_u is not None else 2
@@ -199,6 +199,47 @@ def test_solver_rows_match_independent_tuple_loop_projection_oracle(monkeypatch)
     # positive-depth point's left-u row clip high; its right row stays un-clipped.
     assert captures["clipped"][1][125] == 1e4
     assert captures["clipped"][1][127] > 1e4
+
+
+@pytest.mark.parametrize("use_map_index", [False, True])
+def test_bundle_single_view_propagation_rechecks_observations_changed_during_solve(
+    monkeypatch, use_map_index,
+):
+    state = _disconnected_mixed_state()
+    anchor = 2
+    actual_point = np.array([0.5, 0.4, 8.0])
+    unchanged = state.add_landmark(
+        actual_point, np.ones(128), anchor, {anchor: Observation(np.array([290.0, 250.0]))},
+    )
+    propagated = state.add_landmark(
+        actual_point + [0.2, 0.0, 0.0], np.ones(128), anchor,
+        {anchor: Observation(np.array([296.0, 250.0]))},
+    )
+    correction = 0.04
+    state.keyframes[anchor].pose[0, 3] += correction
+
+    def solve(_residual, initial, **_kwargs):
+        # The fixture's single free camera in the metric component is camera 2.
+        # Restore its original x coordinate, which generated the image observations.
+        result = initial.copy()
+        result[3] -= correction
+        state.add_observation(unchanged, 1, Observation(np.array([300.0, 250.0])))
+        return SimpleNamespace(x=result, nfev=1, success=True)
+
+    monkeypatch.setattr(bundle, "least_squares", solve)
+    result = local_bundle_adjustment(
+        state, MATRIX, BASELINE, window=5, disparity_offset=DISPARITY_OFFSET,
+        use_map_index=use_map_index,
+    )
+    assert result["applied"]
+    assert result["anchor_propagated_single_view_landmarks"] == 1
+    # A point with two observations stays in world coordinates. The single
+    # observation follows its anchor's pure -0.04 m x translation.
+    np.testing.assert_array_equal(state.landmarks[unchanged].position, actual_point)
+    np.testing.assert_allclose(
+        state.landmarks[propagated].position,
+        actual_point + [0.2 - correction, 0.0, 0.0], rtol=0, atol=1e-12,
+    )
 
 
 def _snapshot(state):

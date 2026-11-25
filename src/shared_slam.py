@@ -36,6 +36,7 @@ from stereo_two_view_bundle import (
 )
 
 MAX_SIFT_FEATURES = 10_000
+_STEREO_OCTAVE_WEIGHTS = np.array([1.0 / (1.15 ** octave) for octave in range(6)])
 
 
 def validate_feature_budget(value):
@@ -564,6 +565,32 @@ class SharedSlam:
     def _verify_stereo_candidates(self, left, right, pixels, config, bounds):
         verify = getattr(self, "cuda_stereo_verifier", None) or verify_stereo_depth_candidates
         return verify(left, right, pixels, config, bounds)
+
+    def _stereo_pose_weights(self, landmark_ids, pixels, right_u):
+        landmarks = [self.map.landmarks.get(ident) for ident in landmark_ids]
+        octave = np.fromiter(
+            (min(max(int(getattr(landmark, "octave", 0)), 0), 5) for landmark in landmarks),
+            dtype=np.intp, count=len(landmarks),
+        )
+        far = np.fromiter(
+            (getattr(landmark, "is_far", False) for landmark in landmarks),
+            dtype=bool, count=len(landmarks),
+        )
+        octave_weights = _STEREO_OCTAVE_WEIGHTS[octave]
+        right = np.asarray(right_u, dtype=float).copy()
+        right[far] = np.nan
+        weights = np.ones((len(landmarks), 3), dtype=float)
+        weights[:, :2] = octave_weights[:, None]
+        weights[far, 2] = 0.0
+        stereo_rows = np.flatnonzero(np.isfinite(right))
+        disparities = pixels[stereo_rows, 0] - right[stereo_rows] - float(self.stereo.disparity_offset)
+        weights[stereo_rows, 2] = 0.2 * octave_weights[stereo_rows]
+        positive_depth = disparities > 0.5
+        depth_rows = stereo_rows[positive_depth]
+        baseline = float(self.stereo.baseline)
+        depths = float(self.K[0, 0]) * baseline / disparities[positive_depth]
+        weights[depth_rows, 2] = octave_weights[depth_rows] / np.sqrt(1.0 + (depths / (40.0 * baseline)) ** 2)
+        return right, weights
 
     def _cached_landmarks(self):
         # A correction and its revision must be observed as one snapshot. A
@@ -2442,28 +2469,9 @@ class SharedSlam:
                     right_for_refine = measured_right
                     weights_uv_uR = None
                     if use_hetero:
-                        right_for_refine = np.asarray(measured_right, dtype=float).copy()
-                        weights_uv_uR = np.ones((len(identifiers), 3), dtype=float)
-                        fx_val = float(self.K[0, 0])
-                        bl_val = float(self.stereo.baseline)
-                        doff_val = float(self.stereo.disparity_offset)
-                        z_close = 40.0 * bl_val
-                        for row_i, lid in enumerate(identifiers):
-                            lm_obj = self.map.landmarks.get(lid)
-                            oct_v = int(getattr(lm_obj, "octave", 0)) if lm_obj is not None else 0
-                            w_oct = 1.0 / (1.15 ** min(max(oct_v, 0), 5))
-                            weights_uv_uR[row_i, 0] = w_oct
-                            weights_uv_uR[row_i, 1] = w_oct
-                            if lm_obj is not None and getattr(lm_obj, "is_far", False):
-                                right_for_refine[row_i] = np.nan
-                                weights_uv_uR[row_i, 2] = 0.0
-                            elif np.isfinite(right_for_refine[row_i]):
-                                disp = float(observations[row_i, 0] - right_for_refine[row_i] - doff_val)
-                                if disp > 0.5:
-                                    z_est = fx_val * bl_val / disp
-                                    weights_uv_uR[row_i, 2] = w_oct / float(np.sqrt(1.0 + (z_est / z_close) ** 2))
-                                else:
-                                    weights_uv_uR[row_i, 2] = 0.2 * w_oct
+                        right_for_refine, weights_uv_uR = self._stereo_pose_weights(
+                            identifiers, observations, measured_right,
+                        )
                     solution, stereo_diagnostics = refine_stereo_map_pose(
                         solution, positions, observations, right_for_refine, self.K,
                         self.stereo.baseline, size,
@@ -7335,28 +7343,9 @@ class SharedSlam:
         right_for_refine = measured_right
         weights_uv_uR = None
         if use_hetero:
-            right_for_refine = np.asarray(measured_right, dtype=float).copy()
-            weights_uv_uR = np.ones((len(cand_ids), 3), dtype=float)
-            fx_val = float(self.K[0, 0])
-            bl_val = float(self.stereo.baseline)
-            doff_val = float(self.stereo.disparity_offset)
-            z_close = 40.0 * bl_val
-            for row_i, lid in enumerate(cand_ids):
-                lm_obj = landmarks_map.get(lid)
-                oct_v = int(getattr(lm_obj, "octave", 0)) if lm_obj is not None else 0
-                w_oct = 1.0 / (1.15 ** min(max(oct_v, 0), 5))
-                weights_uv_uR[row_i, 0] = w_oct
-                weights_uv_uR[row_i, 1] = w_oct
-                if lm_obj is not None and getattr(lm_obj, "is_far", False):
-                    right_for_refine[row_i] = np.nan
-                    weights_uv_uR[row_i, 2] = 0.0
-                elif np.isfinite(right_for_refine[row_i]):
-                    disp = float(cand_obs[row_i, 0] - right_for_refine[row_i] - doff_val)
-                    if disp > 0.5:
-                        z_est = fx_val * bl_val / disp
-                        weights_uv_uR[row_i, 2] = w_oct / float(np.sqrt(1.0 + (z_est / z_close) ** 2))
-                    else:
-                        weights_uv_uR[row_i, 2] = 0.2 * w_oct
+            right_for_refine, weights_uv_uR = self._stereo_pose_weights(
+                cand_ids, cand_obs, measured_right,
+            )
         refined, stereo_diag = refine_stereo_map_pose(
             solution, cand_pos, cand_obs, right_for_refine, self.K,
             self.stereo.baseline, size, self.config.min_inliers,
